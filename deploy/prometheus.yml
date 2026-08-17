@@ -1,0 +1,20 @@
+# Prometheus scrapes two places: the app directly (its own /metrics endpoint,
+# fed by the same OpenTelemetry instruments) and the collector (everything that
+# arrived over OTLP). Either alone is sufficient; both together mean a collector
+# outage does not blind you to the app.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    deployment: lura-phase1
+
+scrape_configs:
+  - job_name: lura
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["lura:8080"]
+
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]

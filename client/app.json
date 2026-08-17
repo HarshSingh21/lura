@@ -1,0 +1,50 @@
+{
+  "expo": {
+    "name": "Lura",
+    "slug": "lura",
+    "scheme": "lura",
+    "version": "0.1.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "primaryColor": "#20a07b",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "local.lura.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Lura uses your location to draw your live position on your own map and to fire the place reminders you have set. It is sent only to the Lura server you point this app at.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Background location lets Lura fire place reminders while the app is closed. It is sent only to your own Lura server."
+      }
+    },
+    "android": {
+      "package": "local.lura.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Lura uses your location to draw your live position on your own map and to fire your place reminders."
+        }
+      ],
+      "@maplibre/maplibre-react-native"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

@@ -1,0 +1,27 @@
+# Grafana wired to the local stack, so the dashboards work on first boot.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+
+  - name: Jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+
+  - name: OpenSearch
+    type: grafana-opensearch-datasource
+    access: proxy
+    url: http://opensearch:9200
+    jsonData:
+      # The app writes daily indices with an ECS-ish shape; @timestamp is the
+      # time field for both the direct shipper and the collector exporter.
+      database: "[lura-logs-]YYYY.MM.DD"
+      interval: Daily
+      timeField: "@timestamp"
+      version: 2.11.0
+      flavor: opensearch

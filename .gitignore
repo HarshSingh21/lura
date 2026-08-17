@@ -1,0 +1,23 @@
+# Go
+/bin/
+*.test
+*.out
+
+# Node / Expo
+node_modules/
+client/dist/
+client/.expo/
+client/web-build/
+.expo-shared/
+npm-debug.log*
+yarn-error.log*
+
+# Editors
+.idea/
+.vscode/
+.DS_Store
+
+# Local configuration and secrets
+.env
+.env.local
+deploy/.env

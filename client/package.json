@@ -1,0 +1,44 @@
+{
+  "name": "lura-client",
+  "version": "0.1.0",
+  "main": "expo-router/entry",
+  "dependencies": {
+    "@expo-google-fonts/jetbrains-mono": "^0.4.1",
+    "@expo-google-fonts/space-grotesk": "^0.4.1",
+    "@expo/metro-runtime": "~57.0.11",
+    "@maplibre/maplibre-react-native": "^11.3.6",
+    "@tanstack/react-query": "^5.101.4",
+    "expo": "~57.0.14",
+    "expo-constants": "~57.0.12",
+    "expo-font": "~57.0.1",
+    "expo-linking": "~57.0.6",
+    "expo-location": "~57.0.11",
+    "expo-router": "~57.0.14",
+    "expo-status-bar": "~57.0.1",
+    "maplibre-gl": "^6.4.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-hook-form": "^7.85.0",
+    "react-native": "0.86.2",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0",
+    "react-native-svg": "15.15.4",
+    "react-native-web": "^0.21.2",
+    "zod": "^4.4.3",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "build:web": "expo export --platform web --output-dir dist",
+    "typecheck": "tsc --noEmit",
+    "lint": "expo lint"
+  },
+  "private": true
+}
