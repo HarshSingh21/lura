@@ -55,18 +55,44 @@ func (s *Server) handleRevokeShare(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"share": shareView{Share: sh, Link: s.deps.Shares.Link(sh)}})
 }
 
+// shareMapInfo is the only configuration a recipient is told about.
+//
+// Deliberately not `serverInfo`: that names the store, the version and the AI
+// engine, and an endpoint anyone with a link can call should not fingerprint the
+// deployment. A basemap URL is the one thing the viewer genuinely cannot work
+// without — without it the recipient gets markers floating on blank ground, which
+// is what "I can't see anything" looks like.
+type shareMapInfo struct {
+	StyleURL string `json:"styleUrl,omitempty"`
+	Airgap   bool   `json:"airgap"`
+}
+
+type shareViewResponse struct {
+	share.PublicView
+	Map shareMapInfo `json:"map"`
+}
+
 // handleShareView is the public, unauthenticated share snapshot. It returns only
-// what a recipient needs — a name, the shared devices' latest points, and how the
-// share ends — and nothing about notes, places or history.
+// what a recipient needs — a name, the shared devices' latest points, how the
+// share ends, and where to fetch a basemap — and nothing about notes, places or
+// history.
 func (s *Server) handleShareView(w http.ResponseWriter, r *http.Request) {
 	view, err := s.deps.Shares.View(r.Context(), chi.URLParam(r, "token"))
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
+
+	resp := shareViewResponse{PublicView: view, Map: shareMapInfo{Airgap: s.deps.Config.Airgap}}
+	// In airgap mode the style URL is withheld rather than merely ignored: a
+	// recipient's browser must not be handed a remote host to call on our behalf.
+	if !s.deps.Config.Airgap {
+		resp.Map.StyleURL = s.deps.Config.MapStyleURL
+	}
+
 	// Public and time-sensitive: never let a CDN or browser cache a live position.
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, view)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ---------------------------------------------------------------- channels

@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { useCreatePlace, useOverview, useRevokeShare } from '@/api/hooks';
 import type { Point } from '@/api/types';
 import { MapView } from '@/components/map/MapView';
+import { zoomToInclude, type Box } from '@/components/map/fit';
 import type { MapFence, MapMarker } from '@/components/map/types';
 import { Icon } from '@/components/ui/Icon';
 import { Button, Dot, IconButton, Sheet } from '@/components/ui/primitives';
@@ -17,7 +18,6 @@ import { useLayoutMode } from '@/theme/useLayout';
 import { useStore } from '@/state/store';
 import { useTracking } from '@/hooks/useTracking';
 
-import { zoomToInclude, type Box } from './fit';
 import { DeviceList, DeviceTracking, PeopleList, SharingBanner, UpcomingReminders } from './rail';
 
 /** Fallback view when a workspace has no places and no fixes yet (central Bengaluru). */
@@ -179,7 +179,15 @@ export function LiveScreen() {
     // Adjusting state during render rather than in an effect: React re-runs this
     // component before committing, so the map is never painted once at the wrong
     // zoom and then again at the right one.
-    const fitted = zoomToInclude(center, allMarkers.map((m) => m.point), box);
+    const fitted = zoomToInclude(
+      center,
+      allMarkers.map((m) => m.point),
+      box,
+      // What covers the map differs by shape: a phone has the action buttons on
+      // top and the pull-up handle along the bottom; a desktop has the zoom stack
+      // in the bottom-right corner and the rail outside the map entirely.
+      isPhone ? { top: 90, right: 40, bottom: 130, left: 40 } : { top: 80, right: 90, bottom: 60, left: 50 },
+    );
     // `undefined` means there is no viewport yet — leave the key unset so this
     // runs again when the map reports its size.
     if (fitted !== undefined) {

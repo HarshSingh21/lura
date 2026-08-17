@@ -321,13 +321,38 @@ the login screen, which is where the redirect points.
 **Framing.** A live map centred on you at a fixed zoom will happily put the person
 you are watching two screens away: the marker exists, the socket works, and the
 product still fails, because "where are they" was the question. So when the *set*
-of markers changes — a peer accepts, a second phone comes online — `features/live/fit.ts`
-computes the zoom at which everyone fits and the map widens to it. It only ever
-zooms out, and it keys on the marker set rather than on positions, so it cannot
-yank someone who has deliberately zoomed in, and ordinary movement does not
-re-frame the map under a person reading it. Every map renderer reports its pixel
-size back through `onViewportChange`, because this is a question about pixels that
-a zoom level alone cannot answer.
+of markers changes — a peer accepts, a second phone comes online —
+`components/map/fit.ts` computes the zoom at which everyone fits and the map
+widens to it. It only ever zooms out, and it keys on the marker set rather than on
+positions, so it cannot yank someone who has deliberately zoomed in, and ordinary
+movement does not re-frame the map under a person reading it. Every map renderer
+reports its pixel size back through `onViewportChange`, because this is a question
+about pixels that a zoom level alone cannot answer. The padding is per-side: the
+summary panel spans the bottom of a phone screen and sits in the top-left corner
+of a desktop one, and a marker hidden behind it is exactly as useless as one off
+the edge.
+
+**The share viewer** (`app/share/[token].tsx`) is the one screen whose reader has
+no other way to find anything out, and it got two things wrong that only showed up
+there:
+
+- The public snapshot carried no basemap URL, so MapLibre fell back to a plain
+  background and the recipient saw two labels floating on grey. `/s/{token}` now
+  returns a `map` block — the style URL and the airgap flag, deliberately *not*
+  the whole `serverInfo`, because an endpoint anyone with a link can call should
+  not name the store, the version and the AI engine. In airgap mode the URL is
+  withheld rather than merely ignored: a recipient's browser must not be handed a
+  remote host to call on the deployment's behalf.
+- MapLibre's worker URL was resolved against `document.baseURI`, which — with no
+  `<base>` element — is the *current* URL. On `/share/<token>` that looked for the
+  worker at `/share/maplibre-gl-worker.mjs`, 404, and the map ended up with a
+  style, sprites and no tiles at all. It now resolves from the origin root unless
+  the document declares a base, which is how a sub-path deployment announces one.
+
+It also counts down ("Ends in 1 h 25 min · 4:52" — the remaining time leads,
+because a wall-clock time is useless to someone who does not know what time it is
+on the sharer's clock) and reports each device's staleness, so a stale fix is
+visibly stale rather than silently old.
 
 **Tokens.** The session stores access/refresh/ID tokens per key (SecureStore on
 Android warns past 2 KB per entry) and renews a minute before expiry, because a

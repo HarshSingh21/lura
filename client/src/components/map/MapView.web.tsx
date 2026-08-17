@@ -52,14 +52,26 @@ import type { MapFence, MapTrack, MapViewProps } from './types';
 
 /**
  * pinWorkerUrl points MapLibre at the worker chunk that
- * scripts/copy-maplibre-worker.mjs puts in public/. It resolves against
- * document.baseURI rather than being root-absolute, so the app still works when
- * served under a sub-path.
+ * scripts/copy-maplibre-worker.mjs puts in public/.
+ *
+ * The subtlety is what to resolve it *against*. `document.baseURI` is the current
+ * URL when the page has no `<base>` element, so on a nested route like
+ * `/share/<token>` the worker would be looked for at
+ * `/share/maplibre-gl-worker.mjs`, 404, and the map would end up with a style,
+ * sprites and no tiles at all — a blank basemap with the markers still drawn on
+ * top of it, which reads as "I can't see anything". The app root is therefore the
+ * origin, unless the document declares a base (which is how a sub-path deployment
+ * announces its root, and what `experiments.baseUrl` emits).
  */
+function workerBase(): string {
+  if (document.querySelector('base[href]')) return document.baseURI;
+  return new URL('/', window.location.href).href;
+}
+
 function pinWorkerUrl() {
   if (typeof document === 'undefined') return;
   try {
-    setWorkerUrl(new URL('maplibre-gl-worker.mjs', document.baseURI).href);
+    setWorkerUrl(new URL('maplibre-gl-worker.mjs', workerBase()).href);
   } catch {
     // A MapLibre build without setWorkerUrl resolves the worker itself.
   }

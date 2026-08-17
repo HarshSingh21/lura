@@ -808,6 +808,25 @@ func TestShareLifecycle(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want no-store for a live position", cc)
 	}
 
+	// The recipient needs a basemap and nothing else about the deployment. Without
+	// the style URL they get markers on blank ground, which is indistinguishable
+	// from a broken link; with the rest of the server block, an endpoint anyone
+	// with a link can call would fingerprint the install.
+	var envelope struct {
+		Map map[string]any `json:"map"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("public view envelope: %v", err)
+	}
+	if envelope.Map["styleUrl"] == "" || envelope.Map["styleUrl"] == nil {
+		t.Errorf("public view carries no map style URL: %v", envelope.Map)
+	}
+	for _, leaked := range []string{"version", "store", "aiEngine", "publicBaseUrl"} {
+		if _, present := envelope.Map[leaked]; present {
+			t.Errorf("the public share view exposes %q", leaked)
+		}
+	}
+
 	// A share viewer's socket receives positions…
 	conn := s.dialWS(t, "/s/"+token+"/ws")
 	nextFrame(t, conn, hub.FrameHello, 3*time.Second)

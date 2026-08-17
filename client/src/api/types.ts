@@ -236,6 +236,13 @@ export type PublicShareView = {
     lastSeen?: string;
   }[];
   serverTime: string;
+  /**
+   * The only configuration a recipient is told about. Deliberately not the whole
+   * server block — an endpoint anyone with a link can call should not fingerprint
+   * the deployment — but the basemap URL has to be here, because without it the
+   * viewer is markers on blank ground.
+   */
+  map?: { styleUrl?: string; airgap: boolean };
 };
 
 /** The WebSocket envelope from internal/hub. */
