@@ -20,7 +20,10 @@ name: lura
 services:
   # ---------------------------------------------------------------- data
   postgres:
-    image: postgis/postgis:17-3.5-alpine
+    # The official postgis/postgis images publish amd64 only, so the default here
+    # is the multi-arch build — otherwise this stack cannot come up on Apple
+    # Silicon or an arm64 server. Override POSTGIS_IMAGE to use another.
+    image: ${POSTGIS_IMAGE:-ghcr.io/baosystems/postgis:17-3.5}
     container_name: lura-postgres
     environment:
       POSTGRES_USER: lura
