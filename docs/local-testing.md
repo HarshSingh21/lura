@@ -263,6 +263,7 @@ Tear down with `docker compose --profile obs down` (add `-v` to drop the data).
 | Phone cannot reach the server | `localhost` on a phone is the phone — use the LAN IP (§4) |
 | `docker compose up` cannot pull PostGIS | the official image is amd64-only; the compose default is the multi-arch build, override with `POSTGIS_IMAGE` |
 | Map is a drawn grid, not streets | airgap mode, no WebGL2, or Expo Go — all three fall back deliberately |
+| Map is *blank* (not even the drawn grid), fences still visible | MapLibre's tile-parsing worker did not load. `curl -I localhost:8080/maplibre-gl-worker.mjs` should return `text/javascript`; if not, run `npm run build:web` (it copies the chunk). Hard-reload the browser — a cached bad response survives the fix. |
 | Data vanished after restart | the default store is in-memory; use `LURA_STORE=postgres` |
 | `listen tcp :8080: bind: address already in use` | an earlier `go run ./cmd/lura` or the compose container is still holding the port: `lsof -ti:8080 \| xargs kill` |
 

@@ -6,6 +6,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import {
+  setWorkerUrl,
   Map as MapLibreMap,
   type GeoJSONSource,
   type GeoJSONSourceSpecification,
@@ -35,12 +36,36 @@ import type { MapFence, MapTrack, MapViewProps } from './types';
  *     is still useful with fences and positions on a plain ground.
  *   - Airgap mode never constructs a GL map at all, because the style URL is a
  *     network call and the promise is that there are none.
+ *   - The worker URL is pinned. MapLibre parses vector tiles in a Web Worker
+ *     loaded as a sibling ES module of whatever bundle contains MapLibre. Metro
+ *     inlines MapLibre into the app bundle and never emits that chunk, so the
+ *     request 404s and the map ends up with a style, sprites and no tiles at all
+ *     — a blank basemap with everything drawn on top of it still working. Pinning
+ *     the URL to a file served from public/ makes it independent of how the
+ *     bundler names its output.
  *   - No WebGL2, no GL map. MapLibre requires WebGL2 and reports its absence
  *     *asynchronously*, after the constructor returns — so it is probed up front
  *     and the failure path is also handled on the error event. Machines with a
  *     blocked or missing GPU (locked-down laptops, VMs, headless CI) then get the
  *     canvas renderer instead of a blank page.
  */
+
+/**
+ * pinWorkerUrl points MapLibre at the worker chunk that
+ * scripts/copy-maplibre-worker.mjs puts in public/. It resolves against
+ * document.baseURI rather than being root-absolute, so the app still works when
+ * served under a sub-path.
+ */
+function pinWorkerUrl() {
+  if (typeof document === 'undefined') return;
+  try {
+    setWorkerUrl(new URL('maplibre-gl-worker.mjs', document.baseURI).href);
+  } catch {
+    // A MapLibre build without setWorkerUrl resolves the worker itself.
+  }
+}
+
+pinWorkerUrl();
 
 /** hasWebGL2 probes for the context MapLibre needs before one is created. */
 function hasWebGL2(): boolean {

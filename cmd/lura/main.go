@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -356,6 +357,9 @@ func startRetention(ctx context.Context, hist *history.Service, log *slog.Logger
 // Unknown paths fall back to index.html because Expo Router uses client-side
 // routing: /places must return the app shell, not a 404.
 func withStatic(api http.Handler, dir string, log *slog.Logger) http.Handler {
+	if log == nil {
+		log = slog.Default()
+	}
 	root, err := filepath.Abs(dir)
 	if err != nil {
 		log.Warn("web dir unusable, serving API only", "dir", dir, "error", err)
@@ -380,6 +384,16 @@ func withStatic(api http.Handler, dir string, log *slog.Logger) http.Handler {
 			files.ServeHTTP(w, r)
 			return
 		}
+
+		// A missing *asset* is a 404, not the app shell. Serving index.html for a
+		// missing .mjs chunk is how a bundling mistake turns into an opaque
+		// "non-JavaScript MIME type" error in the console instead of an obvious
+		// 404 — which is exactly how MapLibre's worker chunk went missing once.
+		if ext := path.Ext(r.URL.Path); ext != "" && ext != ".html" {
+			http.NotFound(w, r)
+			return
+		}
+
 		http.ServeFile(w, r, filepath.Join(root, "index.html"))
 	})
 }
