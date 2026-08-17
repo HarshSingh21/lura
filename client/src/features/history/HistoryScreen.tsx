@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Linking, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
-import { downloadUrl } from '@/api/client';
+import { downloadUrlFresh } from '@/api/client';
 import { useHistory, useOverview } from '@/api/hooks';
 import type { Segment } from '@/api/types';
 import { MapView } from '@/components/map/MapView';
@@ -76,12 +76,12 @@ export function HistoryScreen() {
       <View style={styles.timelineHeader}>
         <Txt variant="h2">History</Txt>
         <View style={styles.exportRow}>
-          <Button label="GPX" variant="ghost" small onPress={() => exportHistory('gpx', activeDevice, range)} />
+          <Button label="GPX" variant="ghost" small onPress={() => void exportHistory('gpx', activeDevice, range)} />
           <Button
             label="GeoJSON"
             variant="ghost"
             small
-            onPress={() => exportHistory('geojson', activeDevice, range)}
+            onPress={() => void exportHistory('geojson', activeDevice, range)}
           />
         </View>
       </View>
@@ -246,12 +246,13 @@ function TimelineRow({ segment, last }: { segment: Segment; last: boolean }) {
  *
  * The URL carries the token as a query parameter because a browser download cannot
  * send an Authorization header. That is a deliberate, narrow exception the server
- * allows on read-only endpoints.
+ * allows on read-only endpoints — and the reason the token is refreshed first: a
+ * download that opens in a new tab has no way to retry a 401.
  */
-function exportHistory(format: 'gpx' | 'geojson', deviceId: string | undefined, from: string) {
+async function exportHistory(format: 'gpx' | 'geojson', deviceId: string | undefined, from: string) {
   const params = new URLSearchParams({ format, from });
   if (deviceId) params.set('deviceId', deviceId);
-  const url = downloadUrl(`/api/v1/history/export?${params.toString()}`);
+  const url = await downloadUrlFresh(`/api/v1/history/export?${params.toString()}`);
 
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
     window.open(url, '_blank');

@@ -27,6 +27,7 @@ import (
 	"github.com/HarshSingh21/locnot/internal/auth"
 	"github.com/HarshSingh21/locnot/internal/bus"
 	"github.com/HarshSingh21/locnot/internal/config"
+	"github.com/HarshSingh21/locnot/internal/connect"
 	"github.com/HarshSingh21/locnot/internal/gate"
 	"github.com/HarshSingh21/locnot/internal/geofence"
 	"github.com/HarshSingh21/locnot/internal/history"
@@ -218,6 +219,9 @@ func run() error {
 	}
 	defer shares.Stop()
 
+	// ---- people: mutual, two-way live sharing between accounts
+	people := connect.New(st, b, log)
+
 	// ---- history + retention
 	hist := history.New(st, log, history.Config{})
 	stopRetention := startRetention(ctx, hist, log, seeded.User.ID, cfg.RetentionDays)
@@ -230,6 +234,12 @@ func run() error {
 		log.Info("AI Brain sidecar configured", "url", cfg.AISidecarURL)
 	}
 
+	// ---- identity
+	controlPlaneAuth, err := buildAuthenticator(ctx, cfg, log)
+	if err != nil {
+		return fmt.Errorf("identity: %w", err)
+	}
+
 	// ---- HTTP
 	api := httpapi.New(httpapi.Deps{
 		Config:   cfg,
@@ -240,9 +250,10 @@ func run() error {
 		Geofence: engine,
 		Notify:   notifier,
 		Shares:   shares,
+		Connect:  people,
 		History:  hist,
 		AI:       suggester,
-		Auth:     auth.NewStaticToken(cfg.APIToken, seed.DemoUserID),
+		Auth:     controlPlaneAuth,
 		Devices:  &auth.DeviceAuth{Devices: st, APIToken: cfg.APIToken, UserID: seed.DemoUserID},
 		Obs:      provider,
 		Log:      log,
@@ -293,6 +304,41 @@ func run() error {
 	}
 	log.Info("stopped cleanly")
 	return nil
+}
+
+// buildAuthenticator chooses how the control plane authenticates.
+//
+// Without an OIDC issuer this is Phase 1's single static token, which is fine for
+// a laptop and indefensible on a network. With one, every request carries a real
+// per-user JWT from Keycloak, and the static token is refused unless the operator
+// deliberately re-enables it — a shared password that still works is a shared
+// password that will still be there in a year.
+//
+// Device ingest is unaffected either way: a tracker authenticates with its own
+// per-device credential, because it cannot perform an interactive login.
+func buildAuthenticator(ctx context.Context, cfg config.Config, log *slog.Logger) (auth.Authenticator, error) {
+	if cfg.OIDCIssuer == "" {
+		log.Warn("no OIDC issuer configured: the control plane accepts a single static token",
+			"hint", "set LURA_OIDC_ISSUER to require real sign-in")
+		return auth.NewStaticToken(cfg.APIToken, seed.DemoUserID), nil
+	}
+
+	verifier, err := auth.NewOIDC(ctx, auth.OIDCConfig{
+		Issuer:   cfg.OIDCIssuer,
+		Audience: cfg.OIDCAudience,
+	})
+	if err != nil {
+		return nil, err
+	}
+	log.Info("control plane requires OIDC sign-in",
+		"issuer", cfg.OIDCIssuer, "audience", cfg.OIDCAudience)
+
+	if cfg.DevTokenWithOIDC && cfg.APIToken != "" {
+		log.Warn("the static development token is ALSO accepted alongside OIDC",
+			"hint", "unset LURA_DEV_TOKEN_WITH_OIDC before exposing this server")
+		return auth.NewChain(verifier, auth.NewStaticToken(cfg.APIToken, seed.DemoUserID)), nil
+	}
+	return verifier, nil
 }
 
 // openStore builds the configured store, running migrations for postgres.

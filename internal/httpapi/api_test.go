@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/HarshSingh21/locnot/internal/auth"
 	"github.com/HarshSingh21/locnot/internal/bus"
 	"github.com/HarshSingh21/locnot/internal/config"
+	"github.com/HarshSingh21/locnot/internal/connect"
 	"github.com/HarshSingh21/locnot/internal/domain"
 	"github.com/HarshSingh21/locnot/internal/gate"
 	"github.com/HarshSingh21/locnot/internal/geofence"
@@ -42,9 +44,56 @@ type stack struct {
 	engine *geofence.Engine
 	seeded seed.Result
 	token  string
+	auth   *multiTokenAuth
 }
 
 const apiToken = "test-token"
+
+// testPeer is a second account with its own token and device, so a test can act
+// as two different people against one server — which is the only honest way to
+// test mutual sharing.
+type testPeer struct {
+	userID string
+	// token is the peer's control-plane credential (their session).
+	token string
+	// deviceToken is what their *device* publishes with — a phone has its own
+	// credential, separate from the person's session.
+	deviceToken string
+	deviceID    string
+	email       string
+	name        string
+}
+
+// multiTokenAuth maps bearer tokens to users. Phase 1 ships a single static
+// token; the tests need several, and the Authenticator seam is exactly where
+// that swap belongs.
+type multiTokenAuth struct {
+	mu    sync.RWMutex
+	users map[string]string // token -> user id
+}
+
+func (m *multiTokenAuth) add(token, userID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.users == nil {
+		m.users = map[string]string{}
+	}
+	m.users[token] = userID
+}
+
+func (m *multiTokenAuth) Authenticate(r *http.Request) (auth.Principal, error) {
+	token := auth.BearerToken(r)
+	if token == "" {
+		return auth.Principal{}, fmt.Errorf("missing bearer token: %w", domain.ErrUnauthorized)
+	}
+	m.mu.RLock()
+	userID, ok := m.users[token]
+	m.mu.RUnlock()
+	if !ok {
+		return auth.Principal{}, fmt.Errorf("invalid token: %w", domain.ErrUnauthorized)
+	}
+	return auth.Principal{Kind: auth.KindUser, UserID: userID}, nil
+}
 
 func newStack(t *testing.T) *stack {
 	t.Helper()
@@ -113,6 +162,9 @@ func newStack(t *testing.T) *stack {
 		t.Fatalf("shares: %v", err)
 	}
 
+	tokens := &multiTokenAuth{}
+	tokens.add(apiToken, seed.DemoUserID)
+
 	api := httpapi.New(httpapi.Deps{
 		Config:   cfg,
 		Store:    st,
@@ -124,7 +176,8 @@ func newStack(t *testing.T) *stack {
 		Shares:   shares,
 		History:  history.New(st, nil, history.Config{}),
 		AI:       ai.NewRules(),
-		Auth:     auth.NewStaticToken(apiToken, seed.DemoUserID),
+		Auth:     tokens,
+		Connect:  connect.New(st, b, nil),
 		Devices:  &auth.DeviceAuth{Devices: st, APIToken: apiToken, UserID: seed.DemoUserID},
 		Version:  "test",
 		Started:  time.Now(),
@@ -144,7 +197,7 @@ func newStack(t *testing.T) *stack {
 		_ = b.Close()
 	})
 
-	return &stack{t: t, server: srv, store: st, bus: b, engine: engine, seeded: seeded, token: apiToken}
+	return &stack{t: t, server: srv, store: st, bus: b, engine: engine, seeded: seeded, token: apiToken, auth: tokens}
 }
 
 // ---------------------------------------------------------------- HTTP helpers
@@ -199,6 +252,47 @@ func (s *stack) json(method, path string, body any, wantStatus int) map[string]a
 	return out
 }
 
+// jsonAs performs a request as a specific account.
+func (s *stack) jsonAs(token, method, path string, body any, wantStatus int) map[string]any {
+	s.t.Helper()
+	previous := s.token
+	s.token = token
+	defer func() { s.token = previous }()
+	return s.json(method, path, body, wantStatus)
+}
+
+// addPeer creates a second account with a device and a token of its own.
+func (s *stack) addPeer(t *testing.T, userID, email, name string) testPeer {
+	t.Helper()
+	ctx := context.Background()
+	if err := s.store.UpsertUser(ctx, domain.User{
+		ID: userID, Email: email, DisplayName: name, TZ: "UTC", Locale: "en",
+	}); err != nil {
+		t.Fatalf("create peer user: %v", err)
+	}
+	deviceID := userID + "_phone"
+	if err := s.store.UpsertDevice(ctx, domain.Device{
+		ID: deviceID, UserID: userID, Name: name + "'s Phone", Kind: "phone", Token: userID + "-device",
+	}); err != nil {
+		t.Fatalf("create peer device: %v", err)
+	}
+	token := userID + "-token"
+	s.auth.add(token, userID)
+	return testPeer{
+		userID: userID, token: token,
+		deviceToken: userID + "-device", deviceID: deviceID,
+		email: email, name: name,
+	}
+}
+
+// connectPeers drives a full mutual connection over the API: the demo user
+// invites the peer, and the peer accepts as themselves.
+func (s *stack) connectPeers(t *testing.T, peer testPeer) {
+	t.Helper()
+	s.json(http.MethodPost, "/api/v1/people/invite", map[string]any{"email": peer.email}, http.StatusCreated)
+	s.jsonAs(peer.token, http.MethodPost, "/api/v1/people/"+seed.DemoUserID+"/accept", nil, http.StatusOK)
+}
+
 func (s *stack) status(method, path string, body any) int {
 	s.t.Helper()
 	resp := s.do(method, path, body, true)
@@ -237,6 +331,28 @@ func TestControlPlaneRequiresAToken(t *testing.T) {
 }
 
 // ---------------------------------------------------------------- overview
+
+// TestOverviewOfAnEmptyWorkspaceIsAllArrays guards the very first request a new
+// account makes. Go marshals a nil slice as `null`, and a client that reads
+// `data.shares.length` crashes on it — which is exactly what happened: the People
+// screen was a white page for anyone who had not created anything yet.
+func TestOverviewOfAnEmptyWorkspaceIsAllArrays(t *testing.T) {
+	s := newStack(t)
+	newcomer := s.addPeer(t, "usr_newcomer", "newcomer@lura.local", "Newcomer")
+
+	body := s.jsonAs(newcomer.token, http.MethodGet, "/api/v1/overview", nil, http.StatusOK)
+
+	for _, key := range []string{"people", "devices", "places", "notes", "shares", "events", "pendingDwells"} {
+		value, ok := body[key]
+		if !ok {
+			t.Errorf("overview is missing %q", key)
+			continue
+		}
+		if _, isArray := value.([]any); !isArray {
+			t.Errorf("overview[%q] = %v (%T), want a JSON array", key, value, value)
+		}
+	}
+}
 
 func TestOverviewReturnsTheWholeWorkspace(t *testing.T) {
 	s := newStack(t)

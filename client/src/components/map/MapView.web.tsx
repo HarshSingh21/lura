@@ -145,8 +145,13 @@ export function MapView(props: MapViewProps) {
     const syncView = () => {
       const c = map.getCenter();
       const canvas = map.getCanvas();
-      const next = { center: { lat: c.lat, lon: c.lng }, zoom: map.getZoom() };
-      setView({ ...next, width: canvas.clientWidth, height: canvas.clientHeight });
+      const next = {
+        center: { lat: c.lat, lon: c.lng },
+        zoom: map.getZoom(),
+        width: canvas.clientWidth,
+        height: canvas.clientHeight,
+      };
+      setView(next);
       viewportListener.current?.(next);
     };
 

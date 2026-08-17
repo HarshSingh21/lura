@@ -203,13 +203,24 @@ func (s *Service) Create(ctx context.Context, userID string, req CreateRequest) 
 	return created, s.Link(created), nil
 }
 
-// Link renders the public URL for a share.
+// Link renders the URL a person is meant to open.
+//
+// This is the *web viewer* route, not the JSON endpoint. `/s/<token>` returns the
+// raw snapshot for a client to consume; a human who pastes that into a browser
+// gets a wall of JSON. The link that gets copied, texted and clicked must be the
+// page: /share/<token>.
 func (s *Service) Link(sh domain.Share) string {
 	if s.baseURL == "" {
-		return "/s/" + sh.Token
+		return ViewerPath(sh.Token)
 	}
-	return s.baseURL + "/s/" + sh.Token
+	return s.baseURL + ViewerPath(sh.Token)
 }
+
+// ViewerPath is the client-side route that renders a share for a human.
+func ViewerPath(token string) string { return "/share/" + token }
+
+// APIPath is the JSON endpoint the viewer reads from.
+func APIPath(token string) string { return "/s/" + token }
 
 // Revoke turns a share off immediately.
 func (s *Service) Revoke(ctx context.Context, userID, id, reason string) (domain.Share, error) {

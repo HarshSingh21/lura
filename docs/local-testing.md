@@ -150,11 +150,44 @@ cd client && npm start       # terminal 2 — press w for web, on :8081
 The client defaults to `http://localhost:8080` for its API; **Settings →
 Connection** changes it at runtime.
 
+Without `LURA_OIDC_ISSUER` set, the app uses the static development token and
+opens straight on the map. To exercise the real front door — sign-in, the
+introduction, and People — bring up Keycloak first (§3a).
+
+### 3a. Signing in for real, and two people sharing
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d keycloak      # realm imported on boot, :8085
+LURA_OIDC_ISSUER=http://localhost:8085/realms/lura \
+LURA_OIDC_AUDIENCE=lura-api \
+LURA_WEB_DIR=./client/dist go run ./cmd/lura
+```
+
+The realm ships two accounts: `aravind@lura.local` / `lura-dev-1` and
+`nistha@lura.local` / `lura-dev-2`.
+
+Open <http://localhost:8080> and it redirects to the sign-in screen; **Continue
+with email** hands off to Keycloak's own page, and coming back runs the
+introduction once. The account is created on the first authenticated request, so
+there is nothing to register.
+
+To see both sides at once, open the second account in a **separate browser
+profile** — not a private window: the two share a Keycloak SSO cookie and you
+would end up signed in as the same person twice.
+
+1. As Aravind: **People → Their email →** `nistha@lura.local` → **Send invite**.
+2. As Nistha: **People →** the invitation is at the top → **Accept**.
+3. Publish a fix for each (§2, or the simulator) and both live maps show the other
+   person as an amber marker, with "1 person can see you" in the rail.
+4. Turn off Nistha's **You → Aravind** switch: Aravind's marker for her stops
+   updating on the open socket, without either of them reloading.
+
 ### What to try in the UI
 
 | Where | What |
 |---|---|
 | Live map | **Draw a place** → tap the map → fill the form. The new fence arms immediately. |
+| People | Invite, accept, pause one direction, then **Remove for both**. The two counters at the top never merge into one number, because the two directions are genuinely independent. |
 | Notes | Type "return the library books on the way" and watch the suggestion row resolve to City Library / errands / pass-by. |
 | Sharing | Generate a link, open it in a private window, then **Revoke** — the viewer's map stops updating on the next fix and says the share ended. |
 | History | Range chips, then **GPX** / **GeoJSON** to download the day. |

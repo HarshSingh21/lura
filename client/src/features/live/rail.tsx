@@ -1,17 +1,20 @@
-import { StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 
 import type { Device, Note, Place, Position, Share } from '@/api/types';
 import { Button, Card, Dot, EmptyState, TriggerBadge, styles as ui } from '@/components/ui/primitives';
+import { joinNames, latestFix, watchers } from '@/features/people/peer';
+import type { Peer } from '@/features/people/types';
 import { Mono, SectionLabel, Txt } from '@/theme/text';
 import { color, font, palette, radius, size, space } from '@/theme/tokens';
 
 /**
- * The live rail: what is sharing, what is moving, what is about to fire.
+ * The live rail: what is sharing, who can see me, what is moving, what is about
+ * to fire.
  *
- * These three blocks answer the three questions the live map cannot: who can see
- * me, where are my devices, and what will happen next. The sharing block is first
- * and loudest on purpose — HLD §11 requires an always-on indicator, not a status
- * buried below a device list.
+ * These blocks answer the questions the live map cannot: who can see me, where
+ * are my devices, and what will happen next. The two sharing blocks — links and
+ * people — are first and loudest on purpose: HLD §11 requires an always-on
+ * indicator, not a status buried below a device list.
  */
 
 export function SharingBanner({
@@ -70,6 +73,128 @@ export function SharingBanner({
       />
     </View>
   );
+}
+
+/**
+ * PeopleList is the rail's account-to-account sharing block.
+ *
+ * It leads with the indicator rather than the list, because the two questions are
+ * not equally urgent: whom I can see is useful, and who can see *me* is the one
+ * HLD §11 says must never be discoverable only by going looking. Every row then
+ * carries both directions — an inbound line and a small outbound tag — so a peer
+ * who has paused their side can never look like a peer I have paused mine for.
+ */
+export function PeopleList({
+  people,
+  positions,
+  onManage,
+}: {
+  people: Peer[];
+  positions: Record<string, Position>;
+  onManage?: () => void;
+}) {
+  const seenBy = watchers(people);
+  const accepted = people.filter((p) => p.status === 'accepted');
+  const incoming = people.filter((p) => p.status === 'pending_in');
+  const watched = seenBy.length > 0;
+
+  return (
+    <View>
+      <SectionLabel>PEOPLE</SectionLabel>
+
+      <View style={[styles.watchers, watched ? styles.watchersOn : styles.watchersOff]}>
+        <View style={styles.watchersHead}>
+          <Dot size={8} color={watched ? palette.amberDot : color.neutralDot} blink={watched} />
+          <Txt variant="bodySemi" color={watched ? palette.amberInk : color.textMuted}>
+            {watched
+              ? `${seenBy.length} ${seenBy.length === 1 ? 'person' : 'people'} can see you`
+              : 'No one can see you'}
+          </Txt>
+        </View>
+        <Txt
+          variant="micro"
+          color={watched ? palette.amberInk : color.textFaint}
+          style={styles.watchersNames}
+        >
+          {watched ? joinNames(seenBy) : 'No connected person is receiving your position.'}
+        </Txt>
+      </View>
+
+      {incoming.length > 0 ? (
+        <Pressable
+          accessibilityRole={onManage ? 'button' : 'text'}
+          accessibilityLabel={`${incoming.length} invitation${incoming.length === 1 ? '' : 's'} waiting for your answer`}
+          onPress={onManage}
+          style={({ pressed }) => [styles.invitePill, pressed && onManage ? ui.pressed : null]}
+        >
+          <Dot size={7} color={palette.accent} pulse />
+          <Txt variant="micro" color={palette.accentInk}>
+            {incoming.length} invitation{incoming.length === 1 ? '' : 's'} waiting for you
+          </Txt>
+        </Pressable>
+      ) : null}
+
+      <View style={styles.list}>
+        {accepted.length === 0 ? (
+          <EmptyState
+            title="No one is connected"
+            body="Invite someone in People and you will see each other live."
+          />
+        ) : (
+          accepted.map((peer) => {
+            const fix = peer.sharingWithMe ? latestFix(peer, positions) : undefined;
+            return (
+              <Card key={peer.id} padded={false} style={styles.deviceCard}>
+                <View style={styles.deviceRow}>
+                  <View style={[styles.deviceIcon, peer.sharingWithMe ? styles.deviceIconLive : null]}>
+                    <Dot size={9} color={peer.sharingWithMe ? palette.accent : color.neutralDot} />
+                  </View>
+
+                  <View style={ui.flex}>
+                    <Txt variant="bodySemi" numberOfLines={1}>
+                      {peer.peerName || peer.peerEmail}
+                    </Txt>
+                    <Txt variant="micro" color={color.textSubtle} numberOfLines={1}>
+                      {describePeer(peer, fix?.moving ?? false, fix?.speedMps ?? 0, fix?.lastSeen)}
+                    </Txt>
+                  </View>
+
+                  <View style={[styles.peerTag, peer.watchingMe ? styles.peerTagOn : null]}>
+                    <Mono
+                      size={size.monoTiny}
+                      medium
+                      color={peer.watchingMe ? palette.amberInk : color.textFaint}
+                    >
+                      {peer.watchingMe ? 'SEES YOU' : 'PAUSED'}
+                    </Mono>
+                  </View>
+                </View>
+              </Card>
+            );
+          })
+        )}
+      </View>
+
+      {onManage ? (
+        <Button
+          label="Manage people"
+          variant="secondary"
+          small
+          full
+          onPress={onManage}
+          style={styles.manageButton}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+/** describePeer writes the inbound half of a peer row: what *they* let me see. */
+function describePeer(peer: Peer, moving: boolean, speed: number, lastSeen?: string): string {
+  if (!peer.sharingWithMe) return 'Not sharing with you';
+  if (moving) return `Moving · ${Math.round(speed * 3.6)} km/h`;
+  if (lastSeen) return `Sharing · seen ${formatRelative(lastSeen)}`;
+  return 'Sharing · no fix yet';
 }
 
 export function DeviceList({
@@ -250,6 +375,38 @@ const styles = StyleSheet.create({
   sharingDetail: { lineHeight: 18 },
   sharingMore: { marginTop: 6 },
   stopButton: { marginTop: 11, borderColor: color.amberBorderStrong },
+
+  watchers: {
+    borderWidth: 1,
+    borderRadius: radius.card,
+    paddingVertical: 11,
+    paddingHorizontal: 13,
+    marginBottom: space.md,
+  },
+  watchersOn: { backgroundColor: color.amberSoft, borderColor: color.amberBorder },
+  watchersOff: { backgroundColor: color.surfaceMuted, borderColor: color.hairlineSoft },
+  watchersHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  watchersNames: { marginTop: 4, lineHeight: 15 },
+
+  invitePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    alignSelf: 'flex-start',
+    backgroundColor: color.accentSoft,
+    borderRadius: radius.md,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    marginBottom: space.md,
+  },
+  peerTag: {
+    borderRadius: radius.sm,
+    backgroundColor: color.neutralChip,
+    paddingVertical: 3,
+    paddingHorizontal: 6,
+  },
+  peerTagOn: { backgroundColor: color.amberTagBg },
+  manageButton: { marginTop: space.md },
 
   deviceCard: { padding: 11 },
   deviceRow: { flexDirection: 'row', alignItems: 'center', gap: 11 },

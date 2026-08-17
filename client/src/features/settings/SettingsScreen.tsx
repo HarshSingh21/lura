@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
+import { router } from 'expo-router';
 
 import {
   useChannels,
@@ -13,6 +14,8 @@ import {
   useUpdateMe,
 } from '@/api/hooks';
 import { Button, Card, Chip, Field, Toggle, styles as ui } from '@/components/ui/primitives';
+import { useSession } from '@/features/auth';
+import { resetOnboarding } from '@/features/onboarding';
 import { Mono, SectionLabel, Txt } from '@/theme/text';
 import { color, palette, radius, size, space } from '@/theme/tokens';
 import { useStore } from '@/state/store';
@@ -35,6 +38,10 @@ export function SettingsScreen() {
   const createDevice = useCreateDevice();
   const rotateToken = useRotateDeviceToken();
   const deleteDevice = useDeleteDevice();
+
+  const profile = useSession((s) => s.profile);
+  const signedIn = useSession((s) => s.status === 'signed-in');
+  const signOut = useSession((s) => s.signOut);
 
   const connection = useStore((s) => s.connection);
   const setConnection = useStore((s) => s.setConnection);
@@ -70,6 +77,45 @@ export function SettingsScreen() {
         <Txt variant="body" color={color.textMuted}>
           This is your deployment. Everything below is stored on the server you point this app at.
         </Txt>
+      </View>
+
+      {/* ---------------------------------------------------------------- account */}
+      <View>
+        <SectionLabel>ACCOUNT</SectionLabel>
+        <Card style={styles.card}>
+          <View style={styles.rowBetween}>
+            <View style={ui.flex}>
+              <Txt variant="bodySemi">{profile?.name ?? data?.user.displayName ?? 'Signed in'}</Txt>
+              <Txt variant="small" color={color.textMuted}>
+                {profile?.email ?? data?.user.email ?? 'Identity provided by your Keycloak realm.'}
+              </Txt>
+            </View>
+            {signedIn ? <Chip label="Signed in" tone="accent" /> : null}
+          </View>
+
+          <View style={styles.row}>
+            <Button
+              label="Replay the introduction"
+              variant="secondary"
+              small
+              onPress={() => {
+                void resetOnboarding();
+                router.push('/onboarding');
+              }}
+            />
+            <Button
+              label="Sign out"
+              variant="danger"
+              small
+              onPress={() => {
+                // The gate in the root layout notices the status change and sends
+                // this session to the login screen; nothing to navigate to here.
+                signOut();
+                pushToast({ kind: 'info', title: 'Signed out' });
+              }}
+            />
+          </View>
+        </Card>
       </View>
 
       {/* ---------------------------------------------------------------- privacy */}

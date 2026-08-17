@@ -360,9 +360,12 @@ func (w *Worker) render(ev domain.GeoEvent, notes []domain.Note, user domain.Use
 		priority = 4
 	}
 
+	// Deep-link to the live map rather than a per-place route the client does
+	// not have: a push notification that opens a 404 is worse than one that
+	// opens the map.
 	click := ""
 	if w.cfg.BaseURL != "" {
-		click = w.cfg.BaseURL + "/places/" + ev.PlaceID
+		click = w.cfg.BaseURL + "/"
 	}
 
 	return Message{

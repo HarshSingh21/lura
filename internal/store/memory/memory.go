@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,7 @@ type Store struct {
 	shares    map[string]domain.Share
 	shrToken  map[string]string // token -> share id
 	channels  map[string]domain.Channel
+	conns     map[string]domain.Connection // keyed by userID|peerID
 	events    []domain.TriggerEvent
 	dwells    map[string]domain.PendingDwell
 
@@ -60,6 +62,7 @@ func New() *Store {
 		shares:                map[string]domain.Share{},
 		shrToken:              map[string]string{},
 		channels:              map[string]domain.Channel{},
+		conns:                 map[string]domain.Connection{},
 		dwells:                map[string]domain.PendingDwell{},
 		maxPositionsPerDevice: 200_000,
 	}
@@ -79,6 +82,18 @@ func (s *Store) GetUser(_ context.Context, id string) (domain.User, error) {
 		return domain.User{}, fmt.Errorf("user %s: %w", id, domain.ErrNotFound)
 	}
 	return u, nil
+}
+
+func (s *Store) FindUserByEmail(_ context.Context, email string) (domain.User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	want := strings.ToLower(strings.TrimSpace(email))
+	for _, u := range s.users {
+		if strings.ToLower(u.Email) == want {
+			return u, nil
+		}
+	}
+	return domain.User{}, fmt.Errorf("user %s: %w", email, domain.ErrNotFound)
 }
 
 func (s *Store) UpsertUser(_ context.Context, u domain.User) error {
@@ -653,6 +668,79 @@ func (s *Store) SharesForArrivePlace(_ context.Context, userID, placeID string) 
 		}
 	}
 	return out, nil
+}
+
+// ---------------------------------------------------------------- connections
+
+func connKey(userID, peerID string) string { return userID + "|" + peerID }
+
+func (s *Store) ListConnections(_ context.Context, userID string) ([]domain.Connection, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []domain.Connection{}
+	for _, c := range s.conns {
+		if c.UserID == userID {
+			out = append(out, c)
+		}
+	}
+	// Pending invitations first — they are the rows that need a decision.
+	sort.Slice(out, func(i, j int) bool {
+		if (out[i].Status == domain.ConnectionAccepted) != (out[j].Status == domain.ConnectionAccepted) {
+			return out[j].Status == domain.ConnectionAccepted
+		}
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].PeerID < out[j].PeerID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+func (s *Store) GetConnection(_ context.Context, userID, peerID string) (domain.Connection, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c, ok := s.conns[connKey(userID, peerID)]
+	if !ok {
+		return domain.Connection{}, fmt.Errorf("connection %s→%s: %w", userID, peerID, domain.ErrNotFound)
+	}
+	return c, nil
+}
+
+func (s *Store) UpsertConnection(_ context.Context, c domain.Connection) (domain.Connection, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c.UserID == "" || c.PeerID == "" {
+		return domain.Connection{}, fmt.Errorf("connection needs both sides: %w", domain.ErrInvalid)
+	}
+	if c.UserID == c.PeerID {
+		return domain.Connection{}, fmt.Errorf("cannot connect a user to themselves: %w", domain.ErrInvalid)
+	}
+	key := connKey(c.UserID, c.PeerID)
+	now := time.Now().UTC()
+	if prev, ok := s.conns[key]; ok {
+		c.ID, c.CreatedAt = prev.ID, prev.CreatedAt
+	} else {
+		if c.ID == "" {
+			c.ID = idgen.New("con")
+		}
+		if c.CreatedAt.IsZero() {
+			c.CreatedAt = now
+		}
+	}
+	c.UpdatedAt = now
+	s.conns[key] = c
+	return c, nil
+}
+
+func (s *Store) DeleteConnection(_ context.Context, userID, peerID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := connKey(userID, peerID)
+	if _, ok := s.conns[key]; !ok {
+		return fmt.Errorf("connection %s→%s: %w", userID, peerID, domain.ErrNotFound)
+	}
+	delete(s.conns, key)
+	return nil
 }
 
 // ---------------------------------------------------------------- channels

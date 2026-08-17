@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HarshSingh21/locnot/internal/connect"
 	"github.com/HarshSingh21/locnot/internal/domain"
 	"github.com/HarshSingh21/locnot/internal/idgen"
 	"github.com/HarshSingh21/locnot/internal/store"
@@ -232,6 +233,7 @@ type deviceView struct {
 type overviewResponse struct {
 	User    domain.User           `json:"user"`
 	Server  serverInfo            `json:"server"`
+	People  []connect.Peer        `json:"people"`
 	Devices []deviceView          `json:"devices"`
 	Places  []placeView           `json:"places"`
 	Notes   []domain.Note         `json:"notes"`
@@ -289,12 +291,24 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Peers ride along so the live map can draw everyone who is sharing on the
+	// first paint, rather than popping in after a second request.
+	var people []connect.Peer
+	if s.deps.Connect != nil {
+		people, err = s.deps.Connect.List(ctx, uid)
+		if err != nil {
+			s.writeError(w, r, err)
+			return
+		}
+	}
+
 	inside := map[string][]string{}
 	if s.deps.Geofence != nil {
 		inside = s.deps.Geofence.InsideSnapshot()
 	}
 
 	resp := overviewResponse{
+		People: people,
 		User:   user,
 		Server: s.serverInfo(),
 		Notes:  notes,
@@ -308,7 +322,25 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	for _, p := range places {
 		resp.Places = append(resp.Places, placeView{Place: p, Stats: stats[p.ID]})
 	}
+	resp.normalize()
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// normalize replaces nil slices with empty ones.
+//
+// Go marshals a nil slice as `null`, which is a different type from `[]` to
+// every consumer. A brand-new account has nothing in it, so `null` is exactly
+// what the *first* request after signing up returns — the one request a client is
+// least likely to have been tested against. This turns "an empty workspace" into
+// a shape identical to "a workspace with one of everything, minus the contents".
+func (r *overviewResponse) normalize() {
+	r.People = list(r.People)
+	r.Devices = list(r.Devices)
+	r.Places = list(r.Places)
+	r.Notes = list(r.Notes)
+	r.Shares = list(r.Shares)
+	r.Events = list(r.Events)
+	r.Dwells = list(r.Dwells)
 }
 
 func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
@@ -317,7 +349,7 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	writeJSON(w, http.StatusOK, map[string]any{"events": list(events)})
 }
 
 // ---------------------------------------------------------------- devices
@@ -336,7 +368,7 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 	for _, d := range devices {
 		out = append(out, deviceView{Device: d, InsidePlaces: inside[d.ID]})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"devices": out})
+	writeJSON(w, http.StatusOK, map[string]any{"devices": list(out)})
 }
 
 type deviceRequest struct {

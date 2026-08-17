@@ -44,6 +44,9 @@ type PlaceStats struct {
 // UserStore covers accounts and their privacy/quiet-hour settings.
 type UserStore interface {
 	GetUser(ctx context.Context, id string) (domain.User, error)
+	// FindUserByEmail backs "invite by email": it is the one user lookup that is
+	// not scoped to the caller, so it returns only what an invite needs.
+	FindUserByEmail(ctx context.Context, email string) (domain.User, error)
 	UpsertUser(ctx context.Context, u domain.User) error
 	UpdateUserSettings(ctx context.Context, id string, fn func(*domain.User)) (domain.User, error)
 }
@@ -109,6 +112,18 @@ type ShareStore interface {
 	SharesForArrivePlace(ctx context.Context, userID, placeID string) ([]domain.Share, error)
 }
 
+// ConnectionStore covers mutual live-sharing relationships between accounts.
+//
+// Rows are per direction and each is owned by its UserID, so every read is
+// user-scoped like the rest of the store: nobody can enumerate, or flip a switch
+// on, a relationship they are not part of.
+type ConnectionStore interface {
+	ListConnections(ctx context.Context, userID string) ([]domain.Connection, error)
+	GetConnection(ctx context.Context, userID, peerID string) (domain.Connection, error)
+	UpsertConnection(ctx context.Context, c domain.Connection) (domain.Connection, error)
+	DeleteConnection(ctx context.Context, userID, peerID string) error
+}
+
 // ChannelStore covers notification channels.
 type ChannelStore interface {
 	ListChannels(ctx context.Context, userID string) ([]domain.Channel, error)
@@ -144,6 +159,7 @@ type Store interface {
 	PlaceStore
 	NoteStore
 	ShareStore
+	ConnectionStore
 	ChannelStore
 	EventStore
 	DwellStore

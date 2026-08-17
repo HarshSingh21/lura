@@ -32,8 +32,15 @@ type clientMessage struct {
 
 // handleWS serves the authenticated live stream.
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
-	principal, err := s.deps.Auth.Authenticate(r)
+	// Same identity path as the control plane, including provisioning: a client
+	// that opens its socket before its first REST call must not race ahead of its
+	// own account being created.
+	principal, claims, err := s.identify(r)
 	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if err := s.provisi.ensure(r.Context(), principal, claims); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -50,9 +57,13 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	client, err := s.deps.Hub.Connect(ctx, uid, func(ctx context.Context) ([]string, error) {
-		// A user sees their own devices, their own geofence events and their own
-		// reminders. Group sharing (Phase 2) adds pos.<other>.* here, and the
-		// hub re-runs this resolver on every ACL change.
+		// Authorization lives in the connections service: this user's own subjects
+		// plus one per peer who is currently sharing with them. The hub re-runs
+		// this on every acl.<viewer> event, so accepting an invitation or pausing
+		// sharing changes what flows on the next fix — not at the end of a TTL.
+		if s.deps.Connect != nil {
+			return s.deps.Connect.Subjects(ctx, uid)
+		}
 		return []string{
 			bus.PosUserWildcard(uid),
 			bus.GeoSubject(uid),

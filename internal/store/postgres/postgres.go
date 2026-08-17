@@ -286,6 +286,21 @@ func (s *Store) GetUser(ctx context.Context, id string) (domain.User, error) {
 	return u, err
 }
 
+// FindUserByEmail backs invite-by-email. The lookup is case-insensitive because
+// people do not type their own address consistently, and the unique index in
+// migration 0002 is on lower(email) to match.
+func (s *Store) FindUserByEmail(ctx context.Context, email string) (domain.User, error) {
+	start := time.Now()
+	var u domain.User
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, email, display_name, locale, tz, quiet_from, quiet_to, airgap, created_at
+		FROM users WHERE lower(email) = lower($1) AND email <> ''`, strings.TrimSpace(email)).
+		Scan(&u.ID, &u.Email, &u.DisplayName, &u.Locale, &u.TZ, &u.QuietFrom, &u.QuietTo, &u.Airgap, &u.CreatedAt)
+	err = mapError("user "+email, err)
+	observe("FindUserByEmail", start, err)
+	return u, err
+}
+
 func (s *Store) UpsertUser(ctx context.Context, u domain.User) error {
 	start := time.Now()
 	if u.ID == "" {

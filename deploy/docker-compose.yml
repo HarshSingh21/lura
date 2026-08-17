@@ -45,6 +45,39 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # ---------------------------------------------------------------- identity
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    container_name: lura-keycloak
+    # start-dev is right for a laptop and wrong for anything else: it disables
+    # HTTPS and uses an embedded database. See deploy/keycloak/README.md for the
+    # production form (`start` with --hostname and --db postgres).
+    command: ["start-dev", "--import-realm", "--http-port=8085"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HEALTH_ENABLED: "true"
+      # Social login stays inert until these are set; the realm import
+      # substitutes them, so no secret is ever committed.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      TWITTER_CLIENT_ID: ${TWITTER_CLIENT_ID:-}
+      TWITTER_CLIENT_SECRET: ${TWITTER_CLIENT_SECRET:-}
+    volumes:
+      - ./keycloak/lura-realm.json:/opt/keycloak/data/import/lura-realm.json:ro
+      - keycloak-data:/opt/keycloak/data
+    ports:
+      - "${KEYCLOAK_PORT:-8085}:8085"
+    healthcheck:
+      # Keycloak 26 serves health on the management port (9000) and ships no curl,
+      # so the check goes through the JVM's own HTTP client via /bin/sh.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q 'UP' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    restart: unless-stopped
+
   # ---------------------------------------------------------------- push
   ntfy:
     image: binwiederhier/ntfy:latest
@@ -73,6 +106,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      keycloak:
+        condition: service_healthy
     environment:
       LURA_HTTP_ADDR: ":8080"
       LURA_PUBLIC_BASE_URL: ${LURA_PUBLIC_BASE_URL:-http://localhost:8080}
@@ -85,6 +120,15 @@ services:
       # token (HLD §16); Zitadel-issued JWTs land in Phase 2.
       LURA_API_TOKEN: ${LURA_API_TOKEN:-lura-dev-token}
       LURA_DEVICE_TOKEN: ${LURA_DEVICE_TOKEN:-}
+
+      # Real sign-in. The issuer is the URL a *browser* reaches Keycloak on, not
+      # the container name: the token's `iss` claim has to match what the client
+      # was issued, and the app redirects a human there.
+      LURA_OIDC_ISSUER: ${LURA_OIDC_ISSUER:-http://localhost:8085/realms/lura}
+      LURA_OIDC_AUDIENCE: ${LURA_OIDC_AUDIENCE:-lura-api}
+      # Keep the static token working for the simulator and curl during local
+      # development. Turn this off before anyone else can reach the server.
+      LURA_DEV_TOKEN_WITH_OIDC: ${LURA_DEV_TOKEN_WITH_OIDC:-true}
 
       # Geofence tuning — every one of these is an open product default (HLD §17).
       LURA_FRESH_WINDOW: ${LURA_FRESH_WINDOW:-5m}
@@ -213,6 +257,7 @@ services:
 
 volumes:
   postgres-data:
+  keycloak-data:
   ntfy-data:
   opensearch-data:
   prometheus-data:

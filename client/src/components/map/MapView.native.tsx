@@ -68,8 +68,8 @@ function NativeMap(props: MapViewProps) {
   const syncViewport = (event: NativeSyntheticEvent<ViewStateChangeEvent>) => {
     const [lon, lat] = event.nativeEvent.center;
     if (typeof lat !== 'number' || typeof lon !== 'number') return;
-    const next = { center: { lat, lon }, zoom: event.nativeEvent.zoom };
-    setView({ ...next, width: box.width, height: box.height });
+    const next = { center: { lat, lon }, zoom: event.nativeEvent.zoom, width: box.width, height: box.height };
+    setView(next);
     onViewportChange?.(next);
   };
 

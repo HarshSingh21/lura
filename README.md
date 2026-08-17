@@ -51,7 +51,10 @@ before anything but localhost can reach it.
 
 | Screen | What it does |
 |---|---|
-| **Live map** | devices in real time over WebSocket, geofences, draw a place by tapping the map, the always-on "you are sharing" banner |
+| **Sign in** | Keycloak's own hosted page — OTP, Google or X — over Authorization Code + PKCE; the app never sees a password |
+| **Introduction** | a five-step tour on first sign-in, explaining the map, places, notes, sharing and the privacy switches |
+| **Live map** | your devices *and* the people you are connected to, in real time over WebSocket, geofences, draw a place by tapping the map, the always-on "you are sharing" banner |
+| **People** | two-way live sharing with another account: invite by email, accept, pause either direction independently, remove for both |
 | **Places** | the geofence grid: radius, armed triggers, note and fire counts |
 | **Notes** | type free text, the AI Brain suggests the place, tags and trigger, with its confidence and where it ran |
 | **Sharing** | expiring/revocable links, a preview of exactly what a recipient sees, one-tap revoke |
@@ -97,9 +100,18 @@ CRUD   /api/v1/devices            + POST /{id}/token to rotate an ingest credent
 CRUD   /api/v1/shares             DELETE revokes immediately
 CRUD   /api/v1/channels           notification channels, tried in priority order
 GET    /api/v1/history            trips and stops; /export?format=gpx|geojson
+
+GET    /api/v1/people             every connection, both directions of consent
+POST   /api/v1/people/invite      by email; a crossed invitation auto-accepts
+POST   /api/v1/people/{id}/accept idempotent
+PATCH  /api/v1/people/{id}        pause or resume *my* sharing
+DELETE /api/v1/people/{id}        removes both directions
 ```
 
-All control-plane calls take `Authorization: Bearer <LURA_API_TOKEN>`.
+Control-plane calls take `Authorization: Bearer <token>` — a Keycloak access token
+when `LURA_OIDC_ISSUER` is set, or the static `LURA_API_TOKEN` otherwise. Accounts
+are created lazily from the token's claims on first use, so there is no separate
+registration step to keep in sync with the realm.
 
 ---
 

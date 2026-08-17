@@ -54,7 +54,8 @@ Package map (`internal/`):
 | `share` | expiring/revocable links, auto-revoke on arrive, ACL events | §5.8 |
 | `history` | trip/stop segmentation, GeoJSON/GPX export, retention | §5.9 |
 | `httpapi` | REST + WebSocket transport, no business rules | §5.1, §8 |
-| `auth` | static bearer (Phase 1), device credentials for `/pub` | §5.10, §16 |
+| `auth` | Keycloak OIDC verification (stdlib only), static bearer, device credentials for `/pub` | §5.10, §16 |
+| `connect` | mutual-consent connections; resolves who may watch whom | §5.8 |
 | `obs` | OpenTelemetry setup, Prometheus endpoint, OpenSearch log shipper | §12 |
 | `seed` | demo workspace matching the design mock | — |
 
@@ -158,6 +159,18 @@ Schema: `internal/store/postgres/migrations/0001_init.sql`. Highlights:
 - `notes.place_id` is `ON DELETE SET NULL`: deleting a geofence must not delete
   the user's words.
 - `pending_dwells` is a table, not a cache key.
+- `connections` (`0002_connections.sql`) stores **two rows per relationship**, one
+  per direction, each owned by the user in `user_id`. A single row with a pair of
+  booleans would mean one person's `UPDATE` rewrites the other person's consent;
+  splitting it makes "am I sharing with you" and "are you sharing with me"
+  physically different rows with different owners, so the authorisation check is a
+  read of a row the caller cannot write. `UNIQUE (user_id, peer_id)`,
+  `CHECK (user_id <> peer_id)`, and a partial index on
+  `(user_id) WHERE status='accepted' AND sharing` — the only shape the fan-out
+  ever queries.
+- `users_email_key` is a unique index on `lower(email) WHERE email <> ''`:
+  invitations are addressed by email, and the empty string is what a device-only
+  account has.
 - `notes.body`, not `notes.text` — `text` is a type name in PostgreSQL and quoting
   it everywhere is a papercut waiting to become a bug.
 
@@ -194,11 +207,81 @@ Root paths kept short because external clients depend on them:
 
 Control plane under `/api/v1` (bearer): `me`, `overview`, `events`, `devices`
 (+ `/{id}/token` rotation), `places`, `notes` (+ `/suggest`), `shares`,
-`channels`, `history` (+ `/export`, DELETE).
+`channels`, `history` (+ `/export`, DELETE), `people`.
 
 `/api/v1/overview` returns the whole workspace in one round trip — the control
 centre's first paint is one request, which matters on the 2G/3G-class connections
 HLD §2.2 targets.
+
+### 6.1 Identity (`internal/auth`, `internal/httpapi/provision.go`)
+
+Sign-in is Keycloak's problem; Lura's problem is deciding whether to believe the
+token that comes back.
+
+`auth.OIDC` verifies it against the realm's JWKS **with the standard library
+only** — no OIDC dependency was added, because the whole verification is a
+signature check plus five claim comparisons, and a library here would be a supply
+chain for the one component whose compromise is total. The rejections that matter:
+`alg: none` and any `HS*` (an attacker who knows the public key must not be able
+to sign with it), a token with no `kid`, a JWKS key whose `use` is not `sig`, an
+RSA key under 2048 bits, an EC key that is not P-256, and anything whose `typ` is
+`Refresh`. Keys are cached with a TTL and re-fetched on an unknown `kid`, so a
+realm rotation heals without a restart.
+
+`auth.Chain` allows the static development token *alongside* OIDC, off by default
+and loud in the logs when on, so `make dev` still works with `curl`.
+
+**Provisioning is lazy.** With an external IdP a person exists before their
+workspace does: the first authenticated request carries a `sub` with no row behind
+it. `provisioner.ensure` creates the account from the claims on that request,
+memoising the subject so the steady state is a map lookup. The alternative — a
+registration webhook from Keycloak — has a failure mode where the two systems
+drift apart, and cannot cope with a realm restored from backup or a user created
+in the admin console.
+
+### 6.2 Mutual sharing (`internal/connect`)
+
+A share link (§6) is one-directional and anonymous. Connections are the other
+half: two accounts that can each see the other on the live map.
+
+| Method | Path | Effect |
+|---|---|---|
+| GET | `/api/v1/people` | each peer, both directions of consent, and their devices |
+| POST | `/api/v1/people/invite` | by email; a crossed invitation auto-accepts |
+| POST | `/api/v1/people/{peerId}/accept` | idempotent |
+| PATCH | `/api/v1/people/{peerId}` | pause or resume *my* sharing |
+| DELETE | `/api/v1/people/{peerId}` | removes both directions |
+
+The authorisation rule is one function, `connect.Service.Subjects`, and it is
+worth stating precisely because everything else depends on it:
+
+> To decide whether **A** may watch **B**, read **B's** row. Never A's.
+
+A row says "I am sharing with this person"; it is written only by its owner. So
+the set of bus subjects A is allowed to receive is A's own positions plus
+`pos.<B>.*` for every B whose own row says `accepted AND sharing`. Writing a row
+into your own table claiming a view of someone else grants nothing, which is what
+`TestCannotGrantYourselfAView` asserts by doing exactly that through the store,
+below the service, and confirming the subject list does not change.
+
+Pausing is `sharing = false` on the pauser's row, which drops the peer's subject
+on their next resolve and, for an open socket, is pushed as an `acl` frame — the
+peer's map stops updating within a frame rather than at the next reconnect.
+
+Fan-out latency, measured in `internal/httpapi/latency_test.go` (p99 gate at
+250 ms, actual on this hardware): **p50 110 µs / p99 320 µs** for your own device,
+**p50 90 µs** for a peer's — publish-to-socket-write inside the server. Measured
+from outside, over real HTTP and a real WebSocket on one machine, a peer's fix
+lands in the watcher's socket in **p50 1.6 ms / p95 2.3 ms**, the difference being
+the HTTP round trip. What a person experiences adds the phone's radio and the
+internet, which no architecture on this side can shorten below the RTT.
+
+**Empty is a shape too.** Go marshals a nil slice as `null`, so the first request
+a brand-new account makes returns `null` for every collection — the one shape a
+client is least likely to have been written against. `httpapi.list` wraps every
+collection response, and `TestOverviewOfAnEmptyWorkspaceIsAllArrays` pins it.
+This is not hypothetical: it took the People screen down to a white page for
+anyone who had not created anything yet.
 
 ---
 
@@ -223,6 +306,37 @@ design survives on every renderer.
 **Layout.** One shell, two shapes: sidebar + content + rail above 1080 px, top bar
 + content + tab bar below 840 px. The decision is width-based, not platform-based
 — a small browser window and a phone deserve the same layout.
+
+**The front door.** `app/_layout.tsx` holds one `Gate` component that answers, per
+navigation, in this order: still reading the persisted session → splash; signed
+out → `/login`; signed in but never introduced → `/onboarding`; otherwise render.
+The order is not cosmetic — treating "not read yet" as "signed out" flashes the
+login screen on every cold start, which is the single most common bug in this
+pattern. `useRequireAuth` deliberately returns facts and does *not* navigate: a
+hook that calls `router.replace` during a layout's render fights whatever else
+that layout is doing and hides the routing decision from anyone reading the
+routes. Two routes opt out — the share viewer, which is public by definition, and
+the login screen, which is where the redirect points.
+
+**Framing.** A live map centred on you at a fixed zoom will happily put the person
+you are watching two screens away: the marker exists, the socket works, and the
+product still fails, because "where are they" was the question. So when the *set*
+of markers changes — a peer accepts, a second phone comes online — `features/live/fit.ts`
+computes the zoom at which everyone fits and the map widens to it. It only ever
+zooms out, and it keys on the marker set rather than on positions, so it cannot
+yank someone who has deliberately zoomed in, and ordinary movement does not
+re-frame the map under a person reading it. Every map renderer reports its pixel
+size back through `onViewportChange`, because this is a question about pixels that
+a zoom level alone cannot answer.
+
+**Tokens.** The session stores access/refresh/ID tokens per key (SecureStore on
+Android warns past 2 KB per entry) and renews a minute before expiry, because a
+15-minute token and an app that sits open for a whole drive would otherwise stop
+moving mid-journey. `api/client.ts` asks a *provider* for the bearer on every
+request rather than capturing one — the dependency points auth → api, never back,
+which is what keeps the refresh (itself an HTTP call) out of an import cycle. The
+WebSocket and the history export use the awaiting variant: both carry the token in
+a query string and neither can retry a 401.
 
 ---
 
@@ -256,7 +370,11 @@ design survives on every renderer.
 | `notify` | note resolution, quiet hours across midnight and timezones, retry vs failover, airgap egress ban |
 | `history` | segmentation, absorbed traffic-light stops, mode classification, impossible-jump rejection, GeoJSON axis order, GPX schema |
 | `bus`, `hub`, `gate`, `ratelimit` | ordering, drop-to-latest, ACL revoke, single-winner claims, bucket refill |
+| `auth` | JWKS verification: `alg: none`, `HS*` with the public key, missing `kid`, `use != sig`, undersized RSA, non-P-256 EC, a refresh token used as an access token |
+| `connect` | consent in both directions, crossed invitations, idempotent accept, symmetric removal, and that writing your own row grants you nothing |
 | `httpapi` | the whole stack over real HTTP + WebSocket: auth, CRUD, `/pub` → geo event → reminder, share lifecycle, exports |
+| `httpapi` (two-person) | both sides publish from their own device credentials and each sees the other; pausing cuts the peer off on the open socket; removal revokes both ways; every People route is scoped to its caller |
+| `httpapi` (latency) | publish-to-socket p99 under 250 ms, for your own device and for a peer's |
 
 `go test -race ./...` is green. The PostgreSQL conformance run is skipped unless
 `LURA_TEST_DATABASE_URL` is set (see `make test-pg`).

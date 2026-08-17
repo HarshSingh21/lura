@@ -66,6 +66,29 @@ export type ClientConfig = { baseUrl: string; token: string };
 
 let config: ClientConfig = { baseUrl: defaultBaseUrl(), token: DEFAULT_TOKEN };
 
+/**
+ * The signed-in session's access token, when there is one.
+ *
+ * Auth is wired in as a *provider* rather than an import so this module stays
+ * free of a cycle (the session store needs the client to refresh). The token
+ * rotates roughly every 15 minutes, so it is read per request — capturing it
+ * once would start 401ing a quarter of an hour after sign-in.
+ */
+type TokenProvider = () => string | undefined;
+let sessionToken: TokenProvider = () => undefined;
+let freshSessionToken: () => Promise<string | undefined> = async () => sessionToken();
+
+/** setSessionTokenProvider is called once, during app start-up. */
+export function setSessionTokenProvider(current: TokenProvider, fresh?: () => Promise<string | undefined>) {
+  sessionToken = current;
+  if (fresh) freshSessionToken = fresh;
+}
+
+/** bearer prefers a real session and falls back to the development token. */
+function bearer(): string {
+  return sessionToken() ?? config.token;
+}
+
 export function getConfig(): ClientConfig {
   return config;
 }
@@ -88,12 +111,12 @@ export type RequestOptions = {
 
 /** request performs one API call and returns the decoded JSON body. */
 export async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const { baseUrl, token } = config;
+  const { baseUrl } = config;
   const method = opts.method ?? 'GET';
 
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
-  if (!opts.anonymous) headers.Authorization = `Bearer ${token}`;
+  if (!opts.anonymous) headers.Authorization = `Bearer ${bearer()}`;
 
   // A hung request must not hang the UI: every call gets a deadline, and the
   // caller's own signal still wins.
@@ -145,18 +168,35 @@ function safeParse(text: string): unknown {
 
 /** wsUrl converts an API path into a WebSocket URL against the same server. */
 export function wsUrl(path: string, opts: { anonymous?: boolean } = {}): string {
-  const { baseUrl, token } = config;
+  const { baseUrl } = config;
   const scheme = baseUrl.startsWith('https') ? 'wss' : 'ws';
   const host = baseUrl.replace(/^https?:\/\//, '');
   // Browsers cannot attach headers to a WebSocket handshake, so the token has to
   // ride in the query string; the server accepts it there for /ws only.
-  const auth = opts.anonymous ? '' : `${path.includes('?') ? '&' : '?'}access_token=${encodeURIComponent(token)}`;
+  const auth = opts.anonymous ? '' : `${path.includes('?') ? '&' : '?'}access_token=${encodeURIComponent(bearer())}`;
   return `${scheme}://${host}${path}${auth}`;
+}
+
+/**
+ * wsUrlFresh is wsUrl with a guaranteed-valid token.
+ *
+ * A WebSocket handshake carries its credential in the query string and cannot
+ * retry a 401 the way a fetch can, so it is worth awaiting a refresh first.
+ */
+export async function wsUrlFresh(path: string, opts: { anonymous?: boolean } = {}): Promise<string> {
+  if (!opts.anonymous) await freshSessionToken();
+  return wsUrl(path, opts);
 }
 
 /** downloadUrl builds an authenticated export link (used by the export buttons). */
 export function downloadUrl(path: string): string {
-  const { baseUrl, token } = config;
+  const { baseUrl } = config;
   const sep = path.includes('?') ? '&' : '?';
-  return `${baseUrl}${path}${sep}access_token=${encodeURIComponent(token)}`;
+  return `${baseUrl}${path}${sep}access_token=${encodeURIComponent(bearer())}`;
+}
+
+/** downloadUrlFresh refreshes first, for the same reason as wsUrlFresh. */
+export async function downloadUrlFresh(path: string): Promise<string> {
+  await freshSessionToken();
+  return downloadUrl(path);
 }

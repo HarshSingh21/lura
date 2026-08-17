@@ -45,7 +45,7 @@ export function MapCanvas(props: MapViewProps) {
       setBox({ width, height });
       // The canvas has no gestures of its own, so the viewport is exactly what
       // the caller asked for — reported back so shared controls behave the same.
-      onViewportChange?.({ center, zoom });
+      onViewportChange?.({ center, zoom, width, height });
     }
   };
 

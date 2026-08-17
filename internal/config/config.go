@@ -28,9 +28,19 @@ type Config struct {
 	Migrate     bool // run migrations on boot (Phase 1 convenience)
 	Seed        bool // seed the demo workspace if the store is empty
 
-	// --- auth (Phase 1: static bearer; Phase 2: Zitadel JWT — HLD §5.10)
-	APIToken    string // control-plane bearer token
-	DeviceToken string // optional shared ingest token for the seeded device
+	// --- auth
+	//
+	// Phase 1 shipped a single static bearer token. With an OIDC issuer
+	// configured (Keycloak), the control plane takes real per-user JWTs instead
+	// and the static token is off unless explicitly re-enabled for development.
+	// Device ingest keeps its own per-device credential either way: a tracker
+	// cannot perform an interactive login.
+	APIToken         string // control-plane bearer token (development)
+	DeviceToken      string // optional shared ingest token for the seeded device
+	OIDCIssuer       string // e.g. http://localhost:8085/realms/lura; empty disables OIDC
+	OIDCAudience     string // expected `aud` claim, e.g. lura-api
+	DefaultTZ        string // timezone new accounts start in (IANA name)
+	DevTokenWithOIDC bool   // allow the static token alongside OIDC (development only)
 
 	// --- geofence engine (HLD §5.4)
 	FreshWindow        time.Duration // ignore fixes older than this for firing
@@ -103,7 +113,8 @@ func Default() Config {
 		Migrate:     true,
 		Seed:        true,
 
-		APIToken: "lura-dev-token",
+		APIToken:     "lura-dev-token",
+		OIDCAudience: "lura-api",
 
 		// Fly-by filter defaults: 45 s inside the fence confirms an arrival, or
 		// sooner if the device slows to walking pace (1.5 m/s ≈ 5.4 km/h).
@@ -167,6 +178,10 @@ func Load() (Config, error) {
 
 	c.APIToken = env("LURA_API_TOKEN", c.APIToken)
 	c.DeviceToken = env("LURA_DEVICE_TOKEN", c.DeviceToken)
+	c.OIDCIssuer = strings.TrimRight(env("LURA_OIDC_ISSUER", c.OIDCIssuer), "/")
+	c.OIDCAudience = env("LURA_OIDC_AUDIENCE", c.OIDCAudience)
+	c.DevTokenWithOIDC = envBool("LURA_DEV_TOKEN_WITH_OIDC", c.DevTokenWithOIDC)
+	c.DefaultTZ = env("LURA_DEFAULT_TZ", c.DefaultTZ)
 
 	c.FreshWindow = envDur("LURA_FRESH_WINDOW", c.FreshWindow)
 	c.ArriveDebounce = envDur("LURA_ARRIVE_DEBOUNCE", c.ArriveDebounce)
@@ -231,8 +246,12 @@ func (c Config) Validate() error {
 	if c.StoreKind == "postgres" && c.DatabaseURL == "" {
 		errs = append(errs, errors.New("LURA_DATABASE_URL is required with the postgres store"))
 	}
-	if c.APIToken == "" {
-		errs = append(errs, errors.New("LURA_API_TOKEN must not be empty"))
+	// With OIDC on, the static token is optional — real sessions replace it.
+	if c.APIToken == "" && c.OIDCIssuer == "" {
+		errs = append(errs, errors.New("LURA_API_TOKEN must not be empty without an OIDC issuer"))
+	}
+	if c.OIDCIssuer != "" && c.OIDCAudience == "" {
+		errs = append(errs, errors.New("LURA_OIDC_AUDIENCE is required with an OIDC issuer"))
 	}
 	if c.GeofencePartitions < 1 {
 		errs = append(errs, errors.New("LURA_GEOFENCE_PARTITIONS must be >= 1"))
@@ -247,6 +266,18 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("LURA_INGEST_RATE_PER_MIN must be >= 1"))
 	}
 	return errors.Join(errs...)
+}
+
+// DefaultTimezone is the timezone a newly provisioned account starts in.
+//
+// Quiet hours are evaluated in the user's timezone, so an empty value would
+// silently mean UTC and make "22:30–07:00" wrong for most of the world. The
+// operator's own zone is a better guess than UTC, and the user can change it.
+func (c Config) DefaultTimezone() string {
+	if c.DefaultTZ != "" {
+		return c.DefaultTZ
+	}
+	return "UTC"
 }
 
 // Redacted returns a log-safe summary: tokens and DSN credentials removed.
@@ -273,6 +304,9 @@ func (c Config) Redacted() map[string]any {
 		"prometheus":         c.EnablePrometheus,
 		"serviceName":        c.ServiceName,
 		"environment":        c.Environment,
+		"oidcIssuer":         c.OIDCIssuer,
+		"oidcAudience":       c.OIDCAudience,
+		"devTokenWithOIDC":   c.DevTokenWithOIDC,
 	}
 }
 

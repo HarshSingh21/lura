@@ -46,6 +46,7 @@ func Run(t *testing.T, newStore Factory) {
 		{"Channels", testChannels},
 		{"TriggerEvents", testTriggerEvents},
 		{"PendingDwells", testPendingDwells},
+		{"Connections", testConnections},
 		{"UserScoping", testUserScoping},
 		{"PlaceStats", testPlaceStats},
 	}
@@ -820,6 +821,103 @@ func testPendingDwells(t *testing.T, st store.Store) {
 	listed, _ = st.ListPendingDwells(ctx, "u1")
 	if len(listed) != 0 {
 		t.Errorf("timer survived cancellation: %+v", listed)
+	}
+}
+
+// ---------------------------------------------------------------- connections
+
+// testConnections asserts the two-row consent model: each side owns its row, a
+// row is per direction, and re-writing one is an update rather than a duplicate.
+func testConnections(t *testing.T, st store.Store) {
+	ctx := ctxFor(t)
+	alice := mustUser(t, st, "alice")
+	bob := mustUser(t, st, "bob")
+
+	if _, err := st.FindUserByEmail(ctx, "alice@lura.local"); err != nil {
+		t.Fatalf("FindUserByEmail: %v", err)
+	}
+	if _, err := st.FindUserByEmail(ctx, "ALICE@LURA.LOCAL"); err != nil {
+		t.Errorf("FindUserByEmail is case-sensitive: %v", err)
+	}
+	if _, err := st.FindUserByEmail(ctx, "nobody@lura.local"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("FindUserByEmail(missing) = %v, want ErrNotFound", err)
+	}
+
+	// Alice invites Bob: one row each, in opposite directions.
+	out, err := st.UpsertConnection(ctx, domain.Connection{
+		UserID: alice.ID, PeerID: bob.ID, PeerName: "bob", PeerEmail: bob.Email,
+		Status: domain.ConnectionPendingOut, Sharing: true,
+	})
+	if err != nil {
+		t.Fatalf("UpsertConnection(out): %v", err)
+	}
+	if out.ID == "" || out.CreatedAt.IsZero() {
+		t.Errorf("connection not stamped: %+v", out)
+	}
+	if _, err := st.UpsertConnection(ctx, domain.Connection{
+		UserID: bob.ID, PeerID: alice.ID, PeerName: "alice", PeerEmail: alice.Email,
+		Status: domain.ConnectionPendingIn, Sharing: true,
+	}); err != nil {
+		t.Fatalf("UpsertConnection(in): %v", err)
+	}
+
+	// Each side sees only its own row.
+	forAlice, err := st.ListConnections(ctx, alice.ID)
+	if err != nil {
+		t.Fatalf("ListConnections: %v", err)
+	}
+	if len(forAlice) != 1 || forAlice[0].PeerID != bob.ID || forAlice[0].Status != domain.ConnectionPendingOut {
+		t.Fatalf("alice's connections = %+v", forAlice)
+	}
+	forBob, _ := st.ListConnections(ctx, bob.ID)
+	if len(forBob) != 1 || forBob[0].Status != domain.ConnectionPendingIn {
+		t.Fatalf("bob's connections = %+v", forBob)
+	}
+
+	// Re-writing the same direction updates in place: no duplicate rows, and the
+	// original creation time survives so list order is stable.
+	updated, err := st.UpsertConnection(ctx, domain.Connection{
+		UserID: alice.ID, PeerID: bob.ID, PeerName: "bob", PeerEmail: bob.Email,
+		Status: domain.ConnectionAccepted, Sharing: false,
+	})
+	if err != nil {
+		t.Fatalf("UpsertConnection(update): %v", err)
+	}
+	if again, _ := st.ListConnections(ctx, alice.ID); len(again) != 1 {
+		t.Fatalf("re-invite created a duplicate row: %d rows", len(again))
+	}
+	if !updated.CreatedAt.Equal(out.CreatedAt) {
+		t.Errorf("created_at changed on update: %v → %v", out.CreatedAt, updated.CreatedAt)
+	}
+	if updated.Sharing {
+		t.Error("sharing switch did not persist")
+	}
+	if updated.Live() {
+		t.Error("Live() is true with sharing off")
+	}
+
+	// A self-connection is nonsense and must be refused.
+	if _, err := st.UpsertConnection(ctx, domain.Connection{
+		UserID: alice.ID, PeerID: alice.ID, Status: domain.ConnectionAccepted,
+	}); !errors.Is(err, domain.ErrInvalid) {
+		t.Errorf("self-connection error = %v, want ErrInvalid", err)
+	}
+
+	// Reading someone else's row is a miss, not a leak.
+	if _, err := st.GetConnection(ctx, "carol", bob.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("GetConnection for a stranger = %v, want ErrNotFound", err)
+	}
+
+	if err := st.DeleteConnection(ctx, alice.ID, bob.ID); err != nil {
+		t.Fatalf("DeleteConnection: %v", err)
+	}
+	if err := st.DeleteConnection(ctx, alice.ID, bob.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("second delete = %v, want ErrNotFound", err)
+	}
+	// Deleting one direction leaves the other: the service removes both, the
+	// store does exactly what it is told.
+	if rows, _ := st.ListConnections(ctx, bob.ID); len(rows) != 1 {
+		t.Errorf("bob's row disappeared with alice's: %+v", rows)
 	}
 }
 

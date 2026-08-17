@@ -7,15 +7,18 @@ import type { Point } from '@/api/types';
 import { MapView } from '@/components/map/MapView';
 import type { MapFence, MapMarker } from '@/components/map/types';
 import { Icon } from '@/components/ui/Icon';
-import { Button, IconButton, Sheet } from '@/components/ui/primitives';
+import { Button, Dot, IconButton, Sheet } from '@/components/ui/primitives';
+import { peerFixes, watchers } from '@/features/people/peer';
+import { peopleOf } from '@/features/people/types';
 import { PlaceForm } from '@/features/places/PlaceForm';
 import { Mono, Txt } from '@/theme/text';
-import { color, layout, radius, shadow, size, space } from '@/theme/tokens';
+import { color, layout, palette, radius, shadow, size, space } from '@/theme/tokens';
 import { useLayoutMode } from '@/theme/useLayout';
 import { useStore } from '@/state/store';
 import { useTracking } from '@/hooks/useTracking';
 
-import { DeviceList, DeviceTracking, SharingBanner, UpcomingReminders } from './rail';
+import { zoomToInclude, type Box } from './fit';
+import { DeviceList, DeviceTracking, PeopleList, SharingBanner, UpcomingReminders } from './rail';
 
 /** Fallback view when a workspace has no places and no fixes yet (central Bengaluru). */
 const FALLBACK_CENTER: Point = { lat: 12.9716, lon: 77.5946 };
@@ -50,6 +53,10 @@ export function LiveScreen() {
 
   const [zoom, setZoom] = useState(14);
   const [recenterKey, setRecenterKey] = useState(0);
+  // The map's pixel size, reported back by whichever renderer is in use. Fitting
+  // a set of markers is a question about pixels, and the zoom level alone cannot
+  // answer it.
+  const [box, setBox] = useState<Box>({ width: 0, height: 0 });
   const [draft, setDraft] = useState<Point | null>(null);
 
   // This device publishes as the first device in the workspace. A real
@@ -59,6 +66,11 @@ export function LiveScreen() {
 
   const places = data?.places ?? [];
   const devices = data?.devices ?? [];
+  // The overview carries the connections a peer marker needs: their device ids
+  // (to match live frames) and their last known points (to paint before one
+  // arrives). A peer with a paused switch has no devices here at all.
+  const people = useMemo(() => peopleOf(data), [data]);
+  const seenBy = useMemo(() => watchers(people), [people]);
 
   /** The map opens on the freshest thing it knows: a live fix, then a last fix,
    *  then the centre of the user's places, then a sensible city. */
@@ -123,6 +135,59 @@ export function LiveScreen() {
       .filter((m) => m !== null);
   }, [devices, positions]);
 
+  /**
+   * Peers are drawn in amber, never in the accent green the user's own devices
+   * own, and always carry the person's name: on a map where every dot means "a
+   * live human", the one thing a marker must never be ambiguous about is *whose*
+   * position it is. Their fixes arrive on the same socket as mine — ordinary
+   * `position` frames — so matching a frame to a peer is a device-id lookup.
+   */
+  const peerMarkers = useMemo<MapMarker[]>(() => {
+    return people.flatMap((peer) => {
+      const fixes = peerFixes(peer, positions);
+      return fixes.map((fix): MapMarker => {
+        const base = fixes.length > 1 ? `${peer.peerName} · ${fix.deviceName}` : peer.peerName;
+        return {
+          id: `peer_${fix.deviceId}`,
+          point: fix.point,
+          label: fix.moving ? `${base} · ${Math.round(fix.speedMps * 3.6)} km/h` : base,
+          tone: 'amber' as const,
+        };
+      });
+    });
+  }, [people, positions]);
+
+  // Peers first so my own markers stay on top where they overlap.
+  const allMarkers = useMemo(() => [...peerMarkers, ...markers], [peerMarkers, markers]);
+
+  /**
+   * Widen the view when someone new appears on it.
+   *
+   * A peer two kilometres away is off-screen at the default zoom: the marker is
+   * on the map and not in front of the person watching, which is the whole point
+   * missed. So when the *set* of markers changes — a peer accepts, a second phone
+   * comes online — the zoom is pulled out far enough to include everyone.
+   *
+   * Two deliberate limits. It only ever zooms out (`Math.min`), so it cannot yank
+   * someone who has deliberately zoomed in on a street. And it fires on the set of
+   * markers, not on their positions, so ordinary movement does not keep re-fitting
+   * the map underneath a person who is reading it.
+   */
+  const markerKey = useMemo(() => allMarkers.map((m) => m.id).sort().join(','), [allMarkers]);
+  const [fittedKey, setFittedKey] = useState<string | null>(null);
+  if (fittedKey !== markerKey) {
+    // Adjusting state during render rather than in an effect: React re-runs this
+    // component before committing, so the map is never painted once at the wrong
+    // zoom and then again at the right one.
+    const fitted = zoomToInclude(center, allMarkers.map((m) => m.point), box);
+    // `undefined` means there is no viewport yet — leave the key unset so this
+    // runs again when the map reports its size.
+    if (fitted !== undefined) {
+      setFittedKey(markerKey);
+      setZoom((current) => Math.min(current, Math.floor(fitted * 10) / 10));
+    }
+  }
+
   const rail = (
     <View style={styles.railContent}>
       <SharingBanner
@@ -130,6 +195,16 @@ export function LiveScreen() {
         places={places}
         stopping={revokeShare.isPending}
         onStop={(id) => revokeShare.mutate(id)}
+      />
+      <PeopleList
+        people={people}
+        positions={positions}
+        onManage={() => {
+          // On a phone the rail lives in a sheet, which would otherwise stay
+          // open on top of the screen it just navigated to.
+          setSheetOpen(false);
+          router.push('/people');
+        }}
       />
       {isPhone || tracking ? (
         <DeviceTracking
@@ -160,11 +235,14 @@ export function LiveScreen() {
           center={center}
           zoom={zoom}
           fences={fences}
-          markers={markers}
+          markers={allMarkers}
           styleUrl={data?.server.mapStyleUrl}
           offline={data?.user.airgap || data?.server.airgap}
           recenterKey={recenterKey}
-          onViewportChange={(v) => setZoom(v.zoom)}
+          onViewportChange={(v) => {
+            setZoom(v.zoom);
+            setBox((prev) => (prev.width === v.width && prev.height === v.height ? prev : { width: v.width, height: v.height }));
+          }}
           onPressFence={(id) => selectPlace(id === selectedPlaceId ? undefined : id)}
           onPressMap={
             drawing
@@ -225,7 +303,10 @@ export function LiveScreen() {
             name="crosshair"
             accessibilityLabel="Recentre on my device"
             iconColor={color.accent}
-            onPress={() => setRecenterKey((k) => k + 1)}
+            onPress={() => {
+              setFittedKey(null); // pressing "locate me" asks for the fit again
+              setRecenterKey((k) => k + 1);
+            }}
           />
         </View>
 
@@ -256,15 +337,30 @@ export function LiveScreen() {
         {!isDesktop ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Show devices and reminders"
+            accessibilityLabel={
+              seenBy.length > 0
+                ? `Show devices, people and reminders. ${seenBy.length} ${seenBy.length === 1 ? 'person' : 'people'} can see your location.`
+                : 'Show devices, people and reminders'
+            }
             onPress={() => setSheetOpen(true)}
             style={styles.handle}
           >
             <Icon name="chevron-up" size={16} color={color.textMuted} />
             <Txt variant="bodySemi">
               {devices.length} {devices.length === 1 ? 'device' : 'devices'}
-              {data?.shares.length ? ' · sharing' : ''}
+              {data?.shares?.length ? ' · sharing' : ''}
             </Txt>
+            {/* The rail's "who can see me" block is behind this handle on a
+                phone, and HLD §11 does not allow that indicator to be one tap
+                away, so its headline rides on the handle itself. */}
+            {seenBy.length > 0 ? (
+              <View style={styles.handleWatchers}>
+                <Dot size={7} color={palette.amberDot} blink />
+                <Txt variant="micro" color={palette.amberInk}>
+                  {seenBy.length} can see you
+                </Txt>
+              </View>
+            ) : null}
           </Pressable>
         ) : null}
       </View>
@@ -383,6 +479,15 @@ const styles = StyleSheet.create({
     borderRadius: radius.card,
     paddingVertical: 12,
     ...shadow('card'),
+  },
+  handleWatchers: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: color.amberSoft,
+    borderRadius: radius.sm,
+    paddingVertical: 3,
+    paddingHorizontal: 7,
   },
 
   rail: {

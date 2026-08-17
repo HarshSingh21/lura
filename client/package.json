@@ -9,12 +9,16 @@
     "@maplibre/maplibre-react-native": "^11.3.6",
     "@tanstack/react-query": "^5.101.4",
     "expo": "~57.0.14",
+    "expo-auth-session": "~57.0.7",
     "expo-constants": "~57.0.12",
+    "expo-crypto": "~57.0.1",
     "expo-font": "~57.0.1",
     "expo-linking": "~57.0.6",
     "expo-location": "~57.0.11",
     "expo-router": "~57.0.14",
+    "expo-secure-store": "~57.0.1",
     "expo-status-bar": "~57.0.1",
+    "expo-web-browser": "~57.0.2",
     "maplibre-gl": "^6.4.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -29,6 +33,8 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "eslint": "^9.0.0",
+    "eslint-config-expo": "~57.0.1",
     "typescript": "~6.0.3"
   },
   "scripts": {

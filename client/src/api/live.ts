@@ -1,4 +1,4 @@
-import { wsUrl } from './client';
+import { wsUrlFresh } from './client';
 import type { Frame } from './types';
 
 /**
@@ -83,9 +83,18 @@ export function connectLive(opts: LiveOptions): LiveConnection {
     if (closedByCaller) return;
     setStatus(attempt === 0 ? 'connecting' : 'reconnecting');
 
+    // The token is renewed *before* the handshake rather than after a rejection: a
+    // WebSocket carries its credential in the query string and cannot retry a 401
+    // the way a fetch can, so an expired token would cost a full backoff cycle.
+    void wsUrlFresh(opts.path, { anonymous: opts.anonymous }).then(connect, scheduleReconnect);
+  }
+
+  function connect(url: string) {
+    if (closedByCaller) return;
+
     let ws: WebSocket;
     try {
-      ws = new WebSocket(wsUrl(opts.path, { anonymous: opts.anonymous }));
+      ws = new WebSocket(url);
     } catch {
       scheduleReconnect();
       return;

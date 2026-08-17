@@ -13,6 +13,7 @@ import { color } from '@/theme/tokens';
 
 export type IconName =
   | 'live'
+  | 'people'
   | 'places'
   | 'notes'
   | 'sharing'
@@ -44,6 +45,18 @@ export function Icon({ name, size = 18, color: stroke = color.textBody, strokeWi
         <Svg width={size} height={size} viewBox="0 0 20 20">
           <Circle cx={10} cy={10} r={2.4} fill={stroke} />
           <Circle cx={10} cy={10} r={6.5} {...common} />
+        </Svg>
+      );
+
+    // Two figures, the nearer one whole and the further one implied — the same
+    // read as the avatar stack in the rail, at 20 dp.
+    case 'people':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 20 20">
+          <Circle cx={7.6} cy={6.4} r={2.9} {...common} />
+          <Path d="M2.4 16.4c0-2.7 2.3-4.4 5.2-4.4s5.2 1.7 5.2 4.4" {...common} />
+          <Path d="M13.4 4.2a2.9 2.9 0 0 1 0 5.4" {...common} />
+          <Path d="M14.6 12.4c1.9.4 3.2 1.8 3.2 4" {...common} />
         </Svg>
       );
 

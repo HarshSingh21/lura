@@ -137,6 +137,53 @@ type Note struct {
 	FiredAt   *time.Time `json:"firedAt,omitempty"`
 }
 
+// ConnectionStatus is where a mutual-sharing relationship stands.
+type ConnectionStatus string
+
+const (
+	// ConnectionPendingOut is an invitation this user sent.
+	ConnectionPendingOut ConnectionStatus = "pending_out"
+	// ConnectionPendingIn is an invitation waiting on this user.
+	ConnectionPendingIn ConnectionStatus = "pending_in"
+	// ConnectionAccepted means both sides agreed.
+	ConnectionAccepted ConnectionStatus = "accepted"
+)
+
+// Connection is one side of a mutual live-location relationship.
+//
+// HLD §2.1 asks for "mutual-consent group sharing", and the shape here is what
+// makes the consent real: there is one row *per direction*, each owned by the
+// person it belongs to. A row answers "what do I see, and what do I let them
+// see?" — so either side can pause sharing without severing the relationship,
+// and neither side can flip the other's switch.
+//
+// This is deliberately not the same thing as a Share: a Share is a link handed
+// to someone who may have no account, and it is one-way. A Connection is two
+// accounts agreeing to see each other.
+type Connection struct {
+	ID     string `json:"id"`
+	UserID string `json:"userId"`
+	PeerID string `json:"peerId"`
+
+	// Peer identity, cached so a listing does not need a join or a second
+	// round trip to render.
+	PeerName  string `json:"peerName"`
+	PeerEmail string `json:"peerEmail"`
+
+	Status ConnectionStatus `json:"status"`
+
+	// Sharing is this side's own switch: whether *this* user's live position is
+	// visible to the peer. The peer has an independent one.
+	Sharing bool `json:"sharing"`
+
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// Live reports whether this row currently authorises the peer to watch this
+// user's position.
+func (c Connection) Live() bool { return c.Status == ConnectionAccepted && c.Sharing }
+
 // ShareMode is how a share link ends.
 type ShareMode string
 

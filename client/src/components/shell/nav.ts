@@ -12,12 +12,13 @@ export type NavItem = {
   label: string;
   /** Short label for the phone tab bar, where 60 dp is all there is. */
   short: string;
-  href: '/' | '/places' | '/notes' | '/sharing' | '/history' | '/settings';
+  href: '/' | '/people' | '/places' | '/notes' | '/sharing' | '/history' | '/settings';
   icon: IconName;
 };
 
 export const NAV_ITEMS: NavItem[] = [
   { key: 'live', label: 'Live map', short: 'Live', href: '/', icon: 'live' },
+  { key: 'people', label: 'People', short: 'People', href: '/people', icon: 'people' },
   { key: 'places', label: 'Places', short: 'Places', href: '/places', icon: 'places' },
   { key: 'notes', label: 'Notes', short: 'Notes', href: '/notes', icon: 'notes' },
   { key: 'sharing', label: 'Sharing', short: 'Share', href: '/sharing', icon: 'sharing' },

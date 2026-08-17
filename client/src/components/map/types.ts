@@ -65,9 +65,12 @@ export type MapViewProps = {
   /** Recentres when this value changes (used by the "locate me" control). */
   recenterKey?: number;
   /**
-   * Reports the live viewport back to the caller. The zoom controls need it: a
-   * button that adds one zoom level has to know what the user has already
-   * pinched to, or it fights them.
+   * Reports the live viewport back to the caller.
+   *
+   * The zoom controls need the centre and zoom: a button that adds one level has
+   * to know what the user has already pinched to, or it fights them. The pixel
+   * size is there so a caller can answer "is that marker actually on screen?" —
+   * which is not a question the zoom level alone can answer.
    */
-  onViewportChange?: (viewport: { center: Point; zoom: number }) => void;
+  onViewportChange?: (viewport: { center: Point; zoom: number; width: number; height: number }) => void;
 };

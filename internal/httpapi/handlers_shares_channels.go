@@ -29,7 +29,7 @@ func (s *Server) handleListShares(w http.ResponseWriter, r *http.Request) {
 	for _, sh := range shares {
 		out = append(out, shareView{Share: sh, Link: s.deps.Shares.Link(sh)})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"shares": out})
+	writeJSON(w, http.StatusOK, map[string]any{"shares": list(out)})
 }
 
 func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {

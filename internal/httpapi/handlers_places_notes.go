@@ -46,7 +46,7 @@ func (s *Server) handleListPlaces(w http.ResponseWriter, r *http.Request) {
 	for _, p := range places {
 		out = append(out, placeView{Place: p, Stats: stats[p.ID]})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"places": out})
+	writeJSON(w, http.StatusOK, map[string]any{"places": list(out)})
 }
 
 func (s *Server) handleGetPlace(w http.ResponseWriter, r *http.Request) {
@@ -221,7 +221,7 @@ func (s *Server) handleListNotes(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"notes": notes})
+	writeJSON(w, http.StatusOK, map[string]any{"notes": list(notes)})
 }
 
 func (s *Server) handleGetNote(w http.ResponseWriter, r *http.Request) {

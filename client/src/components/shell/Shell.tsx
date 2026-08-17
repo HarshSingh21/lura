@@ -35,8 +35,12 @@ export function Shell({ children }: { children: ReactNode }) {
   const setSearch = useStore((s) => s.setSearch);
 
   const airgap = data?.user.airgap ?? data?.server.airgap ?? false;
-  const activeShares = data?.shares.length ?? 0;
-  const openNotes = data?.notes.filter((n) => !n.done).length ?? 0;
+  // Every collection is read through `?.` all the way down. The server now sends
+  // `[]` rather than `null` for an empty workspace, but a client that crashes on
+  // an unexpected null is one deployment away from a white screen, and the whole
+  // shell — not just one counter — is what goes down with it.
+  const activeShares = data?.shares?.length ?? 0;
+  const openNotes = data?.notes?.filter((n) => !n.done).length ?? 0;
 
   const initials = (data?.user.displayName || data?.user.email || 'Lura')
     .split(/[\s@.]+/)
@@ -67,8 +71,8 @@ export function Shell({ children }: { children: ReactNode }) {
           <Sidebar
             pathname={pathname}
             counts={{
-              devices: data?.devices.length ?? 0,
-              places: data?.places.length ?? 0,
+              devices: data?.devices?.length ?? 0,
+              places: data?.places?.length ?? 0,
               notes: openNotes,
             }}
             sharing={activeShares > 0}

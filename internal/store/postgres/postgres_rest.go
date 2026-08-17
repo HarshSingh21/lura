@@ -697,3 +697,105 @@ func scanDwells(rows pgx.Rows, start time.Time) ([]domain.PendingDwell, error) {
 	observe("scanDwells", start, err)
 	return out, mapError("pending dwells", err)
 }
+
+// ---------------------------------------------------------------- connections
+
+const connectionCols = `id, user_id, peer_id, peer_name, peer_email, status, sharing, created_at, updated_at`
+
+func scanConnection(row pgx.Row) (domain.Connection, error) {
+	var (
+		c      domain.Connection
+		status string
+	)
+	err := row.Scan(&c.ID, &c.UserID, &c.PeerID, &c.PeerName, &c.PeerEmail,
+		&status, &c.Sharing, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return domain.Connection{}, err
+	}
+	c.Status = domain.ConnectionStatus(status)
+	return c, nil
+}
+
+func (s *Store) ListConnections(ctx context.Context, userID string) ([]domain.Connection, error) {
+	start := time.Now()
+	// Pending rows first: those are the ones waiting on a decision.
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+connectionCols+`
+		FROM connections
+		WHERE user_id = $1
+		ORDER BY (status = 'accepted'), created_at, peer_id`, userID)
+	if err != nil {
+		observe("ListConnections", start, err)
+		return nil, mapError("list connections", err)
+	}
+	defer rows.Close()
+
+	out := []domain.Connection{}
+	for rows.Next() {
+		c, err := scanConnection(rows)
+		if err != nil {
+			observe("ListConnections", start, err)
+			return nil, mapError("scan connection", err)
+		}
+		out = append(out, c)
+	}
+	err = rows.Err()
+	observe("ListConnections", start, err)
+	return out, mapError("list connections", err)
+}
+
+func (s *Store) GetConnection(ctx context.Context, userID, peerID string) (domain.Connection, error) {
+	start := time.Now()
+	c, err := scanConnection(s.pool.QueryRow(ctx,
+		`SELECT `+connectionCols+` FROM connections WHERE user_id = $1 AND peer_id = $2`, userID, peerID))
+	err = mapError("connection "+userID+"→"+peerID, err)
+	observe("GetConnection", start, err)
+	return c, err
+}
+
+// UpsertConnection writes one side of a relationship. The conflict target is
+// (user_id, peer_id): re-inviting or re-accepting updates the existing row
+// rather than creating a second one, and created_at is preserved so the People
+// list keeps a stable order.
+func (s *Store) UpsertConnection(ctx context.Context, c domain.Connection) (domain.Connection, error) {
+	start := time.Now()
+	if c.UserID == "" || c.PeerID == "" {
+		return domain.Connection{}, fmt.Errorf("connection needs both sides: %w", domain.ErrInvalid)
+	}
+	if c.UserID == c.PeerID {
+		return domain.Connection{}, fmt.Errorf("cannot connect a user to themselves: %w", domain.ErrInvalid)
+	}
+	if c.ID == "" {
+		c.ID = idgen.New("con")
+	}
+	if c.CreatedAt.IsZero() {
+		c.CreatedAt = time.Now().UTC()
+	}
+
+	out, err := scanConnection(s.pool.QueryRow(ctx, `
+		INSERT INTO connections (id, user_id, peer_id, peer_name, peer_email, status, sharing, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
+		ON CONFLICT (user_id, peer_id) DO UPDATE SET
+			peer_name  = EXCLUDED.peer_name,
+			peer_email = EXCLUDED.peer_email,
+			status     = EXCLUDED.status,
+			sharing    = EXCLUDED.sharing,
+			updated_at = now()
+		RETURNING `+connectionCols,
+		c.ID, c.UserID, c.PeerID, c.PeerName, c.PeerEmail, string(c.Status), c.Sharing, c.CreatedAt))
+	err = mapError("upsert connection", err)
+	observe("UpsertConnection", start, err)
+	return out, err
+}
+
+func (s *Store) DeleteConnection(ctx context.Context, userID, peerID string) error {
+	start := time.Now()
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM connections WHERE user_id = $1 AND peer_id = $2`, userID, peerID)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = fmt.Errorf("connection %s→%s: %w", userID, peerID, domain.ErrNotFound)
+	}
+	err = mapError("delete connection", err)
+	observe("DeleteConnection", start, err)
+	return err
+}

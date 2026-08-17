@@ -32,6 +32,7 @@ import (
 	"github.com/HarshSingh21/locnot/internal/auth"
 	"github.com/HarshSingh21/locnot/internal/bus"
 	"github.com/HarshSingh21/locnot/internal/config"
+	"github.com/HarshSingh21/locnot/internal/connect"
 	"github.com/HarshSingh21/locnot/internal/domain"
 	"github.com/HarshSingh21/locnot/internal/geofence"
 	"github.com/HarshSingh21/locnot/internal/history"
@@ -58,6 +59,7 @@ type Deps struct {
 	Geofence *geofence.Engine
 	Notify   *notify.Worker
 	Shares   *share.Service
+	Connect  *connect.Service
 	History  *history.Service
 	AI       ai.Suggester
 	Auth     auth.Authenticator
@@ -74,9 +76,10 @@ var localSuggester ai.Suggester = ai.NewRules()
 
 // Server serves the API.
 type Server struct {
-	deps   Deps
-	log    *slog.Logger
-	router chi.Router
+	deps    Deps
+	log     *slog.Logger
+	router  chi.Router
+	provisi *provisioner
 }
 
 // New builds the router.
@@ -89,6 +92,7 @@ func New(d Deps) *Server {
 		d.Started = time.Now()
 	}
 	s := &Server{deps: d, log: log}
+	s.provisi = newProvisioner(s)
 	s.routes()
 	return s
 }
@@ -183,6 +187,15 @@ func (s *Server) routes() {
 			r.Delete("/{id}", s.handleRevokeShare)
 		})
 
+		// People: mutual, two-way live sharing between accounts.
+		r.Route("/people", func(r chi.Router) {
+			r.Get("/", s.handleListPeople)
+			r.Post("/invite", s.handleInvitePerson)
+			r.Post("/{peerId}/accept", s.handleAcceptPerson)
+			r.Patch("/{peerId}", s.handleUpdatePerson)
+			r.Delete("/{peerId}", s.handleRemovePerson)
+		})
+
 		r.Route("/channels", func(r chi.Router) {
 			r.Get("/", s.handleListChannels)
 			r.Post("/", s.handleCreateChannel)
@@ -202,20 +215,26 @@ func (s *Server) routes() {
 
 // ---------------------------------------------------------------- middleware
 
-// requireUser enforces control-plane authentication.
+// requireUser enforces control-plane authentication and, for identities that
+// come from an external IdP, makes sure the account exists before the handler
+// runs — otherwise the first request after a sign-in would 404 on its own user.
 func (s *Server) requireUser(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p, err := s.deps.Auth.Authenticate(r)
+		principal, claims, err := s.identify(r)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="lura"`)
 			s.writeError(w, r, err)
 			return
 		}
-		if !p.IsUser() {
+		if !principal.IsUser() {
 			s.writeError(w, r, errInvalid("control plane requires a user token"))
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), p)))
+		if err := s.provisi.ensure(r.Context(), principal, claims); err != nil {
+			s.writeError(w, r, err)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), principal)))
 	})
 }
 

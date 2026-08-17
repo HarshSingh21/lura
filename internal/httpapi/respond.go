@@ -28,6 +28,20 @@ type errorBody struct {
 	TraceID string `json:"traceId,omitempty"`
 }
 
+// list makes a nil slice serialise as `[]` rather than `null`.
+//
+// The two are different types to every consumer, and `null` is precisely what an
+// empty collection produces — so the shape a client sees on its very first
+// request, before anything exists, is the one shape it was never written
+// against. Wrapping every collection response is cheaper than discovering that
+// per client.
+func list[T any](items []T) []T {
+	if items == nil {
+		return []T{}
+	}
+	return items
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
