@@ -52,6 +52,8 @@ const native = Platform.OS !== 'web';
 
 /** Room on the right for the map's control column (18 px inset + 38 px buttons + a gap). */
 const CONTROLS_LANE = 64;
+/** Tab bar (≈58 px) plus the live map's collapsed people sheet and a gap. */
+const PHONE_STACK_BOTTOM = 128;
 
 function ToastCard({ toast, fromTop }: { toast: Toast; fromTop: boolean }) {
   // A stable callback, so a new toast arriving does not restart this one's timer.
@@ -195,7 +197,9 @@ const styles = StyleSheet.create({
   stackWide: { right: space.xxl, width: 380 },
   // 'auto', not undefined: an undefined style is dropped when styles merge, and
   // the stack then kept the wide layout's top and covered the map's Draw button.
-  stackPhone: { top: 'auto', left: space.lg, right: CONTROLS_LANE, bottom: 84 },
+  // Above the tab bar and the live map's people sheet, so neither the sheet's
+  // handle nor the "+N more" pill under a reminder card is covered.
+  stackPhone: { top: 'auto', left: space.lg, right: CONTROLS_LANE, bottom: PHONE_STACK_BOTTOM },
   toast: {
     flexDirection: 'row',
     alignItems: 'flex-start',
