@@ -59,7 +59,9 @@ import type { FenceEditState, FenceGeometry } from './types';
  *     (geometry.ts scanlineSpans) — drag to move the whole fence;
  *   - handles, 32 px touch targets around a small visual dot — drag to resize a
  *     circle or reshape a polygon, tap a midpoint "+" to add a corner,
- *     long-press (or right-click) a corner to remove it.
+ *     long-press (or right-click) a corner to remove it — a long-press arms
+ *     the removal and releasing in place does it, so a drag that starts slowly
+ *     still moves the corner instead of deleting it.
  *
  * Draw modes capture the whole surface instead: every touch there is drawing.
  *
@@ -439,7 +441,11 @@ function EditLayer({
   const toGround = (p: XY) => unproject(p.x, p.y, view);
 
   // ---- gesture bookkeeping shared by every handle
-  const gesture = useRef<{ from: FenceGeometry; anchor: XY; consumed: boolean } | null>(null);
+  // `armed`: a corner held still for LONG_PRESS_MS is marked for removal, which
+  // happens on release. Moving after that is still a drag: a slow device that
+  // delivers the first movement late must not delete the corner being dragged.
+  const gesture = useRef<{ from: FenceGeometry; anchor: XY; armed: boolean } | null>(null);
+  const [armedCorner, setArmedCorner] = useState<number | null>(null);
   const longPress = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const timer = longPress;
@@ -454,7 +460,7 @@ function EditLayer({
   }
 
   function begin(anchor: XY) {
-    gesture.current = { from: shown, anchor, consumed: false };
+    gesture.current = { from: shown, anchor, armed: false };
     setFrozen(shown);
   }
 
@@ -598,7 +604,11 @@ function EditLayer({
           )}
           {pts.map((p, i) =>
             onScreen(p, view) ? (
-              <Circle key={`pv${i}`} cx={p.x} cy={p.y} r={7} fill="#ffffff" stroke={stroke} strokeWidth={2.5} />
+              armedCorner === i ? (
+                <Circle key={`pv${i}`} cx={p.x} cy={p.y} r={10} fill={palette.danger} stroke="#ffffff" strokeWidth={2.5} />
+              ) : (
+                <Circle key={`pv${i}`} cx={p.x} cy={p.y} r={7} fill="#ffffff" stroke={stroke} strokeWidth={2.5} />
+              )
             ) : null,
           )}
           <GripGlyph at={centroid} stroke={stroke} />
@@ -646,14 +656,23 @@ function EditLayer({
               longPress.current = setTimeout(() => {
                 const current = gesture.current;
                 if (!current || current.from.shape !== 'polygon') return;
-                current.consumed = true;
-                removeCorner(current.from.polygon, i);
+                if (current.from.polygon.length <= 3) {
+                  show('A shape needs at least three corners');
+                  return;
+                }
+                current.armed = true;
+                setArmedCorner(i);
+                show('Release to remove this corner · drag to move it instead');
               }, LONG_PRESS_MS);
             }}
             onMove={(g) => {
               const current = gesture.current;
-              if (!current || current.consumed || current.from.shape !== 'polygon' || !moved(g)) return;
+              if (!current || current.from.shape !== 'polygon' || !moved(g)) return;
               clearLongPress();
+              if (current.armed) {
+                current.armed = false;
+                setArmedCorner(null);
+              }
               const next = current.from.polygon.slice();
               next[i] = toGround(plus(current.anchor, g));
               update({ shape: 'polygon', polygon: next });
@@ -661,12 +680,16 @@ function EditLayer({
             onEnd={(g, cancelled) => {
               const current = gesture.current;
               clearLongPress();
-              if (!current || current.consumed || current.from.shape !== 'polygon') {
+              setArmedCorner(null);
+              if (!current || current.from.shape !== 'polygon') {
                 gesture.current = null;
                 setFrozen(null);
                 return;
               }
-              if (!moved(g)) return finish(null, true);
+              if (!moved(g)) {
+                if (current.armed && !cancelled) return removeCorner(current.from.polygon, i);
+                return finish(null, true);
+              }
               const next = current.from.polygon.slice();
               next[i] = toGround(plus(current.anchor, g));
               finish({ shape: 'polygon', polygon: next }, cancelled);
@@ -791,7 +814,11 @@ function PlusGlyph({ at, stroke }: { at: XY; stroke: string }) {
 
 function MetreLabel({ at, text, below }: { at: XY; text: string; below?: boolean }) {
   return (
-    <View pointerEvents="none" style={[styles.metre, { left: at.x, top: below ? at.y + 8 : at.y - 30 }]}>
+    <View
+      pointerEvents="none"
+      testID="fence-metre-label"
+      style={[styles.metre, { left: at.x, top: below ? at.y + 8 : at.y - 30 }]}
+    >
       <View style={styles.metreInner}>
         <Mono size={size.monoSm} medium color={color.textStrong}>
           {text}
