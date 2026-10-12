@@ -81,6 +81,18 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func statusFor(err error) (int, string) {
+	status, code := statusForSentinel(err)
+	// A coded error keeps its sentinel's status but names the specific problem,
+	// so a client can tell "your polygon crosses itself" from "that person is
+	// not connected to you" without parsing the message.
+	var c *codedError
+	if errors.As(err, &c) && c.code != "" {
+		code = c.code
+	}
+	return status, code
+}
+
+func statusForSentinel(err error) (int, string) {
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		return http.StatusNotFound, "not_found"
@@ -147,6 +159,23 @@ type wrapped struct {
 
 func (w *wrapped) Error() string { return w.msg }
 func (w *wrapped) Unwrap() error { return w.err }
+
+// Error codes more specific than "invalid", from docs/release-spec.md.
+const (
+	codeInvalidPolygon = "invalid_polygon"
+	codeNotConnected   = "not_connected"
+)
+
+// codedError is a 400 with a machine-readable code of its own.
+type codedError struct {
+	code string
+	msg  string
+}
+
+func (c *codedError) Error() string { return c.msg }
+func (c *codedError) Unwrap() error { return domain.ErrInvalid }
+
+func errCoded(code, msg string) error { return &codedError{code: code, msg: msg} }
 
 // ---------------------------------------------------------------- query params
 

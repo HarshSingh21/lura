@@ -16,6 +16,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -40,7 +41,10 @@ func Run(t *testing.T, newStore Factory) {
 		{"PositionQueries", testPositionQueries},
 		{"Places", testPlaces},
 		{"PlacesContaining", testPlacesContaining},
+		{"PolygonPlaces", testPolygonPlaces},
+		{"PolygonContaining", testPolygonContaining},
 		{"Notes", testNotes},
+		{"NotePeerFields", testNotePeerFields},
 		{"NoteResolution", testNoteResolution},
 		{"Shares", testShares},
 		{"Channels", testChannels},
@@ -451,6 +455,149 @@ func testPlacesContaining(t *testing.T, st store.Store) {
 	}
 }
 
+// lShape is a concave ~110 m L around (12.9600, 77.6380): the notch at its
+// north-east is inside the bounding box and the bounding circle but outside the
+// ring, which is exactly where a circle approximation would be wrong.
+func lShape() []domain.Point {
+	return []domain.Point{
+		{Lat: 12.9600, Lon: 77.6380}, {Lat: 12.9600, Lon: 77.6390}, {Lat: 12.9605, Lon: 77.6390},
+		{Lat: 12.9605, Lon: 77.6385}, {Lat: 12.9610, Lon: 77.6385}, {Lat: 12.9610, Lon: 77.6380},
+	}
+}
+
+func mustPolygon(t *testing.T, st store.Store, userID, id, name string, ring []domain.Point) domain.Place {
+	t.Helper()
+	p, err := st.CreatePlace(ctxFor(t), domain.Place{
+		ID: id, UserID: userID, Name: name, Shape: domain.ShapePolygon, Polygon: ring,
+		// The API computes these; the store just keeps them.
+		Center: domain.Point{Lat: 12.9605, Lon: 77.6385}, RadiusM: 80,
+		Triggers: []domain.Trigger{domain.TriggerArrive},
+	})
+	if err != nil {
+		t.Fatalf("CreatePlace(%s polygon): %v", id, err)
+	}
+	return p
+}
+
+// testPolygonPlaces checks a ring and the watch list survive a round trip, and
+// that a circle's collections come back as empty slices rather than nil — the
+// difference between `[]` and `null` on the wire.
+func testPolygonPlaces(t *testing.T, st store.Store) {
+	ctx := ctxFor(t)
+	mustUser(t, st, "u1")
+
+	circle := mustPlace(t, st, "u1", "p_circle", "Home", 12.9611, 77.6387, 120)
+	if circle.Shape != domain.ShapeCircle {
+		t.Errorf("default shape = %q, want circle", circle.Shape)
+	}
+	if circle.Polygon == nil || len(circle.Polygon) != 0 {
+		t.Errorf("circle polygon = %#v, want empty non-nil", circle.Polygon)
+	}
+	if circle.WatchUserIDs == nil || len(circle.WatchUserIDs) != 0 {
+		t.Errorf("circle watchUserIds = %#v, want empty non-nil", circle.WatchUserIDs)
+	}
+
+	created := mustPolygon(t, st, "u1", "p_poly", "Grocery", lShape())
+	got, err := st.GetPlace(ctx, "u1", created.ID)
+	if err != nil {
+		t.Fatalf("GetPlace(polygon): %v", err)
+	}
+	if got.Shape != domain.ShapePolygon {
+		t.Errorf("shape = %q, want polygon", got.Shape)
+	}
+	if len(got.Polygon) != len(lShape()) {
+		t.Fatalf("polygon has %d vertices, want %d (ring must come back open)", len(got.Polygon), len(lShape()))
+	}
+	for i, v := range lShape() {
+		if math.Abs(got.Polygon[i].Lat-v.Lat) > 1e-9 || math.Abs(got.Polygon[i].Lon-v.Lon) > 1e-9 {
+			t.Errorf("vertex %d = %+v, want %+v", i, got.Polygon[i], v)
+		}
+	}
+
+	// Move the fence ~1 km north and watch someone on it.
+	moved := got
+	moved.Polygon = make([]domain.Point, len(got.Polygon))
+	for i, v := range got.Polygon {
+		moved.Polygon[i] = domain.Point{Lat: v.Lat + 0.01, Lon: v.Lon}
+	}
+	moved.Center.Lat += 0.01
+	moved.WatchUserIDs = []string{"u2", "u3"}
+	updated, err := st.UpdatePlace(ctx, moved)
+	if err != nil {
+		t.Fatalf("UpdatePlace(move polygon): %v", err)
+	}
+	if math.Abs(updated.Polygon[0].Lat-12.9700) > 1e-9 {
+		t.Errorf("moved vertex 0 = %+v, want lat 12.9700", updated.Polygon[0])
+	}
+	if len(updated.WatchUserIDs) != 2 || updated.WatchUserIDs[0] != "u2" {
+		t.Errorf("watchUserIds = %v, want [u2 u3]", updated.WatchUserIDs)
+	}
+
+	// Turning a polygon back into a circle drops the ring.
+	asCircle := updated
+	asCircle.Shape = domain.ShapeCircle
+	asCircle.Polygon = nil
+	asCircle.RadiusM = 50
+	back, err := st.UpdatePlace(ctx, asCircle)
+	if err != nil {
+		t.Fatalf("UpdatePlace(polygon→circle): %v", err)
+	}
+	if back.Shape != domain.ShapeCircle || len(back.Polygon) != 0 || back.Polygon == nil {
+		t.Errorf("after reshape to circle: shape=%q polygon=%#v", back.Shape, back.Polygon)
+	}
+
+	list, err := st.ListPlaces(ctx, "u1")
+	if err != nil {
+		t.Fatalf("ListPlaces: %v", err)
+	}
+	for _, p := range list {
+		if p.Polygon == nil || p.WatchUserIDs == nil || p.Tags == nil || p.Triggers == nil {
+			t.Errorf("ListPlaces returned nil collections on %s: %+v", p.ID, p)
+		}
+	}
+}
+
+// testPolygonContaining is ST_Covers vs the in-memory ray cast: they must agree
+// on the concave notch and on a moved ring.
+func testPolygonContaining(t *testing.T, st store.Store) {
+	ctx := ctxFor(t)
+	mustUser(t, st, "u1")
+	poly := mustPolygon(t, st, "u1", "p_poly", "Grocery", lShape())
+
+	check := func(label string, pt domain.Point, want bool) {
+		t.Helper()
+		inside, err := st.PlacesContaining(ctx, "u1", pt)
+		if err != nil {
+			t.Fatalf("PlacesContaining(%s): %v", label, err)
+		}
+		got := len(inside) == 1 && inside[0].ID == poly.ID
+		if got != want {
+			t.Errorf("%s: inside polygon = %v, want %v (%v)", label, got, want, names(inside))
+		}
+		if got && inside[0].Shape != domain.ShapePolygon {
+			t.Errorf("%s: containing place lost its shape", label)
+		}
+	}
+
+	check("upright of the L", domain.Point{Lat: 12.9608, Lon: 77.6382}, true)
+	check("foot of the L", domain.Point{Lat: 12.9602, Lon: 77.6388}, true)
+	check("concave notch", domain.Point{Lat: 12.9608, Lon: 77.6388}, false)
+	check("outside", domain.Point{Lat: 12.9620, Lon: 77.6385}, false)
+
+	// Move it 1 km north: the old inside point is now outside, and vice versa.
+	moved := poly
+	moved.Polygon = make([]domain.Point, len(poly.Polygon))
+	for i, v := range poly.Polygon {
+		moved.Polygon[i] = domain.Point{Lat: v.Lat + 0.01, Lon: v.Lon}
+	}
+	moved.Center.Lat += 0.01
+	if _, err := st.UpdatePlace(ctx, moved); err != nil {
+		t.Fatalf("UpdatePlace(move): %v", err)
+	}
+	check("old spot after move", domain.Point{Lat: 12.9608, Lon: 77.6382}, false)
+	check("new spot after move", domain.Point{Lat: 12.9708, Lon: 77.6382}, true)
+}
+
 func names(places []domain.Place) []string {
 	out := make([]string, 0, len(places))
 	for _, p := range places {
@@ -515,6 +662,60 @@ func testNotes(t *testing.T, st store.Store) {
 	}
 	if got.PlaceID != "" {
 		t.Errorf("note still bound to a deleted place: %q", got.PlaceID)
+	}
+}
+
+// testNotePeerFields checks whose-movement and who-to-notify round-trip, and
+// that a note created without them reads back as "" and [] (never null).
+func testNotePeerFields(t *testing.T, st store.Store) {
+	ctx := ctxFor(t)
+	mustUser(t, st, "u1")
+	mustUser(t, st, "u2")
+	mustPlace(t, st, "u1", "p1", "Grocery", 12.9611, 77.6387, 120)
+
+	plain, err := st.CreateNote(ctx, domain.Note{UserID: "u1", Text: "eggs", PlaceID: "p1", Trigger: domain.TriggerArrive})
+	if err != nil {
+		t.Fatalf("CreateNote(plain): %v", err)
+	}
+	if plain.WatchUserID != "" || plain.NotifyUserIDs == nil || len(plain.NotifyUserIDs) != 0 {
+		t.Errorf("plain note: watch=%q notify=%#v, want \"\" and []", plain.WatchUserID, plain.NotifyUserIDs)
+	}
+
+	peer, err := st.CreateNote(ctx, domain.Note{
+		UserID: "u1", Text: "buy milk", PlaceID: "p1", Trigger: domain.TriggerPassby,
+		WatchUserID: "u2", NotifyUserIDs: []string{"u1", "u2"},
+	})
+	if err != nil {
+		t.Fatalf("CreateNote(peer): %v", err)
+	}
+	got, err := st.GetNote(ctx, "u1", peer.ID)
+	if err != nil {
+		t.Fatalf("GetNote: %v", err)
+	}
+	if got.WatchUserID != "u2" {
+		t.Errorf("watchUserId = %q, want u2", got.WatchUserID)
+	}
+	if len(got.NotifyUserIDs) != 2 || got.NotifyUserIDs[1] != "u2" {
+		t.Errorf("notifyUserIds = %v, want [u1 u2]", got.NotifyUserIDs)
+	}
+
+	got.WatchUserID = ""
+	got.NotifyUserIDs = []string{"u2"}
+	updated, err := st.UpdateNote(ctx, got)
+	if err != nil {
+		t.Fatalf("UpdateNote: %v", err)
+	}
+	if updated.WatchUserID != "" || len(updated.NotifyUserIDs) != 1 || updated.NotifyUserIDs[0] != "u2" {
+		t.Errorf("after update: watch=%q notify=%v", updated.WatchUserID, updated.NotifyUserIDs)
+	}
+
+	// The peer's own listing never sees the owner's note, however it names them.
+	theirs, err := st.ListNotes(ctx, "u2", store.NoteFilter{})
+	if err != nil {
+		t.Fatalf("ListNotes(u2): %v", err)
+	}
+	if len(theirs) != 0 {
+		t.Errorf("u2 lists %d of u1's notes", len(theirs))
 	}
 }
 

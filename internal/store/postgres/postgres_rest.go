@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/HarshSingh21/locnot/internal/domain"
@@ -14,26 +16,96 @@ import (
 
 // ---------------------------------------------------------------- places
 
-const placeCols = `id, user_id, name, tags,
+// The ring comes back as GeoJSON rather than WKT: it is one call, it is
+// unambiguous about axis order ([lon, lat]), and encoding/json parses it.
+const placeCols = `id, user_id, name, tags, shape,
 	ST_Y(center::geometry), ST_X(center::geometry),
-	radius_m, triggers, dwell_mins, created_at, updated_at`
+	radius_m, ST_AsGeoJSON(boundary::geometry, 9), watch_user_ids,
+	triggers, dwell_mins, created_at, updated_at`
 
 func scanPlace(row pgx.Row) (domain.Place, error) {
 	var (
 		p        domain.Place
+		shape    string
+		boundary *string
 		triggers []string
 	)
-	err := row.Scan(&p.ID, &p.UserID, &p.Name, &p.Tags,
+	err := row.Scan(&p.ID, &p.UserID, &p.Name, &p.Tags, &shape,
 		&p.Center.Lat, &p.Center.Lon,
-		&p.RadiusM, &triggers, &p.DwellMins, &p.CreatedAt, &p.UpdatedAt)
+		&p.RadiusM, &boundary, &p.WatchUserIDs,
+		&triggers, &p.DwellMins, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return domain.Place{}, err
+	}
+	p.Shape = domain.PlaceShape(shape)
+	if boundary != nil {
+		ring, err := parseRing(*boundary)
+		if err != nil {
+			return domain.Place{}, fmt.Errorf("place %s boundary: %w", p.ID, err)
+		}
+		p.Polygon = ring
 	}
 	p.Triggers = make([]domain.Trigger, 0, len(triggers))
 	for _, t := range triggers {
 		p.Triggers = append(p.Triggers, domain.Trigger(t))
 	}
-	return p, nil
+	return p.Normalized(), nil
+}
+
+// parseRing reads a GeoJSON Polygon's outer ring back as the open ring the API
+// speaks: PostGIS stores rings closed, the contract does not repeat the first
+// vertex.
+func parseRing(geojson string) ([]domain.Point, error) {
+	var g struct {
+		Coordinates [][][2]float64 `json:"coordinates"`
+	}
+	if err := json.Unmarshal([]byte(geojson), &g); err != nil {
+		return nil, err
+	}
+	if len(g.Coordinates) == 0 {
+		return []domain.Point{}, nil
+	}
+	outer := g.Coordinates[0]
+	if n := len(outer); n > 1 && outer[0] == outer[n-1] {
+		outer = outer[:n-1]
+	}
+	ring := make([]domain.Point, 0, len(outer))
+	for _, c := range outer {
+		ring = append(ring, domain.Point{Lat: c[1], Lon: c[0]})
+	}
+	return ring, nil
+}
+
+// boundaryWKT renders a polygon place's ring as EWKT for a geography column, or
+// nil (SQL NULL) for a circle. The ring is closed here because PostGIS requires
+// it; coordinates are (lon lat), PostGIS' axis order.
+func boundaryWKT(p domain.Place) any {
+	if !p.IsPolygon() {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("SRID=4326;POLYGON((")
+	ring := append(append([]domain.Point{}, p.Polygon...), p.Polygon[0])
+	for i, v := range ring {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(strconv.FormatFloat(v.Lon, 'f', -1, 64))
+		b.WriteString(" ")
+		b.WriteString(strconv.FormatFloat(v.Lat, 'f', -1, 64))
+	}
+	b.WriteString("))")
+	return b.String()
+}
+
+// shapeOf is the shape column for a place: a polygon only when it really has a
+// ring, so the CHECK constraint (polygon iff boundary) can never be violated by
+// a half-filled struct.
+func shapeOf(p domain.Place) string {
+	if p.IsPolygon() {
+		return string(domain.ShapePolygon)
+	}
+	return string(domain.ShapeCircle)
 }
 
 // arr normalises a Go slice for an array column.
@@ -99,11 +171,14 @@ func (s *Store) CreatePlace(ctx context.Context, p domain.Place) (domain.Place, 
 		p.CreatedAt = time.Now().UTC()
 	}
 	out, err := scanPlace(s.pool.QueryRow(ctx, `
-		INSERT INTO places (id, user_id, name, tags, center, radius_m, triggers, dwell_mins, created_at, updated_at)
-		VALUES ($1,$2,$3,$4, ST_SetSRID(ST_MakePoint($5,$6),4326)::geography, $7,$8,$9,$10, now())
+		INSERT INTO places (id, user_id, name, tags, center, radius_m, triggers, dwell_mins, created_at, updated_at,
+		                    shape, boundary, watch_user_ids)
+		VALUES ($1,$2,$3,$4, ST_SetSRID(ST_MakePoint($5,$6),4326)::geography, $7,$8,$9,$10, now(),
+		        $11, $12::text::geography, $13)
 		RETURNING `+placeCols,
 		p.ID, p.UserID, p.Name, arr(p.Tags), p.Center.Lon, p.Center.Lat,
-		p.RadiusM, triggerStrings(p.Triggers), p.DwellMins, p.CreatedAt))
+		p.RadiusM, triggerStrings(p.Triggers), p.DwellMins, p.CreatedAt,
+		shapeOf(p), boundaryWKT(p), arr(p.WatchUserIDs)))
 	err = mapError("create place", err)
 	observe("CreatePlace", start, err)
 	return out, err
@@ -122,11 +197,15 @@ func (s *Store) UpdatePlace(ctx context.Context, p domain.Place) (domain.Place, 
 			radius_m = $7,
 			triggers = $8,
 			dwell_mins = $9,
+			shape = $10,
+			boundary = $11::text::geography,
+			watch_user_ids = $12,
 			updated_at = now()
 		WHERE id = $1 AND user_id = $2
 		RETURNING `+placeCols,
 		p.ID, p.UserID, p.Name, arr(p.Tags), p.Center.Lon, p.Center.Lat,
-		p.RadiusM, triggerStrings(p.Triggers), p.DwellMins))
+		p.RadiusM, triggerStrings(p.Triggers), p.DwellMins,
+		shapeOf(p), boundaryWKT(p), arr(p.WatchUserIDs)))
 	err = mapError("place "+p.ID, err)
 	observe("UpdatePlace", start, err)
 	return out, err
@@ -146,15 +225,19 @@ func (s *Store) DeletePlace(ctx context.Context, userID, id string) error {
 	return err
 }
 
-// PlacesContaining is the geofence hot path: ST_DWithin over the GIST index,
-// which is the query the Phase 1 engine runs for every incoming fix.
+// PlacesContaining is the geofence hot path: ST_DWithin over the GIST index for
+// circles, ST_Covers over the boundary index for polygons — the query the
+// engine runs for every incoming fix.
 func (s *Store) PlacesContaining(ctx context.Context, userID string, pt domain.Point) ([]domain.Place, error) {
 	start := time.Now()
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+placeCols+`
 		FROM places
 		WHERE user_id = $1
-		  AND ST_DWithin(center, ST_SetSRID(ST_MakePoint($2,$3),4326)::geography, radius_m)
+		  AND ((shape = 'circle'
+		        AND ST_DWithin(center, ST_SetSRID(ST_MakePoint($2,$3),4326)::geography, radius_m))
+		    OR (shape = 'polygon'
+		        AND ST_Covers(boundary, ST_SetSRID(ST_MakePoint($2,$3),4326)::geography)))
 		ORDER BY id`, userID, pt.Lon, pt.Lat)
 	if err != nil {
 		observe("PlacesContaining", start, err)
@@ -214,7 +297,7 @@ func (s *Store) PlaceStats(ctx context.Context, userID string) (map[string]store
 // The column is `body`, not `text`: `text` is a type name in PostgreSQL and
 // quoting it everywhere is a papercut waiting to become a bug.
 const noteCols = `id, user_id, body, coalesce(place_id, ''), trigger, tags, done, channel,
-	created_at, updated_at, fired_at`
+	watch_user_id, notify_user_ids, created_at, updated_at, fired_at`
 
 func scanNote(row pgx.Row) (domain.Note, error) {
 	var (
@@ -222,12 +305,13 @@ func scanNote(row pgx.Row) (domain.Note, error) {
 		trigger string
 	)
 	err := row.Scan(&n.ID, &n.UserID, &n.Text, &n.PlaceID, &trigger, &n.Tags,
-		&n.Done, &n.Channel, &n.CreatedAt, &n.UpdatedAt, &n.FiredAt)
+		&n.Done, &n.Channel, &n.WatchUserID, &n.NotifyUserIDs,
+		&n.CreatedAt, &n.UpdatedAt, &n.FiredAt)
 	if err != nil {
 		return domain.Note{}, err
 	}
 	n.Trigger = domain.Trigger(trigger)
-	return n, nil
+	return n.Normalized(), nil
 }
 
 func nullable(s string) any {
@@ -301,10 +385,12 @@ func (s *Store) CreateNote(ctx context.Context, n domain.Note) (domain.Note, err
 		n.CreatedAt = time.Now().UTC()
 	}
 	out, err := scanNote(s.pool.QueryRow(ctx, `
-		INSERT INTO notes (id, user_id, body, place_id, trigger, tags, done, channel, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
+		INSERT INTO notes (id, user_id, body, place_id, trigger, tags, done, channel, created_at, updated_at,
+		                   watch_user_id, notify_user_ids)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now(), $10, $11)
 		RETURNING `+noteCols,
-		n.ID, n.UserID, n.Text, nullable(n.PlaceID), string(n.Trigger), arr(n.Tags), n.Done, n.Channel, n.CreatedAt))
+		n.ID, n.UserID, n.Text, nullable(n.PlaceID), string(n.Trigger), arr(n.Tags), n.Done, n.Channel, n.CreatedAt,
+		n.WatchUserID, arr(n.NotifyUserIDs)))
 	err = mapError("create note", err)
 	observe("CreateNote", start, err)
 	return out, err
@@ -315,10 +401,12 @@ func (s *Store) UpdateNote(ctx context.Context, n domain.Note) (domain.Note, err
 	out, err := scanNote(s.pool.QueryRow(ctx, `
 		UPDATE notes SET
 			body = $3, place_id = $4, trigger = $5, tags = $6,
-			done = $7, channel = $8, updated_at = now()
+			done = $7, channel = $8, watch_user_id = $9, notify_user_ids = $10,
+			updated_at = now()
 		WHERE id = $1 AND user_id = $2
 		RETURNING `+noteCols,
-		n.ID, n.UserID, n.Text, nullable(n.PlaceID), string(n.Trigger), arr(n.Tags), n.Done, n.Channel))
+		n.ID, n.UserID, n.Text, nullable(n.PlaceID), string(n.Trigger), arr(n.Tags), n.Done, n.Channel,
+		n.WatchUserID, arr(n.NotifyUserIDs)))
 	err = mapError("note "+n.ID, err)
 	observe("UpdateNote", start, err)
 	return out, err

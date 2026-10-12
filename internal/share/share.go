@@ -101,6 +101,12 @@ func (s *Service) Start(ctx context.Context) error {
 		if ev.Trigger != domain.TriggerArrive {
 			return
 		}
+		// "Until I arrive" means the sharer's own arrival. A watched peer
+		// reaching the same fence publishes on the owner's subject too, and must
+		// not end the owner's share.
+		if ev.Subject() != ev.UserID {
+			return
+		}
 		s.onArrive(context.WithoutCancel(ctx), ev)
 	})
 	if err != nil {

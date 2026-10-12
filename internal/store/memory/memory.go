@@ -442,11 +442,13 @@ func (s *Store) PlacesContaining(_ context.Context, userID string, pt domain.Poi
 		if p.UserID != userID {
 			continue
 		}
-		// bbox pre-filter, then exact distance — mirrors GIST index + ST_DWithin
+		// bbox pre-filter, then the exact test — mirrors GIST index + ST_DWithin /
+		// ST_Covers. A polygon's radius is its bounding radius, so the box around
+		// it still covers the whole ring.
 		if !geo.BBoxAround(p.Center.Lat, p.Center.Lon, float64(p.RadiusM)).Contains(pt.Lat, pt.Lon) {
 			continue
 		}
-		if geo.DWithin(p.Center.Lat, p.Center.Lon, pt.Lat, pt.Lon, float64(p.RadiusM)) {
+		if p.Contains(pt) {
 			out = append(out, clonePlace(p))
 		}
 	}
@@ -912,13 +914,17 @@ func cloneDevice(d domain.Device) domain.Device {
 }
 
 func clonePlace(p domain.Place) domain.Place {
+	p = p.Normalized()
 	p.Tags = cloneStrings(p.Tags)
 	p.Triggers = append(make([]domain.Trigger, 0, len(p.Triggers)), p.Triggers...)
+	p.Polygon = append(make([]domain.Point, 0, len(p.Polygon)), p.Polygon...)
+	p.WatchUserIDs = cloneStrings(p.WatchUserIDs)
 	return p
 }
 
 func cloneNote(n domain.Note) domain.Note {
 	n.Tags = cloneStrings(n.Tags)
+	n.NotifyUserIDs = cloneStrings(n.NotifyUserIDs)
 	if n.FiredAt != nil {
 		t := *n.FiredAt
 		n.FiredAt = &t

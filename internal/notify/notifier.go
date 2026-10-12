@@ -38,6 +38,14 @@ type Message struct {
 	ClickURL  string          `json:"clickUrl,omitempty"`
 	TS        time.Time       `json:"ts"`
 	Event     domain.GeoEvent `json:"event"`
+
+	// Kind is "note" (notes fired, or the recipient's own crossing) or "watch"
+	// (a watched person crossed the recipient's fence, no note involved).
+	Kind string `json:"kind"`
+	// FromUserID/FromName name the note's or place's owner when that is not
+	// the recipient — Harsh's note delivered to Nishtha.
+	FromUserID string `json:"fromUserId,omitempty"`
+	FromName   string `json:"fromName,omitempty"`
 }
 
 // Notifier delivers a Message over one channel.

@@ -28,6 +28,11 @@
 //   - Cool-off. An atomic claim per (device, place, trigger). Only the winner
 //     fires, so a jittering GPS fix on a fence boundary produces one reminder
 //     rather than twelve.
+//
+// A fix is evaluated against its own user's places and against the places of
+// every connected person who watches that user — but only while the user's own
+// sharing toward them is live (see peerPlaces). The event for a peer crossing
+// belongs to the place owner and is published on the owner's subject alone.
 package geofence
 
 import (
@@ -42,7 +47,6 @@ import (
 	"github.com/HarshSingh21/locnot/internal/bus"
 	"github.com/HarshSingh21/locnot/internal/domain"
 	"github.com/HarshSingh21/locnot/internal/gate"
-	"github.com/HarshSingh21/locnot/internal/geo"
 	"github.com/HarshSingh21/locnot/internal/idgen"
 	"github.com/HarshSingh21/locnot/internal/metrics"
 	"github.com/HarshSingh21/locnot/internal/obs"
@@ -96,7 +100,13 @@ func (c Config) withDefaults() Config {
 }
 
 // fenceState is what the engine remembers about one device inside one place.
+//
+// OwnerID is the place owner. It differs from the device's user when the place
+// belongs to a connected peer who watches this device's user, and it is what
+// keeps a peer's inside-state independent per owner's place: place IDs are
+// globally unique, so (device, place) is the key either way.
 type fenceState struct {
+	OwnerID         string
 	EnteredAt       time.Time
 	ArriveConfirmed bool
 	DwellArmed      bool
@@ -226,12 +236,20 @@ func (e *Engine) Evaluate(ctx context.Context, pos domain.Position) error {
 	}
 	st.LastEval = pos.RecvTS
 
-	// ---- enter/exit diff. PostGIS answers this with ST_DWithin over a GIST
-	// index; Tile38 would push it as an event in Phase 2.
+	// ---- enter/exit diff. PostGIS answers this with ST_DWithin / ST_Covers
+	// over GIST indexes; Tile38 would push it as an event in Phase 2. The
+	// geometry is re-read on every fix, so a fence that was moved or reshaped
+	// since the last one is judged by where it is now.
 	inside, err := e.store.PlacesContaining(ctx, pos.UserID, pos.Point)
 	if err != nil {
 		return fmt.Errorf("geofence: places containing: %w", err)
 	}
+
+	// The same question for every connected person this user shares with live
+	// who watches them on one of their own fences.
+	peers := e.peerPlaces(ctx, pos)
+	inside = append(inside, peers.inside...)
+
 	insideByID := make(map[string]domain.Place, len(inside))
 	for _, p := range inside {
 		insideByID[p.ID] = p
@@ -239,11 +257,24 @@ func (e *Engine) Evaluate(ctx context.Context, pos domain.Position) error {
 
 	// Exits first: leaving a fence cancels its pending dwell before anything
 	// else can arm a new one.
-	for placeID := range st.Inside {
+	for placeID, fs := range st.Inside {
 		if _, still := insideByID[placeID]; still {
 			continue
 		}
-		e.handleExit(ctx, st, placeID, pos)
+		if fs.OwnerID != "" && fs.OwnerID != pos.UserID {
+			if peers.unknownOwner(fs.OwnerID) {
+				// The owner's fences could not be read this time. Keep the state
+				// rather than invent a leave (or silently forget an arrival).
+				continue
+			}
+			if !peers.watched[placeID] {
+				// Consent was withdrawn, or the owner stopped watching: forget the
+				// fence without announcing a crossing nobody may now observe.
+				e.forgetFence(ctx, st, placeID, pos)
+				continue
+			}
+		}
+		e.handleExit(ctx, st, placeID, fs, pos)
 	}
 
 	for _, place := range inside {
@@ -255,12 +286,103 @@ func (e *Engine) Evaluate(ctx context.Context, pos domain.Position) error {
 		e.handleStillInside(ctx, st, place, fs, pos)
 	}
 
-	span.SetAttributes(attribute.Int("lura.inside_count", len(inside)))
+	span.SetAttributes(
+		attribute.Int("lura.inside_count", len(inside)),
+		attribute.Int("lura.peer_inside_count", len(peers.inside)),
+	)
 	return nil
 }
 
+// peerScope is what one fix may be evaluated against beyond its own user's
+// places.
+type peerScope struct {
+	// inside are watched peer places that contain the fix.
+	inside []domain.Place
+	// watched are the IDs of every peer place currently allowed to evaluate
+	// this user, containing the fix or not — what separates "left the fence"
+	// from "may no longer be watched".
+	watched map[string]bool
+	// unknown are owners whose places could not be read on this fix;
+	// allUnknown means not even the connection list could.
+	unknown    map[string]bool
+	allUnknown bool
+}
+
+func (s peerScope) unknownOwner(owner string) bool { return s.allUnknown || s.unknown[owner] }
+
+// peerPlaces finds the places of other users that this fix may cross.
+//
+// The rule is the consent model from internal/connect, applied to geofencing:
+// owner W may evaluate user U's position only while *U's own* row toward W is
+// Live() — accepted, and U's sharing switch on. Reading U's row (not W's) is
+// the point: W cannot opt in on U's behalf. Within that, only W's places that
+// list U in watchUserIds, or that carry one of W's open notes watching U, are
+// evaluated. Pausing sharing therefore stops evaluation on the very next fix.
+func (e *Engine) peerPlaces(ctx context.Context, pos domain.Position) peerScope {
+	scope := peerScope{watched: map[string]bool{}, unknown: map[string]bool{}}
+
+	conns, err := e.store.ListConnections(ctx, pos.UserID)
+	if err != nil {
+		e.log.WarnContext(ctx, "geofence: list connections failed", "user", pos.UserID, "error", err)
+		// Without the connection list nothing is known about any owner, so keep
+		// every peer fence as it is.
+		scope.allUnknown = true
+		return scope
+	}
+
+	notDone := false
+	for _, c := range conns {
+		if !c.Live() {
+			continue
+		}
+		owner := c.PeerID
+		places, err := e.store.ListPlaces(ctx, owner)
+		if err != nil {
+			e.log.WarnContext(ctx, "geofence: list peer places failed", "owner", owner, "error", err)
+			scope.unknown[owner] = true
+			continue
+		}
+		notes, err := e.store.ListNotes(ctx, owner, store.NoteFilter{Done: &notDone})
+		if err != nil {
+			e.log.WarnContext(ctx, "geofence: list peer notes failed", "owner", owner, "error", err)
+			scope.unknown[owner] = true
+			continue
+		}
+		noteWatch := map[string]bool{}
+		for _, n := range notes {
+			if n.WatchUserID == pos.UserID && n.PlaceID != "" {
+				noteWatch[n.PlaceID] = true
+			}
+		}
+
+		watching := false
+		for _, p := range places {
+			if p.Watches(pos.UserID) || noteWatch[p.ID] {
+				scope.watched[p.ID] = true
+				watching = true
+			}
+		}
+		if !watching {
+			continue // nothing of this owner's watches this user: skip the spatial query
+		}
+
+		containing, err := e.store.PlacesContaining(ctx, owner, pos.Point)
+		if err != nil {
+			e.log.WarnContext(ctx, "geofence: peer places containing failed", "owner", owner, "error", err)
+			scope.unknown[owner] = true
+			continue
+		}
+		for _, p := range containing {
+			if scope.watched[p.ID] {
+				scope.inside = append(scope.inside, p)
+			}
+		}
+	}
+	return scope
+}
+
 func (e *Engine) handleEnter(ctx context.Context, st *deviceState, place domain.Place, pos domain.Position) {
-	fs := &fenceState{EnteredAt: pos.RecvTS}
+	fs := &fenceState{OwnerID: place.UserID, EnteredAt: pos.RecvTS}
 	if st.Inside == nil {
 		st.Inside = map[string]*fenceState{}
 	}
@@ -316,7 +438,19 @@ func (e *Engine) handleStillInside(ctx context.Context, st *deviceState, place d
 	}
 }
 
-func (e *Engine) handleExit(ctx context.Context, st *deviceState, placeID string, pos domain.Position) {
+// forgetFence drops a device's state for a fence without firing anything. It is
+// the path for a peer fence the device's user may no longer be evaluated
+// against: no leave is announced, because nobody is entitled to observe it.
+func (e *Engine) forgetFence(ctx context.Context, st *deviceState, placeID string, pos domain.Position) {
+	delete(st.Inside, placeID)
+	if err := e.store.DeletePendingDwell(ctx, pos.DeviceID, placeID); err != nil {
+		e.log.WarnContext(ctx, "geofence: cancel pending dwell failed",
+			"device", pos.DeviceID, "place", placeID, "error", err)
+	}
+	e.log.DebugContext(ctx, "geofence: peer fence forgotten", "device", pos.DeviceID, "place", placeID)
+}
+
+func (e *Engine) handleExit(ctx context.Context, st *deviceState, placeID string, fs *fenceState, pos domain.Position) {
 	delete(st.Inside, placeID)
 
 	// Cancel any pending dwell: the user left before the timer matured.
@@ -325,7 +459,11 @@ func (e *Engine) handleExit(ctx context.Context, st *deviceState, placeID string
 			"device", pos.DeviceID, "place", placeID, "error", err)
 	}
 
-	place, err := e.store.GetPlace(ctx, pos.UserID, placeID)
+	owner := fs.OwnerID
+	if owner == "" {
+		owner = pos.UserID
+	}
+	place, err := e.store.GetPlace(ctx, owner, placeID)
 	if err != nil {
 		// The place was deleted while the device was inside it: nothing to fire.
 		if !errors.Is(err, domain.ErrNotFound) {
@@ -353,9 +491,12 @@ func (e *Engine) armDwell(ctx context.Context, _ *deviceState, place domain.Plac
 	if place.DwellMins > 0 {
 		d = time.Duration(place.DwellMins) * time.Minute
 	}
+	// The timer belongs to the place owner: it is their fence and their
+	// overview that lists it. For a watched peer that is not the device's user,
+	// which is why the restart path resolves the device separately.
 	pd := domain.PendingDwell{
 		DeviceID:  pos.DeviceID,
-		UserID:    pos.UserID,
+		UserID:    place.UserID,
 		PlaceID:   place.ID,
 		EnteredAt: fs.EnteredAt,
 		FireAt:    fs.EnteredAt.Add(d),
@@ -395,7 +536,7 @@ func (e *Engine) runDwellDue(ctx context.Context) {
 		return
 	}
 	for _, pd := range due {
-		inside, err := e.stillInside(ctx, pd)
+		subject, inside, err := e.stillInside(ctx, pd)
 		if err != nil {
 			e.log.WarnContext(ctx, "geofence: dwell inside-check failed",
 				"device", pd.DeviceID, "place", pd.PlaceID, "error", err)
@@ -414,7 +555,7 @@ func (e *Engine) runDwellDue(ctx context.Context) {
 		}
 		pos := domain.Position{
 			DeviceID: pd.DeviceID,
-			UserID:   pd.UserID,
+			UserID:   subject,
 			RecvTS:   now,
 			Point:    place.Center,
 		}
@@ -432,32 +573,108 @@ func (e *Engine) runDwellDue(ctx context.Context) {
 
 // stillInside answers "is the device inside this place right now?" using live
 // state when the engine has it, and the device's last known point when it does
-// not (which is the case for a timer reloaded after a restart).
-func (e *Engine) stillInside(ctx context.Context, pd domain.PendingDwell) (bool, error) {
+// not (which is the case for a timer reloaded after a restart). It also returns
+// whose device it is — the place owner's, or a watched peer's.
+//
+// A peer's dwell re-checks consent at maturity: sharing paused (or the watch
+// removed) while the timer ran means it must not fire, even if no fix has
+// arrived since to clear the state.
+func (e *Engine) stillInside(ctx context.Context, pd domain.PendingDwell) (string, bool, error) {
 	if st := e.peekState(pd.DeviceID); st != nil {
 		st.mu.Lock()
 		_, inside := st.Inside[pd.PlaceID]
+		subject := st.UserID
 		st.mu.Unlock()
-		return inside, nil
+		if inside && subject != pd.UserID {
+			ok, err := e.mayWatch(ctx, pd.UserID, subject, pd.PlaceID)
+			if err != nil {
+				return "", false, err
+			}
+			inside = ok
+		}
+		return subject, inside, nil
 	}
 
-	dev, err := e.store.GetDevice(ctx, pd.UserID, pd.DeviceID)
+	dev, err := e.dwellDevice(ctx, pd)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 	if dev.LastPoint == nil || dev.LastSeen == nil {
-		return false, nil
+		return dev.UserID, false, nil
 	}
 	// A last fix older than the freshness window tells us nothing useful.
 	if e.now().Sub(*dev.LastSeen) > e.cfg.FreshWindow {
-		return false, nil
+		return dev.UserID, false, nil
+	}
+	if dev.UserID != pd.UserID {
+		ok, err := e.mayWatch(ctx, pd.UserID, dev.UserID, pd.PlaceID)
+		if err != nil || !ok {
+			return dev.UserID, false, err
+		}
 	}
 	place, err := e.store.GetPlace(ctx, pd.UserID, pd.PlaceID)
 	if err != nil {
+		return "", false, err
+	}
+	return dev.UserID, place.Contains(*dev.LastPoint), nil
+}
+
+// dwellDevice finds the device behind a reloaded timer: the owner's own, or
+// one belonging to a person the owner is connected to. Reads stay user-scoped —
+// a device is only looked up under a user the owner has a connection with.
+func (e *Engine) dwellDevice(ctx context.Context, pd domain.PendingDwell) (domain.Device, error) {
+	dev, err := e.store.GetDevice(ctx, pd.UserID, pd.DeviceID)
+	if err == nil || !errors.Is(err, domain.ErrNotFound) {
+		return dev, err
+	}
+	conns, cerr := e.store.ListConnections(ctx, pd.UserID)
+	if cerr != nil {
+		return domain.Device{}, cerr
+	}
+	for _, c := range conns {
+		if dev, perr := e.store.GetDevice(ctx, c.PeerID, pd.DeviceID); perr == nil {
+			return dev, nil
+		}
+	}
+	return domain.Device{}, err
+}
+
+// mayWatch reports whether owner may currently evaluate subject against
+// placeID: subject's own row toward owner is live, and the place (or one of the
+// owner's open notes on it) still watches subject. It is the same rule
+// peerPlaces applies per fix, asked about one place.
+func (e *Engine) mayWatch(ctx context.Context, owner, subject, placeID string) (bool, error) {
+	conn, err := e.store.GetConnection(ctx, subject, owner)
+	if errors.Is(err, domain.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
 		return false, err
 	}
-	return geo.DWithin(place.Center.Lat, place.Center.Lon,
-		dev.LastPoint.Lat, dev.LastPoint.Lon, float64(place.RadiusM)), nil
+	if !conn.Live() {
+		return false, nil
+	}
+	place, err := e.store.GetPlace(ctx, owner, placeID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if place.Watches(subject) {
+		return true, nil
+	}
+	notDone := false
+	notes, err := e.store.ListNotes(ctx, owner, store.NoteFilter{PlaceID: placeID, Done: &notDone})
+	if err != nil {
+		return false, err
+	}
+	for _, n := range notes {
+		if n.WatchUserID == subject {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // fire runs the cool-off gate and, if it wins, publishes the geo event.
@@ -482,35 +699,56 @@ func (e *Engine) fire(ctx context.Context, place domain.Place, pos domain.Positi
 		return false
 	}
 
+	// The event belongs to the place owner and goes out on their subject only;
+	// for a watched peer, the peer is the subject but never the recipient.
 	ev := domain.GeoEvent{
-		ID:        idgen.New("geo"),
-		UserID:    pos.UserID,
-		DeviceID:  pos.DeviceID,
-		PlaceID:   place.ID,
-		PlaceName: place.Name,
-		Trigger:   trigger,
-		TS:        pos.RecvTS,
-		Point:     pos.Point,
-		SpeedMPS:  pos.SpeedMPS,
+		ID:            idgen.New("geo"),
+		UserID:        place.UserID,
+		DeviceID:      pos.DeviceID,
+		PlaceID:       place.ID,
+		PlaceName:     place.Name,
+		Trigger:       trigger,
+		TS:            pos.RecvTS,
+		Point:         pos.Point,
+		SpeedMPS:      pos.SpeedMPS,
+		SubjectUserID: pos.UserID,
+		SubjectName:   e.displayName(ctx, pos.UserID),
+	}
+	if ev.UserID == "" {
+		ev.UserID = pos.UserID
 	}
 	if ev.TS.IsZero() {
 		ev.TS = e.now()
 	}
 
 	// Durable: a geo event that is lost is a reminder that never arrives.
-	if err := bus.PublishDurableJSON(e.b, bus.GeoSubject(pos.UserID), ev); err != nil {
+	if err := bus.PublishDurableJSON(e.b, bus.GeoSubject(ev.UserID), ev); err != nil {
 		e.log.ErrorContext(ctx, "geofence: publish geo event failed", "error", err)
 		return false
 	}
 	// Also on the live path so the UI can react immediately.
-	if err := bus.PublishJSON(e.b, bus.GeoSubject(pos.UserID), ev); err != nil {
+	if err := bus.PublishJSON(e.b, bus.GeoSubject(ev.UserID), ev); err != nil {
 		e.log.WarnContext(ctx, "geofence: live geo publish failed", "error", err)
 	}
 
 	metrics.GeoEventsFired.Inc(metrics.AttrTrigger.String(string(trigger)))
 	e.log.InfoContext(ctx, "geofence event",
-		"trigger", trigger, "place", place.Name, "device", pos.DeviceID, "event", ev.ID)
+		"trigger", trigger, "place", place.Name, "device", pos.DeviceID, "event", ev.ID,
+		"owner", ev.UserID, "subject", ev.SubjectUserID)
 	return true
+}
+
+// displayName is how a toast names the person who crossed ("Nishtha arrived at
+// Grocery"). A lookup failure degrades to an empty name, never a lost event.
+func (e *Engine) displayName(ctx context.Context, userID string) string {
+	u, err := e.store.GetUser(ctx, userID)
+	if err != nil {
+		return ""
+	}
+	if u.DisplayName != "" {
+		return u.DisplayName
+	}
+	return u.Email
 }
 
 func (e *Engine) stateFor(deviceID, userID string) *deviceState {
@@ -553,7 +791,13 @@ func (e *Engine) InsideSnapshot() map[string][]string {
 	for i, st := range states {
 		st.mu.Lock()
 		places := make([]string, 0, len(st.Inside))
-		for placeID := range st.Inside {
+		for placeID, fs := range st.Inside {
+			// Only the device owner's own places. A peer's fence the device is
+			// inside is the watcher's business: listing it here would tell the
+			// watched person which of someone else's fences they are in.
+			if fs.OwnerID != "" && fs.OwnerID != st.UserID {
+				continue
+			}
 			places = append(places, placeID)
 		}
 		st.mu.Unlock()

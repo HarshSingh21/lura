@@ -44,7 +44,7 @@
 
   "attributes": {
     "lura.realm.source": "deploy/keycloak/lura-realm.json — edit the file, re-import, do not hand-edit the realm in the console",
-    "lura.realm.warning": "LOCAL DEVELOPMENT REALM. The two seeded users (aravind@lura.local / nistha@lura.local) carry passwords committed to a public repository and exist only for two-device testing on a laptop. Delete them before this realm is reachable by anyone but you."
+    "lura.realm.warning": "LOCAL DEVELOPMENT REALM. The seeded users (aravind@, nistha@, harsh@ and nishtha@lura.local) carry passwords committed to a public repository and exist only for two-device testing on a laptop. Delete them before this realm is reachable by anyone but you."
   },
 
   "requiredActions": [
@@ -216,16 +216,18 @@
         "http://localhost:8080/*",
         "http://localhost:8081/*",
         "http://localhost:19006/*",
+        "http://lura.com:8080/*",
         "lura://*",
         "exp://*"
       ],
       "webOrigins": [
         "+",
-        "http://localhost:8080"
+        "http://localhost:8080",
+        "http://lura.com:8080"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "http://localhost:8080/*##http://localhost:8081/*##http://localhost:19006/*##lura://*##exp://*",
+        "post.logout.redirect.uris": "http://localhost:8080/*##http://localhost:8081/*##http://localhost:19006/*##http://lura.com:8080/*##lura://*##exp://*",
         "oauth2.device.authorization.grant.enabled": "false",
         "oidc.ciba.grant.enabled": "false",
         "backchannel.logout.session.required": "true",
@@ -339,6 +341,40 @@
         {
           "type": "password",
           "value": "lura-dev-2",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "harsh@lura.local",
+      "email": "harsh@lura.local",
+      "firstName": "Harsh",
+      "lastName": "Singh",
+      "enabled": true,
+      "emailVerified": true,
+      "requiredActions": [],
+      "realmRoles": ["user"],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "lura-harsh",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "nishtha@lura.local",
+      "email": "nishtha@lura.local",
+      "firstName": "Nishtha",
+      "lastName": "Dev",
+      "enabled": true,
+      "emailVerified": true,
+      "requiredActions": [],
+      "realmRoles": ["user"],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "lura-nishtha",
           "temporary": false
         }
       ]
