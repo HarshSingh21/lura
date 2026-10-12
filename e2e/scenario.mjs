@@ -468,10 +468,10 @@ try {
     // Between two pings the marker must glide, not jump: sample its screen
     // position every frame across ~2.5 pings.
     // A page starved of frames (a loaded machine) cannot show a glide either
-    // way, so sample again rather than judge two frames a second.
+    // way, so sample again (up to eight times) rather than judge two frames a second.
     let sampled = await sampleOnMap(harsh, nMarker, 2600);
     const sampleTries = [Math.round(sampled.fps)];
-    while (sampled.fps < MIN_JUDGE_FPS && sampleTries.length < 4) {
+    while (sampled.fps < MIN_JUDGE_FPS && sampleTries.length < 8) {
       sampled = await sampleOnMap(harsh, nMarker, 2600);
       sampleTries.push(Math.round(sampled.fps));
     }
@@ -526,7 +526,11 @@ try {
 
     check(a && b && (Math.abs(a.x - b.x) > 2 || Math.abs(a.y - b.y) > 2), `Nishtha's marker did not move: ${JSON.stringify({ a, b })}`);
     check(
-      sampled.fps >= MIN_JUDGE_FPS && fixesDuring >= 2 && glide.movingMs >= fixesDuring * 10 * FRAME_MS && glide.jumps.length === 0,
+      sampled.fps >= MIN_JUDGE_FPS,
+      `the page rendered ${sampleTries.join(', ')} fps over ${sampleTries.length} samples — too few frames to judge the glide (is the machine overloaded?): ${JSON.stringify(glide)}`,
+    );
+    check(
+      fixesDuring >= 2 && glide.movingMs >= fixesDuring * 10 * FRAME_MS && glide.jumps.length === 0,
       `marker jumped instead of gliding: ${JSON.stringify(glide)}`,
     );
     check(offN !== null && offN <= 3, `Nishtha's marker is ${offN?.toFixed(1)} px from her last fix`);
