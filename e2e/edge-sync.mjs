@@ -227,7 +227,12 @@ class Observer {
 }
 
 // --------------------------------------------------------------- the pages
-/** EDGE records what the shared instrument cannot: every toast element, even two with the same text. */
+/**
+ * EDGE records what the shared instrument cannot: every toast element, even two
+ * with the same text — but one per crossing (its lura-notice-<id>): a reminder
+ * waiting for an acknowledgement replaces its crossing's toast with a sticky
+ * card, a second element for the same notice.
+ */
 const EDGE = `(() => {
   const rec = (window.__edge = { toasts: [], status: [], longtasks: [] });
   try {
@@ -236,6 +241,7 @@ const EDGE = `(() => {
     }).observe({ type: 'longtask', buffered: true });
   } catch { /* not supported */ }
   const seen = new WeakSet();
+  const notices = new Set();
   const scan = (root) => {
     if (root.nodeType !== 1) return;
     const els = [root, ...root.querySelectorAll('[aria-label$="Show on the map."]')];
@@ -244,7 +250,12 @@ const EDGE = `(() => {
       if (!label || !label.endsWith('Show on the map.') || seen.has(el)) continue;
       if (el.closest('[aria-modal="true"]') || label.includes(', unread.') || el.closest('[data-testid="lura-notification-panel"]')) continue;
       seen.add(el);
-      rec.toasts.push({ wall: Date.now(), label, text: el.innerText || '' });
+      const id = el.getAttribute('data-testid') || '';
+      const notice = id.startsWith('lura-notice-') ? id.slice('lura-notice-'.length) : '';
+      if (notice && notices.has(notice)) continue;
+      if (notice) notices.add(notice);
+      const card = !!el.closest('[aria-label$="Waiting for acknowledgement."]');
+      rec.toasts.push({ wall: Date.now(), label, text: el.innerText || '', notice, card });
     }
   };
   let last;
@@ -877,6 +888,10 @@ try {
     await sleep(3000);
     const unreadBefore = await unreadBadge(harsh.page);
     const entriesBefore = await panelEntries(harsh.page);
+    // Reminders still waiting for an acknowledgement stay on screen across a
+    // reload, as cards: that is the reminder, not a replay of its toast.
+    const pendingBefore = await harsh.page.evaluate(() =>
+      [...document.querySelectorAll('[aria-label$="Waiting for acknowledgement."] [data-testid^="lura-notice-"]')].map((e) => e.getAttribute('data-testid').slice('lura-notice-'.length)));
     const t = Date.now();
     await harsh.page.reload({ waitUntil: 'domcontentloaded' });
     const tDom = Date.now();
@@ -916,7 +931,7 @@ try {
     const offM = haversineM(m, last.body);
     const unreadAfter = await unreadBadge(harsh.page);
     const entriesAfter = await panelEntries(harsh.page);
-    const toastsAfter = (await edge(harsh.page)).toasts;
+    const toastsAfter = (await edge(harsh.page)).toasts.filter((x) => !(x.card && pendingBefore.includes(x.notice)));
     const chimesAfter = chimes((await pageRecord(harsh.page)).notes);
     const trail = await harsh.page.evaluate(() => document.querySelectorAll('svg line').length);
     // He keeps publishing: Nishtha sees his next move.
