@@ -4,7 +4,9 @@
 *.out
 
 # Node / Expo
-node_modules/
+# No trailing slash: worktrees symlink node_modules to the main checkout's, and
+# a symlink is a file to git, which `node_modules/` would not match.
+node_modules
 client/dist/
 client/.expo/
 client/web-build/
