@@ -19,6 +19,7 @@ import { color, palette } from '@/theme/tokens';
 
 import { absoluteFill } from './fill';
 import { FenceOverlay, MarkerOverlay } from './Overlays';
+import { FenceEditor } from './FenceEditor';
 import { MapCanvas } from './MapCanvas';
 import { MapplsWebMap } from './MapplsMap.web';
 import { circlePolygon, type Viewport } from './projection';
@@ -132,6 +133,8 @@ function MapLibreWebMap(props: MapViewProps) {
     variant = 'light',
     recenterKey,
     onViewportChange,
+    fenceEdit,
+    onFenceGeometry,
   } = props;
 
   const dark = variant === 'dark';
@@ -277,6 +280,9 @@ function MapLibreWebMap(props: MapViewProps) {
       <View style={styles.overlays} pointerEvents="box-none">
         <FenceOverlay fences={fences} view={view} dark={dark} onPress={onPressFence} />
         <MarkerOverlay markers={markers} view={view} dark={dark} />
+        {fenceEdit && onFenceGeometry ? (
+          <FenceEditor state={fenceEdit} view={view} onGeometry={onFenceGeometry} dark={dark} />
+        ) : null}
       </View>
     </View>
   );

@@ -7,6 +7,7 @@ import { color } from '@/theme/tokens';
 import { absoluteFill } from './fill';
 
 import { FenceOverlay, MarkerOverlay, TrackOverlay } from './Overlays';
+import { FenceEditor } from './FenceEditor';
 import { unproject, type Viewport } from './projection';
 import type { MapViewProps } from './types';
 
@@ -35,6 +36,8 @@ export function MapCanvas(props: MapViewProps) {
     variant = 'light',
     onPressMap,
     onViewportChange,
+    fenceEdit,
+    onFenceGeometry,
   } = props;
   const dark = variant === 'dark';
   const [box, setBox] = useState({ width: 0, height: 0 });
@@ -74,6 +77,9 @@ export function MapCanvas(props: MapViewProps) {
 
           <FenceOverlay fences={fences} view={view} dark={dark} onPress={props.onPressFence} />
           <MarkerOverlay markers={markers} view={view} dark={dark} />
+          {fenceEdit && onFenceGeometry ? (
+            <FenceEditor state={fenceEdit} view={view} onGeometry={onFenceGeometry} dark={dark} />
+          ) : null}
         </>
       ) : null}
     </Pressable>
