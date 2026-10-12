@@ -63,13 +63,13 @@ export function polygonCentroid(ring: LatLon[]): LatLon {
   if (n === 0) return { lat: 0, lon: 0 };
   // Work relative to the first vertex: it keeps the cross products small, which
   // matters when the coordinates are large and the polygon is tiny.
-  const origin = ring[0];
+  const origin = ring[0]!;
   let area2 = 0;
   let cx = 0;
   let cy = 0;
   for (let i = 0; i < n; i += 1) {
-    const a = ring[i];
-    const b = ring[(i + 1) % n];
+    const a = ring[i]!;
+    const b = ring[(i + 1) % n]!;
     const ax = a.lon - origin.lon;
     const ay = a.lat - origin.lat;
     const bx = b.lon - origin.lon;
@@ -108,8 +108,8 @@ export function pathSelfIntersects(path: LatLon[]): boolean {
 export function pointInPolygon(point: LatLon, ring: LatLon[]): boolean {
   let inside = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
-    const a = ring[i];
-    const b = ring[j];
+    const a = ring[i]!;
+    const b = ring[j]!;
     if (a.lat > point.lat !== b.lat > point.lat) {
       const lonAt = ((b.lon - a.lon) * (point.lat - a.lat)) / (b.lat - a.lat) + a.lon;
       if (point.lon < lonAt) inside = !inside;
@@ -213,16 +213,16 @@ export function ringSelfIntersectsXY(ring: XY[]): boolean {
   const n = ring.length;
   if (n < 3) return false;
   for (let i = 0; i < n; i += 1) {
-    if (samePoint(ring[i], ring[(i + 1) % n])) return true; // a zero-length edge
+    if (samePoint(ring[i]!, ring[(i + 1) % n]!)) return true; // a zero-length edge
   }
   for (let i = 0; i < n; i += 1) {
-    const a = ring[i];
-    const b = ring[(i + 1) % n];
-    if (adjacentFolds(a, b, ring[(i + 2) % n])) return true;
+    const a = ring[i]!;
+    const b = ring[(i + 1) % n]!;
+    if (adjacentFolds(a, b, ring[(i + 2) % n]!)) return true;
     for (let j = i + 2; j < n; j += 1) {
       // Edge n-1 and edge 0 are neighbours through vertex 0.
       if (i === 0 && j === n - 1) continue;
-      if (segmentsIntersect(a, b, ring[j], ring[(j + 1) % n])) return true;
+      if (segmentsIntersect(a, b, ring[j]!, ring[(j + 1) % n]!)) return true;
     }
   }
   return false;
@@ -232,10 +232,10 @@ export function ringSelfIntersectsXY(ring: XY[]): boolean {
 export function pathSelfIntersectsXY(path: XY[]): boolean {
   const n = path.length;
   for (let i = 0; i + 1 < n; i += 1) {
-    if (samePoint(path[i], path[i + 1])) return true;
-    if (i + 2 < n && adjacentFolds(path[i], path[i + 1], path[i + 2])) return true;
+    if (samePoint(path[i]!, path[i + 1]!)) return true;
+    if (i + 2 < n && adjacentFolds(path[i]!, path[i + 1]!, path[i + 2]!)) return true;
     for (let j = i + 2; j + 1 < n; j += 1) {
-      if (segmentsIntersect(path[i], path[i + 1], path[j], path[j + 1])) return true;
+      if (segmentsIntersect(path[i]!, path[i + 1]!, path[j]!, path[j + 1]!)) return true;
     }
   }
   return false;
@@ -264,7 +264,7 @@ export function simplifyPath(points: XY[], tolerance: number): XY[] {
     let maxDist = 0;
     let index = -1;
     for (let i = start + 1; i < end; i += 1) {
-      const d = segmentDistance(points[i], points[start], points[end]);
+      const d = segmentDistance(points[i]!, points[start]!, points[end]!);
       if (d > maxDist) {
         maxDist = d;
         index = i;
@@ -298,7 +298,7 @@ export function simplifyRing(points: XY[], maxVertices = MAX_FREEHAND_VERTICES, 
     const last = clean[clean.length - 1];
     if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 0.5) clean.push(p);
   }
-  while (clean.length > 1 && Math.hypot(clean[0].x - clean[clean.length - 1].x, clean[0].y - clean[clean.length - 1].y) <= 0.5) {
+  while (clean.length > 1 && Math.hypot(clean[0]!.x - clean[clean.length - 1]!.x, clean[0]!.y - clean[clean.length - 1]!.y) <= 0.5) {
     clean.pop();
   }
   if (clean.length <= 3) return clean;
@@ -306,7 +306,7 @@ export function simplifyRing(points: XY[], maxVertices = MAX_FREEHAND_VERTICES, 
   let far = 0;
   let farDist = -1;
   for (let i = 1; i < clean.length; i += 1) {
-    const d = Math.hypot(clean[i].x - clean[0].x, clean[i].y - clean[0].y);
+    const d = Math.hypot(clean[i]!.x - clean[0]!.x, clean[i]!.y - clean[0]!.y);
     if (d > farDist) {
       farDist = d;
       far = i;
@@ -318,7 +318,7 @@ export function simplifyRing(points: XY[], maxVertices = MAX_FREEHAND_VERTICES, 
   let result = clean;
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const first = simplifyPath(clean.slice(0, far + 1), tol);
-    const second = simplifyPath([...clean.slice(far), clean[0]], tol);
+    const second = simplifyPath([...clean.slice(far), clean[0]!], tol);
     // Both halves include the split points; drop the duplicates when joining.
     result = [...first, ...second.slice(1, -1)];
     if (result.length <= budget) break;
@@ -359,14 +359,14 @@ export function scanlineSpans(ring: XY[], rowHeight: number, viewHeight: number,
     const y = y0 + h / 2;
     const xs: number[] = [];
     for (let i = 0, j = n - 1; i < n; j = i, i += 1) {
-      const a = ring[i];
-      const b = ring[j];
+      const a = ring[i]!;
+      const b = ring[j]!;
       if (a.y > y !== b.y > y) xs.push(a.x + ((y - a.y) * (b.x - a.x)) / (b.y - a.y));
     }
     xs.sort((p, q) => p - q);
     for (let k = 0; k + 1 < xs.length; k += 2) {
-      const x0 = Math.max(0, xs[k]);
-      const x1 = Math.min(viewWidth, xs[k + 1]);
+      const x0 = Math.max(0, xs[k]!);
+      const x1 = Math.min(viewWidth, xs[k + 1]!);
       if (x1 - x0 >= 1) spans.push({ y: y0, height: h, x0, x1 });
     }
   }
