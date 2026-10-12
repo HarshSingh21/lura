@@ -1,7 +1,7 @@
 # Keycloak for Lura
 
 `lura-realm.json` is the whole identity configuration: one realm, two clients, two
-roles, the OTP policy, Google and X (Twitter) login, and two seeded test users. It
+roles, the OTP policy, Google and X (Twitter) login, and four seeded test users. It
 is a Keycloak **realm import** file — the realm is built from this file, not
 clicked together in the admin console. If you change something in the console,
 change it here too, or the next clean start loses it.
@@ -9,10 +9,13 @@ change it here too, or the next clean start loses it.
 The design behind it — why Keycloak, what the Go server does with the token, what
 stays on device credentials — is in [`docs/auth.md`](../../docs/auth.md).
 
-> **The two seeded users are local-testing credentials.** `aravind@lura.local` /
+> **The seeded users are local-testing credentials.** `aravind@lura.local` /
 > `lura-dev-1` and `nistha@lura.local` / `lura-dev-2` exist so you can sign in on
-> two devices at once and watch one workspace from both. Their passwords are in a
-> public repository. Delete both users before this realm is reachable by anyone
+> two devices at once and watch one workspace from both; `harsh@lura.local` /
+> `lura-harsh` (Harsh) and `nishtha@lura.local` / `lura-nishtha` (Nishtha) are the
+> two people of the release scenario in [`docs/release-spec.md`](../../docs/release-spec.md)
+> — connect them on People and each tracks the other. Their passwords are in a
+> public repository. Delete these users before this realm is reachable by anyone
 > but you.
 
 ---
@@ -131,11 +134,13 @@ Registered redirect URIs — the app's `AuthSession` redirect must match one:
 | `http://localhost:8080/*` | web bundle served by the Go binary |
 | `http://localhost:8081/*` | `npm start` → web |
 | `http://localhost:19006/*` | `expo start --web` |
+| `http://lura.com:8080/*` | the web bundle under a hosts-file name (`127.0.0.1 lura.com`), so two browser profiles can be two people |
 | `lura://*` | development / production builds (the app's scheme) |
 | `exp://*` | Expo Go |
 
-Web origins are `+` (every redirect URI's origin) plus `http://localhost:8080`,
-so the browser CORS preflight to the token endpoint succeeds from the app.
+Web origins are `+` (every redirect URI's origin) plus `http://localhost:8080` and
+`http://lura.com:8080`, so the browser CORS preflight to the token endpoint
+succeeds from the app.
 
 On a phone, `localhost` is the phone. Testing on a device means Keycloak has to be
 reachable at the LAN address as well, which means adding
