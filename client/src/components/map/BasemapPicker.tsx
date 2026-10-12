@@ -70,7 +70,9 @@ export function BasemapPicker({
         onPress={() => setOpen((o) => !o)}
         style={({ pressed }) => [styles.toggle, pressed ? styles.pressed : null]}
       >
-        <Thumbnail info={current} size={30} />
+        <View style={styles.toggleThumb}>
+          <Thumbnail info={current} size={30} />
+        </View>
         <View style={styles.toggleGlyph} pointerEvents="none">
           <LayersGlyph />
         </View>
@@ -123,23 +125,34 @@ const styles = StyleSheet.create({
   root: { gap: 8 },
   alignRight: { alignItems: 'flex-end' },
   alignLeft: { alignItems: 'flex-start' },
+  // A framed tile the width of the zoom stack under it, with the same hairline
+  // border: over a pale basemap (light, terrain) a borderless thumbnail of a pale
+  // map vanished into the map it describes.
   toggle: {
-    width: 38,
-    height: 38,
+    width: 40,
+    height: 40,
+    padding: 3,
     borderRadius: radius.lg,
-    overflow: 'hidden',
-    borderWidth: 2,
-    borderColor: color.surface,
+    borderWidth: 1,
+    borderColor: color.border,
     backgroundColor: color.surface,
     ...shadow('button'),
   },
+  toggleThumb: {
+    flex: 1,
+    borderRadius: 7,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: color.hairlineSoft,
+  },
   toggleGlyph: {
     position: 'absolute',
-    right: 1,
-    bottom: 1,
+    right: 0,
+    bottom: 0,
     width: 18,
     height: 18,
-    borderRadius: 5,
+    borderTopLeftRadius: 6,
+    borderBottomRightRadius: radius.lg - 1,
     backgroundColor: color.surface,
     alignItems: 'center',
     justifyContent: 'center',

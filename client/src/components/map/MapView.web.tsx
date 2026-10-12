@@ -17,12 +17,12 @@ import {
 
 import { color, palette } from '@/theme/tokens';
 
-import { maplibreStyle } from './basemaps';
+import { maplibreStyle, onDarkGround } from './basemaps';
 import { absoluteFill } from './fill';
 import { FenceOverlay, fenceRing, hasPolygon, MarkerOverlay } from './Overlays';
 import { FenceEditor } from './FenceEditor';
 import { MapCanvas } from './MapCanvas';
-import { MapplsWebMap } from './MapplsMap.web';
+import { mapplsCannotDraw, MapplsWebMap } from './MapplsMap.web';
 import type { Viewport } from './projection';
 import type { BasemapId, MapFence, MapTrack, MapViewProps } from './types';
 
@@ -126,13 +126,20 @@ export function MapView(props: MapViewProps) {
   const [mapplsCannot, setMapplsCannot] = useState<BasemapId[]>([]);
   const key = props.mapplsKey;
   const basemap = props.basemap ?? 'streets';
-  if (
+  const mappls =
     !props.offline &&
     props.provider === 'mappls' &&
-    key &&
+    !!key &&
     mapplsFailedFor !== key &&
-    !mapplsCannot.includes(basemap)
-  ) {
+    !mapplsCannot.includes(basemap) &&
+    !mapplsCannotDraw(key, basemap);
+  // The credit line under the map has to name whoever is actually drawing it.
+  const onRenderer = props.onRenderer;
+  const renderer = mappls ? 'mappls' : 'maplibre';
+  useEffect(() => {
+    onRenderer?.(renderer);
+  }, [onRenderer, renderer]);
+  if (mappls && key) {
     return (
       <MapplsWebMap
         {...props}
@@ -180,7 +187,8 @@ function MapLibreWebMap(props: MapViewProps) {
   // Held in refs so changing a callback or the data does not tear down the map,
   // and so a style swap can re-add the newest fences and tracks.
   const viewportListener = useRef(onViewportChange);
-  const latest = useRef({ fences, tracks, onPressFence });
+  const darkGround = onDarkGround(basemap);
+  const latest = useRef({ fences, tracks, onPressFence, darkGround });
   const appliedZoom = useRef(zoom);
   // Where a running camera animation is heading. MapLibre's easeTo replaces
   // the animation in flight, so a centre-only ease (the next fix) would strand
@@ -199,7 +207,7 @@ function MapLibreWebMap(props: MapViewProps) {
 
   useEffect(() => {
     viewportListener.current = onViewportChange;
-    latest.current = { fences, tracks, onPressFence };
+    latest.current = { fences, tracks, onPressFence, darkGround };
     styleRef.current = style;
   });
 
@@ -254,7 +262,7 @@ function MapLibreWebMap(props: MapViewProps) {
     // track layers are (re-)added, filled with the newest data.
     map.on('style.load', () => {
       withMap(map, (m) => {
-        installLayers(m, dark);
+        installLayers(m, dark, latest.current.darkGround);
         updateSources(m, latest.current.fences, latest.current.tracks);
       });
     });
@@ -393,7 +401,7 @@ function MapLibreWebMap(props: MapViewProps) {
       <View ref={hostRef} style={styles.gl} />
       {/* Overlays sit above the canvas and must not swallow map gestures. */}
       <View style={styles.overlays} pointerEvents="box-none">
-        <FenceOverlay fences={fences} view={view} dark={dark} onPress={onPressFence} glShapes />
+        <FenceOverlay fences={fences} view={view} dark={dark} darkGround={darkGround} onPress={onPressFence} glShapes />
         <MarkerOverlay markers={markers} view={view} dark={dark} />
         {fenceEdit && onFenceGeometry ? (
           <FenceEditor state={fenceEdit} view={view} onGeometry={onFenceGeometry} dark={dark} />
@@ -420,12 +428,13 @@ function withMap(map: MapLibreMap | null, fn: (map: MapLibreMap) => void) {
 }
 
 const FENCE_FILL = 'lura-fence-fill';
+const FENCE_CASING = 'lura-fence-casing';
 const FENCE_LINE = 'lura-fence-line';
 const TRACK_LINE = 'lura-track-line';
 const FENCE_SOURCE = 'lura-fences';
 const TRACK_SOURCE = 'lura-tracks';
 
-function installLayers(map: MapLibreMap, dark: boolean) {
+function installLayers(map: MapLibreMap, dark: boolean, darkGround: boolean) {
   if (!map.getSource(FENCE_SOURCE)) {
     map.addSource(FENCE_SOURCE, { type: 'geojson', data: emptyCollection() });
   }
@@ -449,6 +458,8 @@ function installLayers(map: MapLibreMap, dark: boolean) {
   }
 
   // Fences are drawn under the track so a trip through a place stays visible.
+  // The style is reloaded on every basemap switch, so these paints are chosen
+  // for the ground they are about to sit on (see onDarkGround).
   if (!map.getLayer(FENCE_FILL)) {
     map.addLayer(
       {
@@ -457,9 +468,29 @@ function installLayers(map: MapLibreMap, dark: boolean) {
         source: FENCE_SOURCE,
         paint: {
           'fill-color': ['coalesce', ['get', 'color'], palette.accent],
-          // Strong enough to read over satellite imagery, faint enough for streets.
-          'fill-opacity': 0.14,
+          // Imagery is busy and the dark style swallows a faint tint; streets
+          // only need a wash.
+          'fill-opacity': darkGround ? 0.22 : 0.13,
         },
+      },
+      TRACK_LINE,
+    );
+  }
+  if (!map.getLayer(FENCE_CASING)) {
+    map.addLayer(
+      {
+        id: FENCE_CASING,
+        type: 'line',
+        source: FENCE_SOURCE,
+        paint: {
+          // A halo under the outline: dark over imagery and the dark style, white
+          // over the street styles. It stays solid under a dashed outline, so a
+          // pass-by fence still reads as one closed shape over rooftops.
+          'line-color': darkGround ? 'rgba(6, 12, 9, 0.6)' : 'rgba(255, 255, 255, 0.92)',
+          'line-width': ['case', ['==', ['get', 'selected'], true], 7, 5.5],
+          'line-blur': 0.6,
+        },
+        layout: { 'line-join': 'round' },
       },
       TRACK_LINE,
     );
@@ -472,10 +503,10 @@ function installLayers(map: MapLibreMap, dark: boolean) {
         source: FENCE_SOURCE,
         paint: {
           'line-color': ['coalesce', ['get', 'color'], palette.accent],
-          'line-width': ['case', ['==', ['get', 'selected'], true], 3, 2],
-          'line-opacity': 0.85,
-          'line-dasharray': ['case', ['==', ['get', 'dashed'], true], ['literal', [2, 2]], ['literal', [1, 0]]],
+          'line-width': ['case', ['==', ['get', 'selected'], true], 3.5, 2.5],
+          'line-dasharray': ['case', ['==', ['get', 'dashed'], true], ['literal', [2.2, 1.6]], ['literal', [1, 0]]],
         },
+        layout: { 'line-join': 'round' },
       },
       TRACK_LINE,
     );

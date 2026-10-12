@@ -3,7 +3,7 @@ import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, StyleSheet
 
 import { downloadUrlFresh } from '@/api/client';
 import { useActivity, useHistory, useOverview } from '@/api/hooks';
-import type { Place, Point } from '@/api/types';
+import type { MapProvider, Place, Point } from '@/api/types';
 import { attribution } from '@/components/map/basemaps';
 import { BasemapPicker } from '@/components/map/BasemapPicker';
 import { MapView } from '@/components/map/MapView';
@@ -53,9 +53,11 @@ export function HistoryScreen() {
   const [deviceId, setDeviceId] = useState<string | undefined>(undefined);
   const [focus, setFocus] = useState<{ id: string; seq: number } | undefined>(undefined);
   const [basemap, setBasemap] = useBasemap();
+  const [renderer, setRenderer] = useState<MapProvider>();
   const offline = overview?.user.airgap || overview?.server.airgap;
   const tz = validZone(overview?.user.tz);
   const viewerId = overview?.user.id;
+  const drawnByMappls = (renderer ?? overview?.server.mapProvider) === 'mappls' && !offline;
 
   // The day window is recomputed when the day changes, not every render, so the
   // query key is stable for the life of the day.
@@ -232,6 +234,7 @@ export function HistoryScreen() {
           basemap={basemap}
           provider={overview?.server.mapProvider}
           mapplsKey={overview?.server.mapplsWebKey}
+          onRenderer={setRenderer}
           offline={offline}
           recenterKey={(focus?.seq ?? 0) * 1_000_000 + track.length + offset * 7}
         />
@@ -259,17 +262,21 @@ export function HistoryScreen() {
           </View>
         ) : null}
 
-        <View style={styles.attribution} pointerEvents="none">
+        {/* While Mappls draws, its SDK credits itself in this corner (and its
+            logo must not be covered), so the box sits above it without a credit. */}
+        <View style={[styles.attribution, drawnByMappls && styles.attributionAboveMappls]} pointerEvents="none">
           <Mono size={size.monoTiny} color={color.textSubtle}>
             Private history · stored on your infrastructure
           </Mono>
-          <Mono size={size.monoTiny} color={color.textSubtle}>
-            {attribution(basemap, {
-              serverStyleUrl: overview?.server.mapStyleUrl,
-              provider: overview?.server.mapProvider,
-              offline: !!offline,
-            })}
-          </Mono>
+          {drawnByMappls ? null : (
+            <Mono size={size.monoTiny} color={color.textSubtle}>
+              {attribution(basemap, {
+                serverStyleUrl: overview?.server.mapStyleUrl,
+                provider: renderer ?? overview?.server.mapProvider,
+                offline: !!offline,
+              })}
+            </Mono>
+          )}
         </View>
       </View>
 
@@ -474,6 +481,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
+  attributionAboveMappls: { bottom: 34 },
   basemapPicker: { position: 'absolute', top: 16, right: 16 },
 
   rail: {

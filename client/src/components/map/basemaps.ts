@@ -77,6 +77,16 @@ export const BASEMAPS: Record<BasemapId, BasemapInfo> = {
   },
 };
 
+/**
+ * onDarkGround says whether a basemap is dark or busy under Lura's overlays:
+ * imagery (satellite, hybrid) and the dark style. Fences drawn there need a dark
+ * halo and a firmer line to stay readable; on the pale street styles a light
+ * halo does the same job without looking heavy.
+ */
+export function onDarkGround(basemap: BasemapId | undefined): boolean {
+  return basemap === 'satellite' || basemap === 'hybrid' || basemap === 'dark';
+}
+
 export function isBasemapId(value: unknown): value is BasemapId {
   return typeof value === 'string' && (BASEMAP_IDS as readonly string[]).includes(value);
 }

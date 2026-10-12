@@ -4,7 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import Svg, { Circle, Path } from 'react-native-svg';
 
 import { useCreatePlace, useOverview, useRevokeShare, useUpdatePlaceGeometry } from '@/api/hooks';
-import type { Place, Point } from '@/api/types';
+import type { MapProvider, Place, Point } from '@/api/types';
 import { attribution } from '@/components/map/basemaps';
 import { BasemapPicker } from '@/components/map/BasemapPicker';
 import { MapView } from '@/components/map/MapView';
@@ -134,6 +134,8 @@ export function LiveScreen() {
   const editingId = fenceEdit?.mode === 'edit' ? fenceEdit.fenceId : undefined;
   const drawingMode = fenceEdit && fenceEdit.mode !== 'edit' ? fenceEdit.mode : undefined;
   const [basemap, setBasemap] = useBasemap();
+  // Who is drawing the basemap right now, for the credit line (Mappls can hand over).
+  const [renderer, setRenderer] = useState<MapProvider>();
   // Whom the camera is following, if anyone (a person or one of my devices).
   const [followKey, setFollowKey] = useState<FollowKey | undefined>(undefined);
   // The centre chosen by fitting everyone into view on first load.
@@ -558,6 +560,7 @@ export function LiveScreen() {
           basemap={basemap}
           provider={data?.server.mapProvider}
           mapplsKey={data?.server.mapplsWebKey}
+          onRenderer={setRenderer}
           offline={offline}
           recenterKey={recenterKey}
           followMs={followMs}
@@ -721,16 +724,20 @@ export function LiveScreen() {
           />
         </View>
 
-        {/* attribution: a licence requirement for OSM-derived tiles */}
-        <View style={[styles.attribution, !isDesktop && styles.attributionPhone]} pointerEvents="none">
-          <Mono size={size.monoTiny} color={color.textSubtle}>
-            {attribution(basemap, {
-              serverStyleUrl: data?.server.mapStyleUrl,
-              provider: data?.server.mapProvider,
-              offline: !!offline,
-            })}
-          </Mono>
-        </View>
+        {/* attribution: a licence requirement for OSM-derived tiles. The Mappls
+            SDK draws its own logo and credit in this corner, and its terms
+            forbid covering them, so the chip stands aside while Mappls draws. */}
+        {(renderer ?? data?.server.mapProvider) === 'mappls' && !offline ? null : (
+          <View style={[styles.attribution, !isDesktop && styles.attributionPhone]} pointerEvents="none">
+            <Mono size={size.monoTiny} color={color.textSubtle} testID="lura-map-credit">
+              {attribution(basemap, {
+                serverStyleUrl: data?.server.mapStyleUrl,
+                provider: renderer ?? data?.server.mapProvider,
+                offline: !!offline,
+              })}
+            </Mono>
+          </View>
+        )}
 
         {isLoading ? (
           <View style={styles.statusOverlay} pointerEvents="none">
