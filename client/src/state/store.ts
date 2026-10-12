@@ -10,6 +10,7 @@ import {
   fromReminder,
   ingest,
   markAllRead as markItemsRead,
+  mergeStored,
   type NotificationItem,
 } from '@/features/notify/model';
 import { loadMuted, saveMuted } from '@/features/notify/sound';
@@ -145,6 +146,32 @@ function persistConnection(next: ConnectionState) {
   }
 }
 
+/**
+ * The notification centre survives a reload of the page, per signed-in person:
+ * otherwise reloading mid-walk silently marks every crossing read by forgetting
+ * it. Each entry keeps `announced`, so nothing toasts or chimes twice.
+ */
+const NOTIFY_KEY = 'lura.notifications.';
+
+function loadNotifications(viewerId: string): NotificationItem[] {
+  if (Platform.OS !== 'web' || typeof localStorage === 'undefined') return [];
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(NOTIFY_KEY + viewerId) ?? '[]');
+    return Array.isArray(parsed) ? (parsed as NotificationItem[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveNotifications(viewerId: string | undefined, items: NotificationItem[]) {
+  if (!viewerId || Platform.OS !== 'web' || typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(NOTIFY_KEY + viewerId, JSON.stringify(items));
+  } catch {
+    // Full or refused storage costs the history, not the live toast.
+  }
+}
+
 const initialConnection = loadConnection();
 setConfig(initialConnection);
 
@@ -187,7 +214,12 @@ export const useStore = create<Store>((set, get) => ({
     get().notify(fromReminder(r, get().viewerId));
   },
 
-  setViewer: (viewerId) => set({ viewerId }),
+  setViewer: (viewerId) =>
+    set((state) => {
+      if (state.viewerId === viewerId) return { viewerId };
+      const notifications = mergeStored(state.notifications, loadNotifications(viewerId));
+      return { viewerId, notifications };
+    }),
 
   applyAcl: (action, reason) => set({ aclNotice: { action, reason, at: Date.now() } }),
 
@@ -202,6 +234,7 @@ export const useStore = create<Store>((set, get) => ({
 
   notify: (next) => {
     const res = ingest(get().notifications, next);
+    saveNotifications(get().viewerId, res.items);
     set((state) => {
       if (!res.announce) {
         // The second frame for a crossing re-words the toast already on screen
@@ -235,11 +268,22 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   markNotificationRead: (id) =>
-    set((state) => ({
-      notifications: state.notifications.map((n) => (n.id === id && !n.read ? { ...n, read: true } : n)),
-    })),
-  markAllNotificationsRead: () => set((state) => ({ notifications: markItemsRead(state.notifications) })),
-  clearNotifications: () => set({ notifications: [] }),
+    set((state) => {
+      const notifications = state.notifications.map((n) => (n.id === id && !n.read ? { ...n, read: true } : n));
+      saveNotifications(state.viewerId, notifications);
+      return { notifications };
+    }),
+  markAllNotificationsRead: () =>
+    set((state) => {
+      const notifications = markItemsRead(state.notifications);
+      saveNotifications(state.viewerId, notifications);
+      return { notifications };
+    }),
+  clearNotifications: () =>
+    set((state) => {
+      saveNotifications(state.viewerId, []);
+      return { notifications: [] };
+    }),
   setMuted: (muted) => {
     saveMuted(muted);
     set({ muted });

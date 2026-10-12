@@ -198,6 +198,21 @@ export function ingest(
   return { items: added, announce, item };
 }
 
+/**
+ * mergeStored folds the entries saved by an earlier page load (or another tab)
+ * into the live list. What this page already holds wins — it is newer — and a
+ * stored entry is always treated as announced, so it never toasts or chimes
+ * again. Malformed rows are dropped.
+ */
+export function mergeStored(live: NotificationItem[], stored: NotificationItem[]): NotificationItem[] {
+  const have = new Set(live.map((i) => i.id));
+  const extra = stored
+    .filter((i) => i && typeof i.id === 'string' && typeof i.title === 'string' && Number.isFinite(i.at) && !have.has(i.id))
+    .map((i) => ({ ...i, announced: true }));
+  if (extra.length === 0) return live;
+  return [...live, ...extra].sort((a, b) => b.at - a.at).slice(0, MAX_ITEMS);
+}
+
 export function unreadCount(items: NotificationItem[]): number {
   let n = 0;
   for (const item of items) if (!item.read) n += 1;

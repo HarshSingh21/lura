@@ -11,6 +11,7 @@ import {
   ingest,
   isPeerCrossing,
   markAllRead,
+  mergeStored,
   unreadCount,
 } from './model.ts';
 
@@ -158,4 +159,25 @@ test('a reminder with no event still gets a stable id', () => {
   assert.equal(a.id, b.id);
   assert.equal(chimeFor(fromReminder(reminder({ kind: 'watch' }), HARSH)), 'watch');
   assert.equal(chimeFor(fromReminder(reminder({ trigger: 'passby' }), HARSH)), 'passby');
+});
+
+test('entries saved by an earlier page load come back read-as-they-were and never re-announce', () => {
+  const saved = ingest([], fromGeo(geo({ subjectUserId: NISHTHA, subjectName: 'Nishtha' }), HARSH)).items;
+  assert.equal(saved[0].announced, true);
+  const restored = mergeStored([], JSON.parse(JSON.stringify(saved)));
+  assert.equal(restored.length, 1);
+  assert.equal(unreadCount(restored), 1);
+  // The same crossing replayed by the server after the reload is not news.
+  const again = ingest(restored, fromGeo(geo({ subjectUserId: NISHTHA, subjectName: 'Nishtha' }), HARSH));
+  assert.equal(again.announce, false);
+  assert.equal(again.items.length, 1);
+});
+
+test('what the page already holds wins over what was stored, and junk is dropped', () => {
+  const live = ingest([], fromGeo(geo({ subjectUserId: NISHTHA, subjectName: 'Nishtha' }), HARSH)).items;
+  const stale = [{ ...live[0], title: 'old wording', announced: false }, { nonsense: true }, null];
+  const merged = mergeStored(live, stale);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].title, live[0].title);
+  assert.equal(mergeStored(live, []), live);
 });

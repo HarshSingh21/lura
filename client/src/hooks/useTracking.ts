@@ -191,7 +191,7 @@ export function useTracking(opts: TrackingOptions): TrackingStatus {
         denied();
         return;
       }
-      const watchId = geo.watchPosition(
+      const watch = () => geo.watchPosition(
         (position) => {
           const c = position.coords;
           void handle(
@@ -213,6 +213,34 @@ export function useTracking(opts: TrackingOptions): TrackingStatus {
         // maximumAge 0: never a cached fix. The timeout only bounds each attempt.
         { enableHighAccuracy: true, maximumAge: 0, timeout: 20_000 },
       );
+      // One publisher per browser: every tab of the app shares this device's
+      // credential, and two tabs each sending the same GPS would double the
+      // fixes (and the chance of two arriving out of order). The tab holding
+      // the lock publishes; another waits in line and takes over the moment
+      // that tab closes, so the person never stops being visible.
+      const locks = (navigator as Navigator & { locks?: LockManager }).locks;
+      if (locks?.request) {
+        let release: (() => void) | undefined;
+        void locks
+          .request(`lura-publisher:${userKey}`, () =>
+            new Promise<void>((resolve) => {
+              release = resolve;
+              if (cancelled) {
+                resolve();
+                return;
+              }
+              const id = watch();
+              stop = () => geo.clearWatch(id);
+            }),
+          )
+          .catch(() => undefined);
+        return () => {
+          cancelled = true;
+          stop?.();
+          release?.();
+        };
+      }
+      const watchId = watch();
       stop = () => geo.clearWatch(watchId);
       return () => {
         cancelled = true;
