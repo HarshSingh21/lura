@@ -105,6 +105,8 @@ export type RequestOptions = {
   body?: unknown;
   /** Public endpoints (a share link) must not send the owner's token. */
   anonymous?: boolean;
+  /** Send this bearer instead of the session's (a device's own ingest token for /pub). */
+  bearerToken?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
 };
@@ -116,7 +118,7 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
 
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
-  if (!opts.anonymous) headers.Authorization = `Bearer ${bearer()}`;
+  if (!opts.anonymous) headers.Authorization = `Bearer ${opts.bearerToken ?? bearer()}`;
 
   // A hung request must not hang the UI: every call gets a deadline, and the
   // caller's own signal still wins.

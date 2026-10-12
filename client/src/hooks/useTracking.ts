@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import * as Location from 'expo-location';
+import * as SecureStore from 'expo-secure-store';
 
 import { request } from '@/api/client';
+import type { Device } from '@/api/types';
 import { useStore } from '@/state/store';
 
 import { FixGate, ownTracksPayload, type RawFix } from './fixGate';
+import { Publisher, type DeviceCredential } from './publisher';
 
 /**
  * Foreground location publishing: this device becomes a tracked device.
@@ -27,12 +30,76 @@ import { FixGate, ownTracksPayload, type RawFix } from './fixGate';
  *
  * Fixes are posted to /pub with OwnTracks fields (acc, cog, vel), an exact
  * `speedMps` and a client sequence number, which is what lets the server dedupe a
- * retried fix without trusting the device clock (HLD §5.2).
+ * retried fix without trusting the device clock (HLD §5.2). Which credential
+ * they are posted with is publisher.ts's job: a signed-in browser registers a
+ * device of its own the first time, because /pub never accepts a session token.
  */
 
 export type TrackingOptions = {
+  /** The device the session publishes as under the static development token. */
   deviceId: string;
+  /** The signed-in user; a registered device credential is remembered per user. */
+  userId?: string;
+  /** Called after this app registered a device of its own, so the caller can refetch. */
+  onRegistered?: () => void;
 };
+
+/* ------------------------------------------------------------ credentials */
+
+const credKey = (userId: string) => `lura.pubcred.${userId.replace(/[^A-Za-z0-9._-]/g, '_')}`;
+
+async function loadCred(userId: string): Promise<DeviceCredential | null> {
+  try {
+    const raw =
+      Platform.OS === 'web'
+        ? typeof localStorage !== 'undefined'
+          ? localStorage.getItem(credKey(userId))
+          : null
+        : await SecureStore.getItemAsync(credKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<DeviceCredential>;
+    return parsed.deviceId && parsed.token ? { deviceId: parsed.deviceId, token: parsed.token } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveCred(userId: string, cred: DeviceCredential | null): Promise<void> {
+  const key = credKey(userId);
+  try {
+    if (Platform.OS === 'web') {
+      if (typeof localStorage === 'undefined') return;
+      if (cred) localStorage.setItem(key, JSON.stringify(cred));
+      else localStorage.removeItem(key);
+      return;
+    }
+    if (cred) await SecureStore.setItemAsync(key, JSON.stringify(cred));
+    else await SecureStore.deleteItemAsync(key);
+  } catch {
+    // Losing it costs one extra device registration, not a fix.
+  }
+}
+
+/** thisDeviceName is what the registered device is called in the device list. */
+function thisDeviceName(): { name: string; kind: string } {
+  if (Platform.OS === 'web') return { name: 'Web browser', kind: 'browser' };
+  return { name: Platform.OS === 'ios' ? 'iPhone' : 'Android phone', kind: 'phone' };
+}
+
+function makePublisher(userId: string): Publisher {
+  return new Publisher({
+    post: (path, body, bearerToken) => request(path, { method: 'POST', body, bearerToken }),
+    register: async () => {
+      const res = await request<{ device: Device; pubToken: string }>('/api/v1/devices', {
+        method: 'POST',
+        body: thisDeviceName(),
+      });
+      return { deviceId: res.device.id, token: res.pubToken };
+    },
+    load: () => loadCred(userId),
+    save: (cred) => saveCred(userId, cred),
+  });
+}
 
 /** TrackingStatus is what the UI shows about this device's own GPS. */
 export type TrackingStatus = {
@@ -44,6 +111,8 @@ export type TrackingStatus = {
   held?: 'duplicate' | 'inaccurate' | 'throttled' | 'stale';
   /** Whether the gate currently considers this device moving. */
   moving?: boolean;
+  /** The device fixes are actually published as (a registered browser, for a signed-in session). */
+  deviceId?: string;
 };
 
 type BatteryManagerLike = { level: number };
@@ -66,12 +135,20 @@ export function useTracking(opts: TrackingOptions): TrackingStatus {
   const pushToast = useStore((s) => s.pushToast);
   const seq = useRef(0);
   const [status, setStatus] = useState<TrackingStatus>({});
+  // Held in a ref so a new callback identity does not restart the GPS watch.
+  const registered = useRef(opts.onRegistered);
+  useEffect(() => {
+    registered.current = opts.onRegistered;
+  });
+  const userKey = opts.userId ?? 'local';
 
   useEffect(() => {
-    if (!enabled || !opts.deviceId) return;
+    // A brand-new account has no device yet; the publisher registers one.
+    if (!enabled || (!opts.deviceId && !opts.userId)) return;
 
     let cancelled = false;
     const gate = new FixGate();
+    const publisher = makePublisher(userKey);
     let stop: (() => void) | null = null;
 
     const denied = () => {
@@ -96,12 +173,11 @@ export function useTracking(opts: TrackingOptions): TrackingStatus {
       }
       seq.current += 1;
       const battery = Platform.OS === 'web' ? await webBattery() : undefined;
-      setStatus({ accuracyM: fix.accuracyM, lastSentAt: Date.now(), moving: decision.moving });
+      setStatus((s) => ({ ...s, accuracyM: fix.accuracyM, lastSentAt: Date.now(), moving: decision.moving, held: undefined }));
       try {
-        await request(`/pub?device=${encodeURIComponent(opts.deviceId)}`, {
-          method: 'POST',
-          body: ownTracksPayload(decision.fix, seq.current, { altitudeM, battery }),
-        });
+        const result = await publisher.publish(ownTracksPayload(decision.fix, seq.current, { altitudeM, battery }), opts.deviceId);
+        if (result.registered) registered.current?.();
+        setStatus((s) => (s.deviceId === result.deviceId ? s : { ...s, deviceId: result.deviceId }));
       } catch (err) {
         // A failed fix is not worth a toast every 2 seconds; the next one will
         // very likely succeed, and the connection indicator already shows trouble.
@@ -181,7 +257,7 @@ export function useTracking(opts: TrackingOptions): TrackingStatus {
       cancelled = true;
       subscription?.remove();
     };
-  }, [enabled, opts.deviceId, pushToast, setTracking]);
+  }, [enabled, opts.deviceId, opts.userId, userKey, pushToast, setTracking]);
 
   return enabled ? status : {};
 }
