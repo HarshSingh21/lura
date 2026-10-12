@@ -119,6 +119,9 @@ export type TriggerEvent = {
   noteIds: string[];
   delivered: string[];
   note?: string;
+  /** Whose device crossed (a watched peer, or the owner). */
+  subjectUserId?: string;
+  subjectName?: string;
 };
 
 export type PendingDwell = {
@@ -184,12 +187,160 @@ export type Reminder = {
   clickUrl?: string;
   ts: string;
   event: GeoEvent;
-  /** 'note' = a note fired; 'watch' = a watched person crossed a fence, no note involved. */
-  kind: 'note' | 'watch';
+  /**
+   * 'note' = a note fired; 'watch' = a watched person crossed a fence, no note involved;
+   * 'ack' = someone you sent a note to acknowledged it (arrives already 'acknowledged').
+   */
+  kind: ReminderKind;
   /** Owner of the note/place when it is not the recipient (e.g. Harsh's note delivered to Nishtha). */
   fromUserId?: string;
   fromName?: string;
+  /**
+   * The stored ReminderRecord this frame delivers. Absent only for the owner's own
+   * crossing of a place with no note (a plain live toast, nothing to acknowledge).
+   */
+  id?: string;
+  status?: ReminderStatus;
+  ownerId?: string;
+  eventId?: string;
+  createdAt?: string;
+  subjectUserId?: string;
+  subjectName?: string;
+  ackedAt?: string;
+  ackedBy?: string;
 };
+
+export type ReminderKind = 'note' | 'watch' | 'ack';
+
+export type ReminderStatus = 'pending' | 'acknowledged';
+
+/**
+ * A delivered reminder, stored per recipient (GET /api/v1/reminders). A pending one
+ * stays on screen until POST /api/v1/reminders/{id}/ack.
+ */
+export type ReminderRecord = {
+  id: string;
+  /** The recipient. Only they can see or acknowledge it. */
+  userId: string;
+  /** Owner of the note/place that produced it. */
+  ownerId: string;
+  noteIds: string[];
+  placeId: string;
+  placeName: string;
+  trigger: Trigger;
+  kind: ReminderKind;
+  title: string;
+  body: string;
+  /** Whose device crossed. */
+  subjectUserId: string;
+  subjectName: string;
+  /** Set when ownerId is not the recipient. */
+  fromUserId?: string;
+  fromName?: string;
+  /** The geo event that produced it ('' for kind 'ack'). */
+  eventId: string;
+  createdAt: string;
+  status: ReminderStatus;
+  ackedAt?: string;
+  /** User id that acknowledged (the recipient; for kind 'ack', the peer who acknowledged). */
+  ackedBy?: string;
+};
+
+/** WS frame payload: a reminder was acknowledged in some session; clear it everywhere. */
+export type ReminderAck = { id: string; ackedAt: string };
+
+/** POST /api/v1/reminders/{id}/ack response. */
+export type AckResponse = {
+  reminder: ReminderRecord;
+  /** Notes the ack marked done (owner acked, or every recipient has). */
+  notesDone: string[];
+};
+
+/** Kind of a connection change in the activity feed. */
+export type ConnectionAction = 'invited' | 'accepted' | 'paused' | 'resumed' | 'removed';
+
+/**
+ * GET /api/v1/activity?from&to&limit → { items: ActivityItem[], from, to }.
+ * Newest first by ts (RFC3339). `id` is unique within a response and stable across calls.
+ */
+export type ActivityItem =
+  | {
+      type: 'trip';
+      id: string;
+      ts: string; // = startTs
+      deviceId: string;
+      deviceName: string;
+      mode: string;
+      startTs: string;
+      endTs: string;
+      distanceM: number;
+      fromPlace?: string;
+      toPlace?: string;
+      path: Point[];
+    }
+  | {
+      type: 'stop';
+      id: string;
+      ts: string; // = startTs
+      deviceId: string;
+      deviceName: string;
+      startTs: string;
+      endTs: string;
+      atPlace?: string;
+      point?: Point;
+    }
+  | {
+      /** A fence crossing on one of your places (yours, or a watched person's). */
+      type: 'geo';
+      id: string;
+      ts: string;
+      eventId: string;
+      placeId: string;
+      placeName: string;
+      trigger: Trigger;
+      deviceId: string;
+      subjectUserId: string;
+      subjectName: string;
+      noteIds: string[];
+      delivered: string[];
+    }
+  | { type: 'reminder'; id: string; ts: string; reminder: ReminderRecord }
+  | {
+      type: 'ack';
+      id: string;
+      ts: string; // = ackedAt
+      reminderId: string;
+      title: string;
+      body: string;
+      placeName: string;
+      noteIds: string[];
+      ackedBy: string;
+      ackedByName: string;
+      /** true = you acknowledged your own reminder; false = a person you notified acknowledged. */
+      byMe: boolean;
+    }
+  | {
+      type: 'connection';
+      id: string;
+      ts: string;
+      action: ConnectionAction;
+      peerId: string;
+      peerName: string;
+      /** true when you made the change, false when the peer did. */
+      byMe: boolean;
+    }
+  | {
+      type: 'share';
+      id: string;
+      ts: string;
+      action: 'created' | 'revoked';
+      shareId: string;
+      label: string;
+      mode: ShareMode;
+      reason?: string;
+    };
+
+export type ActivityResponse = { items: ActivityItem[]; from: string; to: string };
 
 /** MapProvider is the basemap a deployment draws: the open default, or Mappls. */
 export type MapProvider = 'maplibre' | 'mappls';
@@ -280,6 +431,7 @@ export type Frame =
   | { type: 'position'; ts: string; subject?: string; data: Position }
   | { type: 'geo'; ts: string; subject?: string; data: GeoEvent }
   | { type: 'notify'; ts: string; subject?: string; data: Reminder }
+  | { type: 'reminder_ack'; ts: string; subject?: string; data: ReminderAck }
   | { type: 'acl'; ts: string; subject?: string; data: { action: string; shareId?: string; reason?: string } }
   | { type: 'pong'; ts: string; data?: unknown }
   | { type: 'closing'; ts: string; data?: { reason?: string } }
