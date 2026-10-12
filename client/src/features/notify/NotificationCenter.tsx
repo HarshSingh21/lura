@@ -96,7 +96,7 @@ function NotificationPanel({ visible, onClose }: { visible: boolean; onClose: ()
           </View>
           <Pressable
             accessibilityRole="switch"
-            accessibilityState={{ checked: !muted }}
+            aria-checked={!muted}
             accessibilityLabel={muted ? 'Sounds off. Turn notification sounds on' : 'Sounds on. Mute notification sounds'}
             onPress={() => {
               const next = !muted;
@@ -119,7 +119,7 @@ function NotificationPanel({ visible, onClose }: { visible: boolean; onClose: ()
         <View style={styles.toolbar}>
           <Pressable
             accessibilityRole="button"
-            accessibilityState={{ disabled: unread === 0 }}
+            aria-disabled={unread === 0}
             onPress={unread === 0 ? undefined : markAll}
             hitSlop={6}
           >

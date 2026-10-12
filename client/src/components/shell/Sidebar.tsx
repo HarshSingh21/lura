@@ -94,7 +94,7 @@ function NavRow({
   return (
       <Pressable
         accessibilityRole="link"
-        accessibilityState={{ selected: active }}
+        aria-current={active ? 'page' : undefined}
         onPress={() => router.push(item.href)}
         style={({ pressed }) => [
           styles.navRow,

@@ -97,7 +97,7 @@ export function HistoryScreen() {
           <Pressable
             key={r.key}
             accessibilityRole="button"
-            accessibilityState={{ selected: range === r.key }}
+            aria-selected={range === r.key}
             onPress={() => setRange(r.key)}
             style={[styles.filterChip, range === r.key && styles.filterChipActive]}
           >
@@ -114,7 +114,7 @@ export function HistoryScreen() {
             <Pressable
               key={device.id}
               accessibilityRole="button"
-              accessibilityState={{ selected: device.id === activeDevice }}
+              aria-selected={device.id === activeDevice}
               onPress={() => setDeviceId(device.id)}
               style={[styles.filterChip, device.id === activeDevice && styles.filterChipActive]}
             >

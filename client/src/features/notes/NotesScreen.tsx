@@ -452,7 +452,7 @@ function ChoicePill({
   return (
     <Pressable
       accessibilityRole="radio"
-      accessibilityState={{ selected }}
+      aria-selected={selected}
       accessibilityLabel={suggested ? `${label}, suggested` : label}
       onPress={onPress}
       style={({ pressed }) => [

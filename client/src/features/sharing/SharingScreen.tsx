@@ -112,7 +112,7 @@ export function SharingScreen() {
                     <Pressable
                       key={place.id}
                       accessibilityRole="radio"
-                      accessibilityState={{ selected: place.id === arriveChoice }}
+                      aria-selected={place.id === arriveChoice}
                       onPress={() => setArrivePlaceId(place.id)}
                       style={[styles.placeChip, place.id === arriveChoice && styles.placeChipActive]}
                     >

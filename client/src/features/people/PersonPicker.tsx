@@ -49,7 +49,7 @@ export function PersonPicker({
           <Pressable
             key={option.id}
             accessibilityRole={multiple ? 'checkbox' : 'radio'}
-            accessibilityState={{ checked: on, disabled: !!option.disabled }}
+            aria-checked={on} aria-disabled={!!option.disabled}
             accessibilityLabel={option.hint ? `${option.label}, ${option.hint}` : option.label}
             onPress={option.disabled ? undefined : () => onToggle(option.id)}
             style={({ pressed }) => [

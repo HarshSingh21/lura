@@ -82,7 +82,7 @@ export function TopBar({
 
         <Pressable
           accessibilityRole="switch"
-          accessibilityState={{ checked: airgap }}
+          aria-checked={airgap}
           accessibilityLabel="Airgap mode"
           onPress={onToggleAirgap}
           style={({ pressed }) => [styles.airgap, airgap && styles.airgapOn, pressed && styles.pressed]}

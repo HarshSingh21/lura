@@ -69,7 +69,9 @@ export function Button({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ disabled: !!isDisabled, busy: !!loading }}
+      aria-disabled={!!isDisabled}
+      aria-busy={!!loading}
+      disabled={!!isDisabled}
       onPress={isDisabled ? undefined : onPress}
       style={({ pressed }) => [
         styles.button,
@@ -276,6 +278,9 @@ export function Field({
       ) : null}
       <TextInput
         placeholderTextColor={color.textFaint}
+        // The visible label is the input's name for screen readers too; without
+        // this a field announced as just "edit text".
+        accessibilityLabel={label}
         {...rest}
         style={[styles.input, error ? styles.inputError : null, inputStyle]}
       />
@@ -307,7 +312,7 @@ export function RadioRow({
   return (
     <Pressable
       accessibilityRole="radio"
-      accessibilityState={{ selected }}
+      aria-selected={selected}
       onPress={onPress}
       style={({ pressed }) => [
         styles.radioRow,
@@ -345,7 +350,7 @@ export function Toggle({
   return (
     <Pressable
       accessibilityRole="switch"
-      accessibilityState={{ checked: value }}
+      aria-checked={value}
       accessibilityLabel={accessibilityLabel ?? label}
       onPress={() => onChange(!value)}
       style={styles.toggleRow}
@@ -367,7 +372,7 @@ export function Checkbox({ checked, onPress }: { checked: boolean; onPress: () =
   return (
     <Pressable
       accessibilityRole="checkbox"
-      accessibilityState={{ checked }}
+      aria-checked={checked}
       onPress={onPress}
       style={[styles.checkbox, checked ? styles.checkboxChecked : null]}
     >

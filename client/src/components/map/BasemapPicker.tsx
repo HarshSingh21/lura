@@ -44,7 +44,7 @@ export function BasemapPicker({
               <Pressable
                 key={id}
                 accessibilityRole="radio"
-                accessibilityState={{ selected }}
+                aria-selected={selected}
                 accessibilityLabel={`${info.label} map`}
                 onPress={() => {
                   onChange(id);

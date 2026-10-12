@@ -174,7 +174,7 @@ function ProviderButton({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
-      accessibilityState={{ disabled, busy: pending }}
+      aria-disabled={disabled} aria-busy={pending}
       disabled={disabled}
       onPress={() => {
         void onPress(provider);
@@ -219,7 +219,7 @@ function UnreachableNotice({ url, onRetry, retrying }: { url: string; onRetry: (
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Try reaching Keycloak again"
-        accessibilityState={{ disabled: retrying, busy: retrying }}
+        aria-disabled={retrying} aria-busy={retrying}
         disabled={retrying}
         onPress={onRetry}
         style={({ pressed }) => [styles.retry, pressed && !retrying ? styles.pressed : null]}
