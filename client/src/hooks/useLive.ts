@@ -52,6 +52,13 @@ export function useLive(enabled = true) {
     const conn = connectLive({
       path: '/ws',
       onStatus: setStatus,
+      onOpen: (resumed) => {
+        // Whatever changed while the socket was down — a peer paused, a place
+        // was edited in another tab — is re-read rather than trusted.
+        if (!resumed) return;
+        void qc.invalidateQueries({ queryKey: keys.overview });
+        void qc.invalidateQueries({ queryKey: ['people'] });
+      },
       onFrame: (frame) => {
         switch (frame.type) {
           case 'hello':
@@ -77,6 +84,26 @@ export function useLive(enabled = true) {
                 battery: device.battery ?? 0,
                 seq: 0,
               });
+            }
+            // The people sharing with me, where each of their devices last was:
+            // on a reconnect this replaces wherever they were when it dropped.
+            for (const peer of frame.data.peers ?? []) {
+              for (const device of peer.devices ?? []) {
+                if (!device.point || !device.lastSeen) continue;
+                applyPosition({
+                  deviceId: device.id,
+                  userId: peer.userId,
+                  recvTs: device.lastSeen,
+                  deviceTs: device.lastSeen,
+                  point: device.point,
+                  accuracyM: 0,
+                  speedMps: device.speedMps ?? 0,
+                  altitudeM: 0,
+                  headingDeg: 0,
+                  battery: 0,
+                  seq: 0,
+                });
+              }
             }
             break;
 
@@ -104,6 +131,10 @@ export function useLive(enabled = true) {
             // A grant or revoke changes what the sharing screen and banner show.
             void qc.invalidateQueries({ queryKey: keys.shares });
             void qc.invalidateQueries({ queryKey: keys.overview });
+            // So does a connection changing on the other side — an invitation
+            // accepted, a switch paused — which the People screen must show now,
+            // not at its next 30 s poll.
+            void qc.invalidateQueries({ queryKey: ['people'] });
             break;
 
           case 'closing':
