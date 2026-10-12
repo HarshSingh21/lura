@@ -1,6 +1,6 @@
-# Release notes: live tracking between people
+# Release notes: Lura 0.2.0 — live tracking between people
 
-This release turns Lura from "where are my devices" into "where are the people I
+Version 0.2.0 (server and client; the previous release was 0.1.0-phase1). This release turns Lura from "where are my devices" into "where are the people I
 have chosen to share with". Two people who connect see each other move on the
 map, draw fences around the places that matter, and leave notes that fire on
 *someone else's* movement. The contract it was built against is

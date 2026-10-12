@@ -151,7 +151,7 @@ func Default() Config {
 		MapProvider: "maplibre",
 
 		ServiceName:      "lura",
-		ServiceVersion:   "0.1.0-phase1",
+		ServiceVersion:   "0.2.0",
 		Environment:      "development",
 		OTLPEndpoint:     "", // set LURA_OTLP_ENDPOINT (or OTEL_EXPORTER_OTLP_ENDPOINT) to enable
 		OTLPInsecure:     true,

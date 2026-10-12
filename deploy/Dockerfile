@@ -27,7 +27,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-ARG VERSION=0.1.0-phase1
+ARG VERSION=0.2.0
 # CGO off for a static binary; trimpath and -s -w keep the image small, and the
 # version is stamped so /version and every span match the build.
 RUN CGO_ENABLED=0 GOOS=linux go build \

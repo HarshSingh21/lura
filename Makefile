@@ -3,7 +3,7 @@
 # `make run` needs nothing installed; everything else is opt-in.
 
 GO      ?= go
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.1.0-phase1)
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.2.0)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 .DEFAULT_GOAL := help
