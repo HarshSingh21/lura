@@ -1,11 +1,14 @@
 // Package domain holds Lura's core types. It has no dependencies on transport,
 // storage or the message bus so every other package can share one vocabulary.
+// Its one internal import, geo, is pure math.
 package domain
 
 import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/HarshSingh21/locnot/internal/geo"
 )
 
 // Sentinel errors, mapped to HTTP status codes by the API layer.
@@ -107,19 +110,93 @@ type Position struct {
 	Seq       int64     `json:"seq"` // client sequence number, strengthens the idempotency key
 }
 
-// Place is a geofence: a circle in Phase 1 (center + radius, evaluated with
-// ST_DWithin), polygons in Phase 2.
+// PlaceShape is the geometry a geofence uses.
+type PlaceShape string
+
+const (
+	// ShapeCircle is center + radius, evaluated with ST_DWithin / haversine.
+	ShapeCircle PlaceShape = "circle"
+	// ShapePolygon is a drawn ring, evaluated with ST_Covers / ray casting.
+	ShapePolygon PlaceShape = "polygon"
+)
+
+// Place is a geofence: a circle (center + radius, evaluated with ST_DWithin) or
+// a polygon (evaluated with ST_Covers). A polygon still carries Center and
+// RadiusM — the server-computed centroid and bounding radius — so listing,
+// fitting the map and the spatial pre-filter treat both shapes the same way.
 type Place struct {
-	ID        string    `json:"id"`
-	UserID    string    `json:"userId"`
-	Name      string    `json:"name"`
-	Tags      []string  `json:"tags"`
-	Center    Point     `json:"center"`
-	RadiusM   int       `json:"radiusM"`
-	Triggers  []Trigger `json:"triggers"`
-	DwellMins int       `json:"dwellMins"` // for TriggerDwell, minutes inside before firing
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"` // drives AI embedding-cache invalidation (HLD §5.7)
+	ID      string     `json:"id"`
+	UserID  string     `json:"userId"`
+	Name    string     `json:"name"`
+	Tags    []string   `json:"tags"`
+	Shape   PlaceShape `json:"shape"`
+	Center  Point      `json:"center"`
+	RadiusM int        `json:"radiusM"`
+	// Polygon is an open ring (first vertex not repeated); empty for circles.
+	Polygon []Point `json:"polygon"`
+	// WatchUserIDs are connected people whose crossings of this fence notify the
+	// owner. A crossing is only evaluated while that person shares live with the
+	// owner, so the list is a wish, never an override of their consent.
+	WatchUserIDs []string  `json:"watchUserIds"`
+	Triggers     []Trigger `json:"triggers"`
+	DwellMins    int       `json:"dwellMins"` // for TriggerDwell, minutes inside before firing
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"` // drives AI embedding-cache invalidation (HLD §5.7)
+}
+
+// IsPolygon reports whether the place is evaluated against its ring.
+func (p Place) IsPolygon() bool { return p.Shape == ShapePolygon && len(p.Polygon) >= 3 }
+
+// Contains is the in-process containment test: haversine for a circle,
+// point-in-polygon for a ring (boundary inclusive, like ST_Covers). The memory
+// store and the engine's restart path use it; PostGIS answers the same question
+// in SQL.
+func (p Place) Contains(pt Point) bool {
+	if p.IsPolygon() {
+		return geo.PointInPolygon(pt.Lat, pt.Lon, p.Ring())
+	}
+	return geo.DWithin(p.Center.Lat, p.Center.Lon, pt.Lat, pt.Lon, float64(p.RadiusM))
+}
+
+// Ring converts the polygon to the geo package's vertex type.
+func (p Place) Ring() []geo.Vertex {
+	out := make([]geo.Vertex, len(p.Polygon))
+	for i, v := range p.Polygon {
+		out[i] = geo.Vertex(v)
+	}
+	return out
+}
+
+// Watches reports whether userID is on the place's watch list.
+func (p Place) Watches(userID string) bool {
+	for _, id := range p.WatchUserIDs {
+		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// Normalized fills the defaults every reader relies on: a shape, and empty
+// (never nil) collections, so JSON carries [] rather than null and the two
+// stores return identical values.
+func (p Place) Normalized() Place {
+	if p.Shape == "" {
+		p.Shape = ShapeCircle
+	}
+	if p.Tags == nil {
+		p.Tags = []string{}
+	}
+	if p.Polygon == nil || p.Shape == ShapeCircle {
+		p.Polygon = []Point{}
+	}
+	if p.WatchUserIDs == nil {
+		p.WatchUserIDs = []string{}
+	}
+	if p.Triggers == nil {
+		p.Triggers = []Trigger{}
+	}
+	return p
 }
 
 // Note is a reminder bound to a place and a trigger.
@@ -132,9 +209,44 @@ type Note struct {
 	Tags      []string   `json:"tags"`
 	Done      bool       `json:"done"`
 	Channel   string     `json:"channel"` // "" = user default channels
-	CreatedAt time.Time  `json:"createdAt"`
-	UpdatedAt time.Time  `json:"updatedAt"`
-	FiredAt   *time.Time `json:"firedAt,omitempty"`
+	// WatchUserID is whose movement fires the note: "" for the owner's own
+	// devices, otherwise a connected peer who shares live with the owner.
+	WatchUserID string `json:"watchUserId"`
+	// NotifyUserIDs is who receives the reminder; empty means [owner]. Each id
+	// is the owner or an accepted connection.
+	NotifyUserIDs []string   `json:"notifyUserIds"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
+	FiredAt       *time.Time `json:"firedAt,omitempty"`
+}
+
+// Recipients resolves NotifyUserIDs, applying the "empty means the owner"
+// default and dropping blanks and duplicates.
+func (n Note) Recipients() []string {
+	seen := make(map[string]bool, len(n.NotifyUserIDs))
+	out := make([]string, 0, len(n.NotifyUserIDs))
+	for _, id := range n.NotifyUserIDs {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if len(out) == 0 {
+		return []string{n.UserID}
+	}
+	return out
+}
+
+// Normalized makes the note's collections non-nil.
+func (n Note) Normalized() Note {
+	if n.Tags == nil {
+		n.Tags = []string{}
+	}
+	if n.NotifyUserIDs == nil {
+		n.NotifyUserIDs = []string{}
+	}
+	return n
 }
 
 // ConnectionStatus is where a mutual-sharing relationship stands.
@@ -247,6 +359,10 @@ type TriggerEvent struct {
 
 // GeoEvent is what the geofence engine publishes on geo.<user>. It is the
 // contract between the geofence engine and the notification worker.
+//
+// UserID is always the *place owner* — the user whose subject it is published
+// on — and SubjectUserID is whose device crossed. They differ when a connected
+// peer crosses a fence the owner watches them on.
 type GeoEvent struct {
 	ID        string    `json:"id"`
 	UserID    string    `json:"userId"`
@@ -257,6 +373,18 @@ type GeoEvent struct {
 	TS        time.Time `json:"ts"`
 	Point     Point     `json:"point"`
 	SpeedMPS  float64   `json:"speedMps"`
+
+	SubjectUserID string `json:"subjectUserId"`
+	SubjectName   string `json:"subjectName"`
+}
+
+// Subject returns whose device crossed, defaulting to the owner for an event
+// published before the field existed.
+func (e GeoEvent) Subject() string {
+	if e.SubjectUserID == "" {
+		return e.UserID
+	}
+	return e.SubjectUserID
 }
 
 // PendingDwell is an armed dwell timer. Persisted (not cache-only) so a
