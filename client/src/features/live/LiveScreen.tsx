@@ -90,6 +90,7 @@ export function LiveScreen() {
   const { data, isLoading, error } = useOverview();
 
   const positions = useStore((s) => s.positions);
+  const liveStatus = useStore((s) => s.status);
   const trails = useTrails((s) => s.trails);
   const lastEvent = useStore((s) => s.lastEvent);
   const pushToast = useStore((s) => s.pushToast);
@@ -764,6 +765,24 @@ export function LiveScreen() {
           />
         </View>
 
+        {/* The map keeps drawing what it last heard while the socket is down;
+            without saying so, a frozen map reads as everyone standing still. */}
+        {liveStatus === 'offline' || liveStatus === 'reconnecting' ? (
+          <View style={styles.liveBanner} testID="lura-live-banner" accessibilityRole="alert" pointerEvents="none">
+            <Dot size={8} color={liveStatus === 'offline' ? color.neutralDot : palette.amberDot} blink />
+            <View style={styles.liveBannerText}>
+              <Txt variant="bodySemi" color={palette.amberInk}>
+                {liveStatus === 'offline' ? 'You are offline' : 'Reconnecting…'}
+              </Txt>
+              <Txt variant="micro" color={palette.amberInk}>
+                {liveStatus === 'offline'
+                  ? 'The map is not updating. Positions are where people were when the connection dropped.'
+                  : 'Live positions will catch up the moment the connection is back.'}
+              </Txt>
+            </View>
+          </View>
+        ) : null}
+
         {pausedPeers.length > 0 && !fenceEdit ? (
           <View style={[styles.pausedStack, !isDesktop && styles.pausedStackPhone]} pointerEvents="none">
             {pausedPeers.slice(0, 3).map((p) => (
@@ -1015,6 +1034,25 @@ const styles = StyleSheet.create({
   zoomButton: { width: 38, height: 36, alignItems: 'center', justifyContent: 'center' },
   zoomButtonTop: { borderBottomWidth: 1, borderBottomColor: color.hairlineSoft },
 
+  liveBanner: {
+    position: 'absolute',
+    top: 16,
+    alignSelf: 'center',
+    maxWidth: 440,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: color.surface,
+    borderWidth: 1,
+    borderColor: color.border,
+    borderLeftWidth: 4,
+    borderLeftColor: palette.amberDot,
+    borderRadius: radius.card,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    ...shadow('float'),
+  },
+  liveBannerText: { flexShrink: 1, gap: 1 },
   pausedStack: { position: 'absolute', left: 12, bottom: 36, gap: 6, maxWidth: '70%' },
   pausedStackPhone: { bottom: 112 },
   pausedChip: {
