@@ -6,6 +6,7 @@ import { color } from '@/theme/tokens';
 import { mapplsStyleFor, mapplsStyleNames } from './basemaps';
 import { absoluteFill } from './fill';
 import { FenceOverlay, MarkerOverlay, TrackOverlay } from './Overlays';
+import { FenceEditor } from './FenceEditor';
 import type { Viewport } from './projection';
 import type { BasemapId, MapViewProps } from './types';
 
@@ -184,6 +185,8 @@ export function MapplsWebMap(
     variant = 'light',
     recenterKey,
     onViewportChange,
+    fenceEdit,
+    onFenceGeometry,
   } = props;
 
   const dark = variant === 'dark';
@@ -371,6 +374,9 @@ export function MapplsWebMap(
         <TrackOverlay tracks={tracks} view={view} dark={dark} />
         <FenceOverlay fences={fences} view={view} dark={dark} onPress={onPressFence} />
         <MarkerOverlay markers={markers} view={view} dark={dark} />
+        {fenceEdit && onFenceGeometry ? (
+          <FenceEditor state={fenceEdit} view={view} onGeometry={onFenceGeometry} dark={dark} />
+        ) : null}
       </View>
     </View>
   );

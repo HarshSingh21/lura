@@ -1,16 +1,18 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
+import Svg, { Circle, Path } from 'react-native-svg';
 
-import { keys, useCreatePlace, useOverview, useRevokeShare } from '@/api/hooks';
-import type { Point } from '@/api/types';
+import { keys, useCreatePlace, useOverview, useRevokeShare, useUpdatePlaceGeometry } from '@/api/hooks';
+import type { Place, Point } from '@/api/types';
 import { attribution } from '@/components/map/basemaps';
 import { BasemapPicker } from '@/components/map/BasemapPicker';
 import { MapView } from '@/components/map/MapView';
 import { zoomToInclude, type Box } from '@/components/map/fit';
+import { formatMetres } from '@/components/map/geometry';
 import { fitBounds } from '@/components/map/projection';
-import type { MapFence, MapMarker } from '@/components/map/types';
+import type { FenceEditState, FenceGeometry, MapFence, MapMarker } from '@/components/map/types';
 import { useBasemap } from '@/components/map/useBasemap';
 import { Icon } from '@/components/ui/Icon';
 import { Button, Dot, IconButton, Sheet } from '@/components/ui/primitives';
@@ -36,6 +38,38 @@ const MIN_FOLLOW_MS = 450;
 /** Fallback view when a workspace has no places and no fixes yet (central Bengaluru). */
 const FALLBACK_CENTER: Point = { lat: 12.9716, lon: 77.5946 };
 
+/** The fence id the editor uses for a shape that has been drawn but not saved yet. */
+const DRAFT_ID = '__draft__';
+
+type DrawMode = 'draw-circle' | 'draw-polygon' | 'draw-freehand';
+
+const DRAW_MODES: { mode: DrawMode; label: string }[] = [
+  { mode: 'draw-circle', label: 'Circle' },
+  { mode: 'draw-polygon', label: 'Polygon' },
+  { mode: 'draw-freehand', label: 'Freehand' },
+];
+
+/** geometryOfPlace is a place's fence as the editor understands it. */
+function geometryOfPlace(place: Place): FenceGeometry {
+  return place.shape === 'polygon' && place.polygon.length >= 3
+    ? { shape: 'polygon', polygon: place.polygon }
+    : { shape: 'circle', center: place.center, radiusM: place.radiusM };
+}
+
+function editState(fenceId: string, geometry: FenceGeometry): FenceEditState {
+  return geometry.shape === 'circle'
+    ? { mode: 'edit', fenceId, shape: 'circle', center: geometry.center, radiusM: geometry.radiusM }
+    : { mode: 'edit', fenceId, shape: 'polygon', polygon: geometry.polygon };
+}
+
+/** zoomForRadius frames a fence of this size with room around it. */
+function zoomForRadius(radiusM: number): number {
+  if (radiusM > 1500) return 13;
+  if (radiusM > 600) return 14;
+  if (radiusM > 250) return 15;
+  return 16;
+}
+
 /**
  * The live map: the screen the product is named for.
  *
@@ -52,8 +86,7 @@ export function LiveScreen() {
   const positions = useStore((s) => s.positions);
   const trails = useTrails((s) => s.trails);
   const lastEvent = useStore((s) => s.lastEvent);
-  const drawing = useStore((s) => s.drawing);
-  const setDrawing = useStore((s) => s.setDrawing);
+  const pushToast = useStore((s) => s.pushToast);
   const selectedPlaceId = useStore((s) => s.selectedPlaceId);
   const selectPlace = useStore((s) => s.selectPlace);
   const selectDevice = useStore((s) => s.selectDevice);
@@ -65,6 +98,7 @@ export function LiveScreen() {
 
   const createPlace = useCreatePlace();
   const revokeShare = useRevokeShare();
+  const updateGeometry = useUpdatePlaceGeometry();
 
   const [zoom, setZoom] = useState(14);
   const [recenterKey, setRecenterKey] = useState(0);
@@ -72,7 +106,19 @@ export function LiveScreen() {
   // a set of markers is a question about pixels, and the zoom level alone cannot
   // answer it.
   const [box, setBox] = useState<Box>({ width: 0, height: 0 });
-  const [draft, setDraft] = useState<Point | null>(null);
+  // The geofence editor: a draw mode, or an existing (or just-drawn) fence
+  // being moved and reshaped. `draft` is a drawn shape waiting for its form.
+  const [fenceEdit, setFenceEdit] = useState<FenceEditState | null>(null);
+  const [drawMenu, setDrawMenu] = useState(false);
+  const [draft, setDraft] = useState<FenceGeometry | null>(null);
+  // The last geometry the server accepted for the fence being edited, which is
+  // what a failed save rolls back to.
+  const [committed, setCommitted] = useState<FenceGeometry | null>(null);
+  // Where the camera should look while a fence is being edited; it wins over
+  // the live position until the user recentres.
+  const [focus, setFocus] = useState<Point | null>(null);
+  const editingId = fenceEdit?.mode === 'edit' ? fenceEdit.fenceId : undefined;
+  const drawingMode = fenceEdit && fenceEdit.mode !== 'edit' ? fenceEdit.mode : undefined;
   const [basemap, setBasemap] = useBasemap();
   // Whom the camera is following, if anyone (a person or one of my devices).
   const [followKey, setFollowKey] = useState<FollowKey | undefined>(undefined);
@@ -114,6 +160,7 @@ export function LiveScreen() {
   /** The map opens on the freshest thing it knows: a live fix, then a last fix,
    *  then the centre of the user's places, then a sensible city. */
   const center = useMemo<Point>(() => {
+    if (focus) return focus;
     if (fitCenter && !selectedDeviceId) return fitCenter;
     if (selectedDeviceId) {
       const chosen = positions[selectedDeviceId]?.point ?? devices.find((d) => d.id === selectedDeviceId)?.lastPoint;
@@ -133,17 +180,19 @@ export function LiveScreen() {
       return { lat, lon };
     }
     return FALLBACK_CENTER;
-  }, [positions, devices, places, selectedDeviceId, fitCenter]);
+  }, [focus, positions, devices, places, selectedDeviceId, fitCenter]);
 
   const fences = useMemo<MapFence[]>(
     () =>
-      places.map((place) => {
+      // The fence being edited is drawn by the editor itself, live under the
+      // finger; drawing it here too would leave a stale copy behind the drag.
+      places.filter((place) => place.id !== editingId).map((place) => {
         const passby = place.triggers.includes('passby');
         return {
           id: place.id,
           center: place.center,
           radiusM: place.radiusM,
-          polygon: place.shape === 'polygon' ? place.polygon : undefined,
+          polygon: place.shape === 'polygon' && place.polygon.length >= 3 ? place.polygon : undefined,
           name: place.name,
           // The mock labels a pass-by fence with the trigger and everything else
           // with its radius — the radius matters when you are tuning a fence, the
@@ -155,7 +204,7 @@ export function LiveScreen() {
           selected: place.id === selectedPlaceId,
         };
       }),
-    [places, selectedPlaceId],
+    [places, selectedPlaceId, editingId],
   );
 
   /**
@@ -316,6 +365,89 @@ export function LiveScreen() {
   const mapCenter = followed?.point ?? center;
   const followMs = followed ? Math.max(MIN_FOLLOW_MS, followed.animateMs ?? 0) : undefined;
 
+  const selectedPlace = places.find((p) => p.id === selectedPlaceId);
+
+  /** startEdit puts an existing fence under the editor and brings it into view. */
+  const startEdit = (place: Place) => {
+    const geometry = geometryOfPlace(place);
+    setCommitted(geometry);
+    setDrawMenu(false);
+    // The fence, not a moving person, is what the camera should hold still on.
+    setFollowKey(undefined);
+    setFenceEdit(editState(place.id, geometry));
+    setFocus(place.center);
+    setZoom(zoomForRadius(place.radiusM));
+    setRecenterKey((k) => k + 1);
+  };
+
+  const stopEditing = () => {
+    setFenceEdit(null);
+    setDraft(null);
+    setCommitted(null);
+  };
+
+  // "Edit on map" from the Places screen arrives as ?edit=<placeId>. Handled
+  // during render, like the zoom fit above, so the map never paints a frame
+  // without the editor; the param is cleared afterwards so a reload or a tab
+  // switch does not re-enter edit mode.
+  const { edit: editParam } = useLocalSearchParams<{ edit?: string }>();
+  const [handledEdit, setHandledEdit] = useState<string | undefined>(undefined);
+  if (editParam && editParam !== handledEdit && data) {
+    setHandledEdit(editParam);
+    const place = places.find((p) => p.id === editParam);
+    if (place) startEdit(place);
+  }
+  useEffect(() => {
+    if (editParam && editParam === handledEdit) router.setParams({ edit: undefined });
+  }, [editParam, handledEdit, router]);
+
+  /**
+   * onFenceGeometry is the editor's report. While a gesture runs it only
+   * mirrors the geometry; at the end of one it either opens the form (a new
+   * shape) or saves (an existing fence — optimistically, rolled back with a
+   * toast if the server refuses).
+   */
+  const onFenceGeometry = (geometry: FenceGeometry, done: boolean) => {
+    const current = fenceEdit;
+    if (!current) return;
+    if (current.mode === 'draw-polygon' && geometry.shape === 'polygon' && !done) {
+      setFenceEdit({ mode: 'draw-polygon', vertices: geometry.polygon });
+      return;
+    }
+    if (current.mode !== 'edit') {
+      if (!done) return; // circle and freehand previews are drawn by the editor
+      // A finished shape becomes an editable draft behind the form.
+      setFenceEdit(editState(DRAFT_ID, geometry));
+      setDraft(geometry);
+      return;
+    }
+    const id = current.fenceId;
+    setFenceEdit(editState(id, geometry));
+    if (!done) return;
+    if (id === DRAFT_ID) {
+      setDraft(geometry);
+      return;
+    }
+    const previous = committed;
+    setCommitted(geometry);
+    updateGeometry.mutate(
+      { id, geometry },
+      {
+        onError: (err) => {
+          setCommitted(previous);
+          if (previous) {
+            setFenceEdit((now) => (now?.mode === 'edit' && now.fenceId === id ? editState(id, previous) : now));
+          }
+          pushToast({
+            kind: 'error',
+            title: 'Could not save the fence',
+            body: err instanceof Error ? err.message : 'The server refused the new shape.',
+          });
+        },
+      },
+    );
+  };
+
   const rail = (
     <View style={styles.railContent}>
       <SharingBanner
@@ -387,34 +519,57 @@ export function LiveScreen() {
             setBox((prev) => (prev.width === v.width && prev.height === v.height ? prev : { width: v.width, height: v.height }));
           }}
           onPressFence={(id) => selectPlace(id === selectedPlaceId ? undefined : id)}
-          onPressMap={
-            drawing
-              ? (point) => {
-                  setDraft(point);
-                  setDrawing(false);
-                }
-              : undefined
-          }
+          fenceEdit={fenceEdit ?? undefined}
+          onFenceGeometry={onFenceGeometry}
         />
 
         {/* top-left actions */}
         <View style={styles.topActions} pointerEvents="box-none">
-          <Button
-            label={drawing ? 'Tap the map…' : 'Draw a place'}
-            icon={drawing ? undefined : 'plus'}
-            onPress={() => setDrawing(!drawing)}
-            small={isPhone}
-          />
-          <Button
-            label="Share location"
-            variant="secondary"
-            onPress={() => router.push('/sharing')}
-            small={isPhone}
-          />
+          {fenceEdit ? (
+            <>
+              <View style={styles.editPill}>
+                <Dot size={7} color={palette.accent} />
+                <Txt variant="bodySemi" numberOfLines={1}>
+                  {drawingMode
+                    ? `Drawing a ${DRAW_MODES.find((m) => m.mode === drawingMode)?.label.toLowerCase()}`
+                    : editingId === DRAFT_ID
+                      ? 'New place'
+                      : `Editing ${places.find((p) => p.id === editingId)?.name ?? 'place'}`}
+                </Txt>
+                {updateGeometry.isPending ? (
+                  <Mono size={size.monoTiny} color={color.textFaint}>
+                    saving…
+                  </Mono>
+                ) : null}
+              </View>
+              <Button
+                label={drawingMode || editingId === DRAFT_ID ? 'Cancel' : 'Done'}
+                variant={drawingMode || editingId === DRAFT_ID ? 'secondary' : 'primary'}
+                icon={drawingMode || editingId === DRAFT_ID ? 'close' : 'check'}
+                onPress={stopEditing}
+                small={isPhone}
+              />
+            </>
+          ) : (
+            <>
+              <Button
+                label="Draw"
+                icon={drawMenu ? 'chevron-up' : 'plus'}
+                onPress={() => setDrawMenu((open) => !open)}
+                small={isPhone}
+              />
+              <Button
+                label="Share location"
+                variant="secondary"
+                onPress={() => router.push('/sharing')}
+                small={isPhone}
+              />
+            </>
+          )}
         </View>
 
         {followed && followName ? (
-          <View style={[styles.followChip, drawing ? styles.followChipLow : null]}>
+          <View style={[styles.followChip, (drawMenu || fenceEdit || selectedPlace) ? styles.followChipLow : null]}>
             <Dot size={8} color={followed.color ?? palette.accent} pulse />
             <Txt variant="small" color={color.textBody}>
               Following <Txt variant="bodySemi">{followName}</Txt>
@@ -431,11 +586,50 @@ export function LiveScreen() {
           </View>
         ) : null}
 
-        {drawing ? (
-          <View style={styles.drawHint} pointerEvents="none">
-            <Txt variant="small" color={color.textMuted}>
-              Tap anywhere to drop a geofence there.
+        {drawMenu && !fenceEdit ? (
+          <View style={styles.drawMenu} accessibilityRole="menu">
+            <Txt variant="micro" color={color.textFaint}>
+              Draw a geofence as a
             </Txt>
+            <View style={styles.drawMenuRow}>
+              {DRAW_MODES.map(({ mode, label }) => (
+                <Pressable
+                  key={mode}
+                  accessibilityRole="menuitem"
+                  onPress={() => {
+                    setDrawMenu(false);
+                    selectPlace(undefined);
+                    setFenceEdit(mode === 'draw-polygon' ? { mode, vertices: [] } : { mode });
+                  }}
+                  style={({ pressed }) => [styles.drawOption, pressed && styles.drawOptionPressed]}
+                >
+                  <ShapeGlyph mode={mode} />
+                  <Txt variant="bodyMedium">{label}</Txt>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        ) : null}
+
+        {selectedPlace && !fenceEdit && !drawMenu ? (
+          <View style={styles.placeCard}>
+            <View style={styles.placeCardText}>
+              <Txt variant="bodySemi" numberOfLines={1}>
+                {selectedPlace.name}
+              </Txt>
+              <Mono size={size.monoXs} color={color.textMuted}>
+                {selectedPlace.shape === 'polygon' && selectedPlace.polygon.length >= 3
+                  ? `polygon · ${selectedPlace.polygon.length} corners`
+                  : `circle · ${formatMetres(selectedPlace.radiusM)}`}
+              </Mono>
+            </View>
+            <Button label="Edit shape" variant="secondary" small onPress={() => startEdit(selectedPlace)} />
+            <IconButton
+              name="close"
+              accessibilityLabel="Deselect place"
+              onPress={() => selectPlace(undefined)}
+              style={styles.placeCardClose}
+            />
           </View>
         ) : null}
 
@@ -470,6 +664,7 @@ export function LiveScreen() {
               setFollowKey(undefined);
               selectDevice(undefined);
               setFitCenter(null);
+              setFocus(null); // stop looking at the fence being edited
               setFittedKey(null); // pressing "locate me" asks for the fit again
               setRecenterKey((k) => k + 1);
             }}
@@ -504,7 +699,8 @@ export function LiveScreen() {
         ) : null}
 
         {/* phone: a pull-up handle instead of a permanent rail */}
-        {!isDesktop ? (
+        {/* While editing, the editor's own toolbar owns the bottom of the map. */}
+        {!isDesktop && !fenceEdit ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={
@@ -545,33 +741,67 @@ export function LiveScreen() {
         </Sheet>
       )}
 
-      <Sheet
-        visible={draft !== null}
-        onClose={() => setDraft(null)}
-        title="New place"
-        phone={isPhone}
-      >
+      <Sheet visible={draft !== null} onClose={stopEditing} title="New place" phone={isPhone}>
         {draft ? (
           <>
             <Txt variant="small" color={color.textMuted}>
-              Dropped at{' '}
-              <Mono size={size.monoSm} color={color.textBody}>
-                {draft.lat.toFixed(5)}, {draft.lon.toFixed(5)}
-              </Mono>
+              {draft.shape === 'circle' ? (
+                <>
+                  Circle of {formatMetres(draft.radiusM)} at{' '}
+                  <Mono size={size.monoSm} color={color.textBody}>
+                    {draft.center.lat.toFixed(5)}, {draft.center.lon.toFixed(5)}
+                  </Mono>
+                </>
+              ) : (
+                `Polygon with ${draft.polygon.length} corners`
+              )}
             </Txt>
             <PlaceForm
-              seedPoint={draft}
+              geometry={draft}
               submitting={createPlace.isPending}
               error={createPlace.error instanceof Error ? createPlace.error.message : undefined}
-              onCancel={() => setDraft(null)}
+              onCancel={stopEditing}
               onSubmit={(values) => {
-                createPlace.mutate(values, { onSuccess: () => setDraft(null) });
+                createPlace.mutate(values, {
+                  onSuccess: ({ place }) => {
+                    stopEditing();
+                    selectPlace(place.id);
+                  },
+                });
               }}
             />
           </>
         ) : null}
       </Sheet>
     </View>
+  );
+}
+
+/** ShapeGlyph is the small picture on each draw option. */
+function ShapeGlyph({ mode }: { mode: DrawMode }) {
+  const stroke = palette.accent;
+  return (
+    <Svg width={22} height={22} viewBox="0 0 22 22">
+      {mode === 'draw-circle' ? (
+        <Circle cx={11} cy={11} r={8} fill="rgba(32,160,123,0.14)" stroke={stroke} strokeWidth={1.8} />
+      ) : mode === 'draw-polygon' ? (
+        <Path
+          d="M4 6 L15 3 L19 13 L9 19 Z"
+          fill="rgba(32,160,123,0.14)"
+          stroke={stroke}
+          strokeWidth={1.8}
+          strokeLinejoin="round"
+        />
+      ) : (
+        <Path
+          d="M5 9 C4 4 12 2 16 5 C20 8 19 14 15 17 C11 20 5 18 4 14"
+          fill="none"
+          stroke={stroke}
+          strokeWidth={1.8}
+          strokeLinecap="round"
+        />
+      )}
+    </Svg>
   );
 }
 
@@ -588,18 +818,61 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     maxWidth: '92%',
   },
-  drawHint: {
-    position: 'absolute',
-    top: 62,
-    left: 16,
+  editPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    maxWidth: 260,
     backgroundColor: color.surface,
     borderWidth: 1,
     borderColor: color.border,
-    borderRadius: radius.md,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    ...shadow('float'),
+    borderRadius: radius.lg,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    ...shadow('button'),
   },
+  drawMenu: {
+    position: 'absolute',
+    top: 64,
+    left: 16,
+    gap: 8,
+    backgroundColor: color.surface,
+    borderWidth: 1,
+    borderColor: color.border,
+    borderRadius: radius.card,
+    padding: 10,
+    ...shadow('card'),
+  },
+  drawMenuRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
+  drawOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    minHeight: 40,
+    paddingHorizontal: 12,
+    borderRadius: radius.lg,
+    backgroundColor: color.surfaceMuted,
+  },
+  drawOptionPressed: { backgroundColor: color.accentSoft },
+  placeCard: {
+    position: 'absolute',
+    top: 64,
+    left: 16,
+    maxWidth: 420,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: color.surface,
+    borderWidth: 1,
+    borderColor: color.border,
+    borderRadius: radius.card,
+    paddingVertical: 8,
+    paddingLeft: 14,
+    paddingRight: 8,
+    ...shadow('card'),
+  },
+  placeCardText: { flexShrink: 1, gap: 2 },
+  placeCardClose: { width: 32, height: 32 },
 
   followChip: {
     position: 'absolute',
@@ -617,7 +890,7 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     ...shadow('float'),
   },
-  followChipLow: { top: 100 },
+  followChipLow: { top: 124 },
   followStop: { padding: 4, borderRadius: radius.sm },
 
   controls: { position: 'absolute', right: 18, bottom: 18, gap: 8, alignItems: 'flex-end' },

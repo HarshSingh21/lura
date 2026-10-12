@@ -47,6 +47,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "node --test \"src/**/*.test.mts\"",
     "lint": "expo lint",
+    "test:geometry": "node --test scripts/test-geometry.mjs",
     "postinstall": "node scripts/copy-maplibre-worker.mjs || true"
   },
   "private": true
