@@ -97,6 +97,12 @@ func (m *multiTokenAuth) Authenticate(r *http.Request) (auth.Principal, error) {
 
 func newStack(t *testing.T) *stack {
 	t.Helper()
+	return newStackWith(t, nil)
+}
+
+// newStackWith builds a stack whose configuration is adjusted by tune first.
+func newStackWith(t *testing.T, tune func(*config.Config)) *stack {
+	t.Helper()
 	ctx := context.Background()
 
 	cfg := config.Default()
@@ -111,6 +117,9 @@ func newStack(t *testing.T) *stack {
 	cfg.CoolOff = time.Minute
 	cfg.DwellTick = time.Hour
 	cfg.EnableTraces, cfg.EnableMetrics, cfg.EnableOTLPLogs, cfg.EnablePrometheus = false, false, false, false
+	if tune != nil {
+		tune(&cfg)
+	}
 
 	st := memory.New()
 	seeded, err := seed.Run(ctx, st, nil, seed.Options{
@@ -374,6 +383,13 @@ func TestOverviewReturnsTheWholeWorkspace(t *testing.T) {
 	server, _ := body["server"].(map[string]any)
 	if server["mapStyleUrl"] == "" || server["phase"] != "1" {
 		t.Errorf("server info = %+v", server)
+	}
+	// The open basemap is the default, and no Mappls key is handed out for it.
+	if server["mapProvider"] != "maplibre" {
+		t.Errorf("mapProvider = %v, want maplibre", server["mapProvider"])
+	}
+	if _, present := server["mapplsWebKey"]; present {
+		t.Error("a Mappls key was handed out while MapLibre is the provider")
 	}
 
 	// Place stats back the counters in the places grid.
@@ -1107,5 +1123,57 @@ func TestCORSPreflight(t *testing.T) {
 	}
 	if !strings.Contains(resp.Header.Get("Access-Control-Allow-Headers"), "Authorization") {
 		t.Errorf("Allow-Headers = %q, want Authorization", resp.Header.Get("Access-Control-Allow-Headers"))
+	}
+}
+
+// Mappls is opt-in, and airgap overrides it: the provider falls back to the open
+// renderer and the browser key is never handed out, to a signed-in client or to
+// anyone holding a share link.
+func TestMapProviderMapplsAndAirgap(t *testing.T) {
+	cases := []struct {
+		name     string
+		airgap   bool
+		provider string
+		key      string
+	}{
+		{"mappls", false, "mappls", "web-key"},
+		{"airgap overrides mappls", true, "maplibre", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStackWith(t, func(c *config.Config) {
+				c.MapProvider = "mappls"
+				c.MapplsWebKey = "web-key"
+				c.Airgap = tc.airgap
+			})
+
+			body := s.json(http.MethodGet, "/api/v1/overview", nil, http.StatusOK)
+			server, _ := body["server"].(map[string]any)
+			if server["mapProvider"] != tc.provider {
+				t.Errorf("overview mapProvider = %v, want %s", server["mapProvider"], tc.provider)
+			}
+			if got, _ := server["mapplsWebKey"].(string); got != tc.key {
+				t.Errorf("overview mapplsWebKey = %q, want %q", got, tc.key)
+			}
+
+			created := s.json(http.MethodPost, "/api/v1/shares", map[string]any{"label": "Priya", "mode": "duration", "durationMins": 30}, http.StatusCreated)
+			sh, _ := created["share"].(map[string]any)
+			token, _ := sh["token"].(string)
+			resp := s.do(http.MethodGet, "/s/"+token, nil, false)
+			raw, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			var envelope struct {
+				Map map[string]any `json:"map"`
+			}
+			if err := json.Unmarshal(raw, &envelope); err != nil {
+				t.Fatalf("public view: %v (%s)", err, raw)
+			}
+			if envelope.Map["provider"] != tc.provider {
+				t.Errorf("share provider = %v, want %s", envelope.Map["provider"], tc.provider)
+			}
+			if got, _ := envelope.Map["mapplsWebKey"].(string); got != tc.key {
+				t.Errorf("share mapplsWebKey = %q, want %q", got, tc.key)
+			}
+		})
 	}
 }

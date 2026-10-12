@@ -9,11 +9,13 @@ import { absoluteFill } from './fill';
 
 import { FenceOverlay, MarkerOverlay } from './Overlays';
 import { MapCanvas } from './MapCanvas';
+import { loadMappls, MapplsNativeMap } from './MapplsMap.native';
 import { circlePolygon, type Viewport } from './projection';
 import type { MapViewProps } from './types';
 
 /**
- * MapLibre Native on iOS and Android (HLD §13).
+ * MapLibre Native on iOS and Android (HLD §13), or Mappls when the server opts
+ * into it and the build carries Mappls' SDK (MapplsMap.native.tsx).
  *
  * MapLibre Native is a native module, so it needs a development build — HLD §17
  * flags that requirement as a risk to set up early. Rather than crash in Expo Go,
@@ -28,14 +30,26 @@ import type { MapViewProps } from './types';
 const IN_EXPO_GO = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
 
 export function MapView(props: MapViewProps) {
+  const [mapplsFailed, setMapplsFailed] = useState(false);
   if (IN_EXPO_GO || props.offline) {
     return <MapCanvas {...props} />;
   }
-  return (
+  const maplibre = (
     <NativeMapBoundary fallback={<MapCanvas {...props} />}>
       <NativeMap {...props} />
     </NativeMapBoundary>
   );
+  // Mappls when the server asked for it and this build carries its SDK; any
+  // failure drops to MapLibre for the rest of the session, never to a blank map.
+  const mappls = props.provider === 'mappls' && !mapplsFailed ? loadMappls() : null;
+  if (mappls) {
+    return (
+      <NativeMapBoundary fallback={maplibre}>
+        <MapplsNativeMap {...props} sdk={mappls} onFail={() => setMapplsFailed(true)} />
+      </NativeMapBoundary>
+    );
+  }
+  return maplibre;
 }
 
 function NativeMap(props: MapViewProps) {

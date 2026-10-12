@@ -161,6 +161,8 @@ export function HistoryScreen() {
           tracks={tracks}
           markers={stopMarkers}
           styleUrl={overview?.server.mapStyleUrl}
+          provider={overview?.server.mapProvider}
+          mapplsKey={overview?.server.mapplsWebKey}
           offline={overview?.user.airgap || overview?.server.airgap}
           recenterKey={track.length}
         />

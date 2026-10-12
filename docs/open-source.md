@@ -81,6 +81,17 @@ Two rules were applied while choosing:
 
 ---
 
+## Optional proprietary integrations
+
+Off by default, never needed, and switched off by airgap. Turning one on is the
+operator's choice, and the build or setting that does it is named here.
+
+| Integration | Licence | Switched on by |
+|---|---|---|
+| Mappls Maps (web SDK, `mappls-map-react-native`) | proprietary (Mappls terms); the RN wrapper is MIT | `LURA_MAP_PROVIDER=mappls` on the server, and `LURA_MAPPLS=1` for a mobile build. The default build does not link it. See [`mappls.md`](mappls.md). |
+
+---
+
 ## Licence obligations we actually meet
 
 - **OpenStreetMap (ODbL)** requires attribution: every map view renders

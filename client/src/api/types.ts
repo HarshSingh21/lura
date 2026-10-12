@@ -170,11 +170,18 @@ export type Reminder = {
   event: GeoEvent;
 };
 
+/** MapProvider is the basemap a deployment draws: the open default, or Mappls. */
+export type MapProvider = 'maplibre' | 'mappls';
+
 /** ServerInfo lets the UI reflect the deployment instead of hard-coding it. */
 export type ServerInfo = {
   version: string;
   store: string;
   mapStyleUrl: string;
+  /** Which basemap to draw; airgap always reports the open renderer. */
+  mapProvider?: MapProvider;
+  /** Mappls Web SDK browser key, present only while Mappls is the provider. */
+  mapplsWebKey?: string;
   airgap: boolean;
   phase: string;
   publicBaseUrl: string;
@@ -242,7 +249,7 @@ export type PublicShareView = {
    * the deployment — but the basemap URL has to be here, because without it the
    * viewer is markers on blank ground.
    */
-  map?: { styleUrl?: string; airgap: boolean };
+  map?: { styleUrl?: string; provider?: MapProvider; mapplsWebKey?: string; airgap: boolean };
 };
 
 /** The WebSocket envelope from internal/hub. */

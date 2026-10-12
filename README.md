@@ -135,6 +135,8 @@ Every value is an environment variable; the interesting ones:
 | `LURA_OTLP_ENDPOINT` | — | OpenTelemetry collector, e.g. `http://localhost:4318` |
 | `LURA_OPENSEARCH_URL` | — | ship logs straight to OpenSearch as well |
 | `LURA_MAP_STYLE_URL` | OpenFreeMap positron | MapLibre style |
+| `LURA_MAP_PROVIDER` | `maplibre` | `mappls` to draw Mappls maps instead ([`docs/mappls.md`](docs/mappls.md)); airgap overrides it |
+| `LURA_MAPPLS_WEB_KEY` | — | Mappls Web SDK access token (a domain-restricted browser key) |
 
 The geofence thresholds are the product defaults HLD §17 leaves open, which is
 why they are configuration rather than constants.

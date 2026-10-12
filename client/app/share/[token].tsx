@@ -185,6 +185,8 @@ export default function ShareViewer() {
           zoom={zoom}
           markers={markers}
           styleUrl={data?.map?.styleUrl}
+          provider={data?.map?.provider}
+          mapplsKey={data?.map?.mapplsWebKey}
           offline={data?.map?.airgap}
           recenterKey={markers.length}
           onViewportChange={(v) =>
@@ -267,9 +269,11 @@ export default function ShareViewer() {
             floating chip would just be one more thing covering the map. */}
         {isPhone ? null : (
           <View style={styles.footer} pointerEvents="none">
-            <Mono size={size.monoTiny} color={color.textMuted}>
-              {READ_ONLY_NOTE}
-            </Mono>
+            <View style={styles.footerChip}>
+              <Mono size={size.monoTiny} color={color.textMuted}>
+                {READ_ONLY_NOTE}
+              </Mono>
+            </View>
           </View>
         )}
       </View>
@@ -423,10 +427,18 @@ const styles = StyleSheet.create({
 
   // Over a basemap, unbacked text competes with street labels and loses. The chip
   // is what makes the one sentence explaining this page legible at all.
+  //
+  // It is centred because both bottom corners belong to the basemap: Mappls puts
+  // its logo bottom-left and its attribution bottom-right, and its terms forbid
+  // covering either.
   footer: {
     position: 'absolute',
-    left: space.xl,
+    left: 0,
+    right: 0,
     bottom: space.xl,
+    alignItems: 'center',
+  },
+  footerChip: {
     backgroundColor: color.surface,
     borderRadius: radius.md,
     borderWidth: 1,

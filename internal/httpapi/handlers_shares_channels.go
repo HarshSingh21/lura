@@ -62,9 +62,15 @@ func (s *Server) handleRevokeShare(w http.ResponseWriter, r *http.Request) {
 // deployment. A basemap URL is the one thing the viewer genuinely cannot work
 // without — without it the recipient gets markers floating on blank ground, which
 // is what "I can't see anything" looks like.
+//
+// The Mappls web key rides along when Mappls is the provider: the viewer draws
+// the same basemap as the sharer, and the key is a domain-restricted browser key
+// that any page drawing the map exposes anyway.
 type shareMapInfo struct {
-	StyleURL string `json:"styleUrl,omitempty"`
-	Airgap   bool   `json:"airgap"`
+	StyleURL     string `json:"styleUrl,omitempty"`
+	Provider     string `json:"provider"`
+	MapplsWebKey string `json:"mapplsWebKey,omitempty"`
+	Airgap       bool   `json:"airgap"`
 }
 
 type shareViewResponse struct {
@@ -83,11 +89,16 @@ func (s *Server) handleShareView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := shareViewResponse{PublicView: view, Map: shareMapInfo{Airgap: s.deps.Config.Airgap}}
-	// In airgap mode the style URL is withheld rather than merely ignored: a
-	// recipient's browser must not be handed a remote host to call on our behalf.
+	resp := shareViewResponse{PublicView: view, Map: shareMapInfo{
+		Airgap:   s.deps.Config.Airgap,
+		Provider: s.deps.Config.EffectiveMapProvider(),
+	}}
+	// In airgap mode the style URL and the Mappls key are withheld rather than
+	// merely ignored: a recipient's browser must not be handed a remote host to
+	// call on our behalf.
 	if !s.deps.Config.Airgap {
 		resp.Map.StyleURL = s.deps.Config.MapStyleURL
+		resp.Map.MapplsWebKey = s.mapplsWebKey()
 	}
 
 	// Public and time-sensitive: never let a CDN or browser cache a live position.

@@ -72,6 +72,15 @@ type Config struct {
 
 	// --- maps (HLD §13)
 	MapStyleURL string
+	// MapProvider picks the basemap the clients render: "maplibre" (the open
+	// default, drawing MapStyleURL) or "mappls". Mappls is proprietary and its
+	// tiles come from Mappls' servers, so it is opt-in and airgap overrides it.
+	MapProvider string
+	// MapplsWebKey is the Mappls Web SDK access token. It is a browser key —
+	// every page that draws the map can read it — so restrict it to this
+	// deployment's domains in the Mappls console. Mobile builds do not use it:
+	// they authenticate with the .conf/.olf files bundled at build time.
+	MapplsWebKey string
 
 	// --- observability (HLD §12): OpenTelemetry for traces/metrics/logs,
 	// Prometheus for pull-based metrics, OpenSearch as the log store. All
@@ -139,6 +148,7 @@ func Default() Config {
 		RetentionDays: 90,
 
 		MapStyleURL: "https://tiles.openfreemap.org/styles/positron",
+		MapProvider: "maplibre",
 
 		ServiceName:      "lura",
 		ServiceVersion:   "0.1.0-phase1",
@@ -207,6 +217,8 @@ func Load() (Config, error) {
 	c.RetentionDays = envInt("LURA_RETENTION_DAYS", c.RetentionDays)
 
 	c.MapStyleURL = env("LURA_MAP_STYLE_URL", c.MapStyleURL)
+	c.MapProvider = strings.ToLower(env("LURA_MAP_PROVIDER", c.MapProvider))
+	c.MapplsWebKey = env("LURA_MAPPLS_WEB_KEY", c.MapplsWebKey)
 
 	c.ServiceName = env("LURA_SERVICE_NAME", env("OTEL_SERVICE_NAME", c.ServiceName))
 	c.ServiceVersion = env("LURA_SERVICE_VERSION", c.ServiceVersion)
@@ -262,10 +274,26 @@ func (c Config) Validate() error {
 	if c.FreshWindow <= 0 {
 		errs = append(errs, errors.New("LURA_FRESH_WINDOW must be > 0"))
 	}
+	switch c.MapProvider {
+	case "maplibre", "mappls":
+	default:
+		errs = append(errs, fmt.Errorf("unknown map provider %q (want maplibre or mappls)", c.MapProvider))
+	}
 	if c.IngestRatePerMin < 1 {
 		errs = append(errs, errors.New("LURA_INGEST_RATE_PER_MIN must be >= 1"))
 	}
 	return errors.Join(errs...)
+}
+
+// EffectiveMapProvider is the provider clients are actually told to use.
+//
+// Airgap wins over Mappls: its tiles, styles and licence checks are all calls to
+// Mappls' servers, which is exactly what airgap promises never to make.
+func (c Config) EffectiveMapProvider() string {
+	if c.Airgap {
+		return "maplibre"
+	}
+	return c.MapProvider
 }
 
 // DefaultTimezone is the timezone a newly provisioned account starts in.
@@ -299,6 +327,8 @@ func (c Config) Redacted() map[string]any {
 		"retentionDays":      c.RetentionDays,
 		"ntfy":               c.NtfyBaseURL != "" && c.NtfyTopic != "",
 		"aiSidecar":          c.AISidecarURL != "",
+		"mapProvider":        c.EffectiveMapProvider(),
+		"mapplsWebKey":       c.MapplsWebKey != "",
 		"otlpEndpoint":       c.OTLPEndpoint,
 		"opensearch":         c.OpenSearchURL,
 		"prometheus":         c.EnablePrometheus,

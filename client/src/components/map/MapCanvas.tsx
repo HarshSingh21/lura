@@ -6,8 +6,8 @@ import { color } from '@/theme/tokens';
 
 import { absoluteFill } from './fill';
 
-import { FenceOverlay, MarkerOverlay, toneColor } from './Overlays';
-import { project, unproject, type Viewport } from './projection';
+import { FenceOverlay, MarkerOverlay, TrackOverlay } from './Overlays';
+import { unproject, type Viewport } from './projection';
 import type { MapViewProps } from './types';
 
 /**
@@ -69,27 +69,8 @@ export function MapCanvas(props: MapViewProps) {
         <>
           <Basemap width={box.width} height={box.height} dark={dark} />
 
-          {/* Tracks are drawn in the same SVG layer so they sit under the overlays. */}
-          <Svg width={box.width} height={box.height} style={absoluteFill}>
-            {tracks.map((track) => {
-              const pts = track.points.map((p) => project(p, view));
-              if (pts.length < 2) return null;
-              const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
-              const stroke = toneColor(track.tone, dark);
-              return (
-                <Path
-                  key={track.id}
-                  d={d}
-                  stroke={stroke}
-                  strokeWidth={track.width ?? 4}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  fill="none"
-                  strokeDasharray={track.dotted ? '1 10' : undefined}
-                />
-              );
-            })}
-          </Svg>
+          {/* Tracks sit under the overlays. */}
+          <TrackOverlay tracks={tracks} view={view} dark={dark} />
 
           <FenceOverlay fences={fences} view={view} dark={dark} onPress={props.onPressFence} />
           <MarkerOverlay markers={markers} view={view} dark={dark} />

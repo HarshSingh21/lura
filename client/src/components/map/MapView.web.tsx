@@ -20,6 +20,7 @@ import { color, palette } from '@/theme/tokens';
 import { absoluteFill } from './fill';
 import { FenceOverlay, MarkerOverlay } from './Overlays';
 import { MapCanvas } from './MapCanvas';
+import { MapplsWebMap } from './MapplsMap.web';
 import { circlePolygon, type Viewport } from './projection';
 import type { MapFence, MapTrack, MapViewProps } from './types';
 
@@ -100,7 +101,23 @@ function fatalMapError(message: string): boolean {
   );
 }
 
+/**
+ * MapView picks the web renderer.
+ *
+ * Mappls is used only when the server asked for it, handed out a key, and this
+ * is not airgap; if it fails to come up, the MapLibre renderer takes over for the
+ * rest of the page's life rather than retrying into a broken map.
+ */
 export function MapView(props: MapViewProps) {
+  const [mapplsFailedFor, setMapplsFailedFor] = useState<string | null>(null);
+  const key = props.mapplsKey;
+  if (!props.offline && props.provider === 'mappls' && key && mapplsFailedFor !== key) {
+    return <MapplsWebMap {...props} apiKey={key} onFail={() => setMapplsFailedFor(key)} />;
+  }
+  return <MapLibreWebMap {...props} />;
+}
+
+function MapLibreWebMap(props: MapViewProps) {
   const {
     center,
     zoom = 14,

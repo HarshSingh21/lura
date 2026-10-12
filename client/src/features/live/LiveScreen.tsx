@@ -245,6 +245,8 @@ export function LiveScreen() {
           fences={fences}
           markers={allMarkers}
           styleUrl={data?.server.mapStyleUrl}
+          provider={data?.server.mapProvider}
+          mapplsKey={data?.server.mapplsWebKey}
           offline={data?.user.airgap || data?.server.airgap}
           recenterKey={recenterKey}
           onViewportChange={(v) => {

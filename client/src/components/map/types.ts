@@ -1,10 +1,11 @@
-import type { Point } from '@/api/types';
+import type { MapProvider, Point } from '@/api/types';
 
 /**
- * One map contract for three renderers.
+ * One map contract for every renderer.
  *
- * MapLibre GL JS (web), MapLibre Native (iOS/Android) and the fallback SVG canvas
- * all consume these props. Keeping the contract declarative — here are the
+ * MapLibre GL JS (web), MapLibre Native (iOS/Android), Mappls (web and native,
+ * when the server opts into it) and the fallback SVG canvas all consume these
+ * props. Keeping the contract declarative — here are the
  * fences, here are the markers — is what lets the fallback be a real fallback
  * rather than a different feature set: airgap mode and Expo Go get the same map
  * semantics with a locally drawn basemap.
@@ -54,6 +55,14 @@ export type MapViewProps = {
   tracks?: MapTrack[];
   /** Style URL from the server (/api/v1/me → server.mapStyleUrl). */
   styleUrl?: string;
+  /**
+   * Which basemap the server asked for (server.mapProvider). Mappls needs its
+   * web key on the web and its bundled credentials on a phone; without them the
+   * map quietly falls back to MapLibre rather than showing nothing.
+   */
+  provider?: MapProvider;
+  /** Mappls Web SDK browser key (server.mapplsWebKey). */
+  mapplsKey?: string;
   /** Airgap mode must not fetch a remote basemap. */
   offline?: boolean;
   interactive?: boolean;

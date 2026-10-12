@@ -87,6 +87,8 @@ type serverInfo struct {
 	Version       string   `json:"version"`
 	Store         string   `json:"store"`
 	MapStyleURL   string   `json:"mapStyleUrl"`
+	MapProvider   string   `json:"mapProvider"`
+	MapplsWebKey  string   `json:"mapplsWebKey,omitempty"`
 	Airgap        bool     `json:"airgap"`
 	Phase         string   `json:"phase"`
 	PublicBaseURL string   `json:"publicBaseUrl"`
@@ -112,6 +114,8 @@ func (s *Server) serverInfo() serverInfo {
 		Version:       s.deps.Version,
 		Store:         s.deps.Store.Kind(),
 		MapStyleURL:   s.deps.Config.MapStyleURL,
+		MapProvider:   s.deps.Config.EffectiveMapProvider(),
+		MapplsWebKey:  s.mapplsWebKey(),
 		Airgap:        s.deps.Config.Airgap,
 		Phase:         "1",
 		PublicBaseURL: s.deps.Config.PublicBaseURL,
@@ -120,6 +124,14 @@ func (s *Server) serverInfo() serverInfo {
 		AIEngine:      engine,
 		PushChannels:  channels,
 	}
+}
+
+// mapplsWebKey is the browser key, handed out only while Mappls is the provider.
+func (s *Server) mapplsWebKey() string {
+	if s.deps.Config.EffectiveMapProvider() != "mappls" {
+		return ""
+	}
+	return s.deps.Config.MapplsWebKey
 }
 
 func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {

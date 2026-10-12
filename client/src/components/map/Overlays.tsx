@@ -1,11 +1,13 @@
 import { Pressable, StyleSheet, View } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
 
 import { Mono, Txt } from '@/theme/text';
 import { color, palette, radius, shadow, size } from '@/theme/tokens';
 
 import { Dot } from '@/components/ui/primitives';
+import { absoluteFill } from './fill';
 import { metresPerPixel, project, type Viewport } from './projection';
-import type { MapFence, MapMarker, MapTone } from './types';
+import type { MapFence, MapMarker, MapTone, MapTrack } from './types';
 
 /**
  * Screen-space overlays shared by every map renderer.
@@ -109,6 +111,38 @@ export function FenceOverlay({
         );
       })}
     </>
+  );
+}
+
+/**
+ * TrackOverlay draws recorded paths in screen space.
+ *
+ * The MapLibre renderers draw tracks as GL line layers; the canvas and the Mappls
+ * renderers use this instead, so a provider only has to supply a basemap and a
+ * viewport — not a second implementation of every layer.
+ */
+export function TrackOverlay({ tracks, view, dark }: { tracks: MapTrack[]; view: Viewport; dark?: boolean }) {
+  if (tracks.length === 0 || view.width <= 0 || view.height <= 0) return null;
+  return (
+    <Svg width={view.width} height={view.height} style={absoluteFill} pointerEvents="none">
+      {tracks.map((track) => {
+        const pts = track.points.map((p) => project(p, view));
+        if (pts.length < 2) return null;
+        const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+        return (
+          <Path
+            key={track.id}
+            d={d}
+            stroke={toneColor(track.tone, !!dark)}
+            strokeWidth={track.width ?? 4}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            fill="none"
+            strokeDasharray={track.dotted ? '1 10' : undefined}
+          />
+        );
+      })}
+    </Svg>
   );
 }
 

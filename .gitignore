@@ -21,3 +21,9 @@ yarn-error.log*
 .env
 .env.local
 deploy/.env
+
+# Mappls licence files (docs/mappls.md): per-account secrets, wherever they land
+client/mappls/
+*.olf
+*.a.conf
+*.i.conf
