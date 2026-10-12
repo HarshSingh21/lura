@@ -113,12 +113,15 @@ Everything else in the README's *Privacy invariants* still holds.
 
 ## Upgrading
 
-- **Database.** PostgreSQL deployments get migration
-  `0003_polygons_peers.sql`. It runs automatically on boot — migrations are
+- **Database.** PostgreSQL deployments get migrations
+  `0003_polygons_peers.sql`, `0004_planar_polygons.sql` (re-indexes drawn
+  fences on the planar expression the containment check uses) and
+  `0005_reminders_activity.sql` (stored reminders, connection history and the
+  crossing's subject on trigger events). They run automatically on boot — migrations are
   embedded in the binary and applied in order under an advisory lock while
   `LURA_MIGRATE` is on, which is the default. If you run with
-  `LURA_MIGRATE=false`, apply it yourself before starting the new version. It is
-  additive: it adds the polygon, watch-list and note-people columns with
+  `LURA_MIGRATE=false`, apply them yourself, in order, before starting the new
+  version. All three are additive: 0003 adds the polygon, watch-list and note-people columns with
   defaults, so every existing place becomes a circle and every existing note
   stays "my movement, notify me". The in-memory store needs nothing.
 - **Keycloak.** The realm file is only imported when the realm does not exist.

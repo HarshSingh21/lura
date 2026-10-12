@@ -92,7 +92,7 @@ attention until he presses **Acknowledge** — and that must survive reloads,
 other tabs/devices, signing out and back in, and a server restart.
 
 - Every delivered reminder is stored per recipient as a `Reminder` record
-  (Postgres table `reminders`, migration `0004_reminders_activity.sql`; the
+  (Postgres table `reminders`, migration `0005_reminders_activity.sql`; the
   memory store mirrors it):
   `{id, userId (recipient), ownerId, noteIds[], placeId, placeName, trigger,
   kind, title, body, subjectUserId, subjectName, fromUserId, fromName,
