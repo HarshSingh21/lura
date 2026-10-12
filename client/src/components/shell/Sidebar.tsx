@@ -95,6 +95,9 @@ function NavRow({
       <Pressable
         accessibilityRole="link"
         accessibilityState={{ selected: active }}
+        // The counter is a glance, not part of the name: without this the link is
+        // read as "Live map 1" and its name changes every time a device appears.
+        accessibilityLabel={item.label}
         onPress={() => router.push(item.href)}
         style={({ pressed }) => [
           styles.navRow,
