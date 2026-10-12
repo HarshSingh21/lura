@@ -236,9 +236,66 @@ func (s *Service) Remove(ctx context.Context, userID, peerID string) error {
 	if err := s.store.DeleteConnection(ctx, peerID, userID); err != nil && !isNotFound(err) {
 		return err
 	}
+	s.forgetPeer(ctx, userID, peerID)
+	s.forgetPeer(ctx, peerID, userID)
 	s.notify(userID, peerID, "remove")
 	s.log.InfoContext(ctx, "connection removed", "user", userID, "peer", peerID)
 	return nil
+}
+
+// forgetPeer takes a removed peer off the owner's watch lists and note
+// recipient lists. The engine and the notifier already ignore a person who is
+// no longer connected; this keeps the stored lists honest too, so editing a
+// place later does not fail validation on someone the owner can no longer see.
+//
+// A note that *watches* the peer is left as it is: rewriting its watchUserId to
+// "" would silently turn "when Nishtha passes" into "when I pass". It simply
+// never fires again unless they reconnect. Best effort: the relationship is
+// already gone, and a failure here is logged rather than resurrecting it.
+func (s *Service) forgetPeer(ctx context.Context, owner, peer string) {
+	places, err := s.store.ListPlaces(ctx, owner)
+	if err != nil {
+		s.log.WarnContext(ctx, "connect: list places for cleanup failed", "user", owner, "error", err)
+		return
+	}
+	for _, p := range places {
+		if !p.Watches(peer) {
+			continue
+		}
+		p.WatchUserIDs = without(p.WatchUserIDs, peer)
+		if _, err := s.store.UpdatePlace(ctx, p); err != nil {
+			s.log.WarnContext(ctx, "connect: unwatch removed peer failed", "place", p.ID, "error", err)
+		}
+	}
+
+	notes, err := s.store.ListNotes(ctx, owner, store.NoteFilter{})
+	if err != nil {
+		s.log.WarnContext(ctx, "connect: list notes for cleanup failed", "user", owner, "error", err)
+		return
+	}
+	for _, n := range notes {
+		kept := without(n.NotifyUserIDs, peer)
+		// An emptied list would mean "notify the owner", which nobody asked
+		// for: a note only for the removed peer stays as it is, and the
+		// notifier skips the recipient it can no longer reach.
+		if len(kept) == len(n.NotifyUserIDs) || len(kept) == 0 {
+			continue
+		}
+		n.NotifyUserIDs = kept
+		if _, err := s.store.UpdateNote(ctx, n); err != nil {
+			s.log.WarnContext(ctx, "connect: drop removed recipient failed", "note", n.ID, "error", err)
+		}
+	}
+}
+
+func without(ids []string, drop string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != drop {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // Subjects returns every bus subject this user is authorised to receive.

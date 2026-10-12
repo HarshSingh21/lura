@@ -307,6 +307,37 @@ func TestWatchAndNotifyRequireAConnection(t *testing.T) {
 	}
 }
 
+// Removing a person takes them off the owner's watch lists and recipient
+// lists, so a later edit that re-sends those lists does not fail.
+func TestRemovingAPersonPrunesWatchAndRecipients(t *testing.T) {
+	s := newStack(t)
+	nishtha := s.addPeer(t, "usr_nishtha", "nishtha@lura.local", "Nishtha")
+	s.connectPeers(t, nishtha)
+
+	placeID := placeOf(t, s.json(http.MethodPost, "/api/v1/places", map[string]any{
+		"name": "Grocery", "polygon": groceryRing(), "watchUserIds": []string{nishtha.userID},
+	}, http.StatusCreated))["id"].(string)
+	noteID := s.json(http.MethodPost, "/api/v1/notes", map[string]any{
+		"text": "buy milk", "placeId": placeID, "autoSuggest": false,
+		"notifyUserIds": []string{seed.DemoUserID, nishtha.userID},
+	}, http.StatusCreated)["note"].(map[string]any)["id"].(string)
+
+	if got := s.status(http.MethodDelete, "/api/v1/people/"+nishtha.userID, nil); got != http.StatusNoContent {
+		t.Fatalf("remove = %d", got)
+	}
+
+	place := placeOf(t, s.json(http.MethodGet, "/api/v1/places/"+placeID, nil, http.StatusOK))
+	if w := place["watchUserIds"].([]any); len(w) != 0 {
+		t.Errorf("watchUserIds after removal = %v, want []", w)
+	}
+	note := s.json(http.MethodGet, "/api/v1/notes/"+noteID, nil, http.StatusOK)["note"].(map[string]any)
+	if n := note["notifyUserIds"].([]any); len(n) != 1 || n[0] != seed.DemoUserID {
+		t.Errorf("notifyUserIds after removal = %v, want [owner]", n)
+	}
+	// Re-sending what the client holds now validates.
+	s.json(http.MethodPatch, "/api/v1/places/"+placeID, map[string]any{"watchUserIds": []string{}, "name": "Grocery"}, http.StatusOK)
+}
+
 // ---------------------------------------------------------------- end to end
 
 // The reference scenario from docs/release-spec.md, end to end: Aravind (the
