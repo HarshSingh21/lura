@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/HarshSingh21/locnot/internal/bus"
@@ -39,6 +40,14 @@ type Service struct {
 	b     bus.Bus
 	log   *slog.Logger
 	now   func() time.Time
+
+	// transitions serialises invite, accept and remove. Each reads one row and
+	// then writes both, so two of them interleaving — Harsh and Nishtha
+	// inviting each other in the same instant — would each see "no invitation
+	// from the other" and leave two crossed pending rows nobody can accept.
+	// They are rare, human-speed operations; one lock per process is plenty
+	// (a multi-replica deployment needs the same rule as a row lock).
+	transitions sync.Mutex
 }
 
 // New returns a connections service.
@@ -139,11 +148,21 @@ func (s *Service) Invite(ctx context.Context, userID, email string) (domain.Conn
 		return domain.Connection{}, fmt.Errorf("cannot connect to yourself: %w", domain.ErrInvalid)
 	}
 
-	// If they already invited me, treat this as accepting rather than creating a
-	// crossed pair of pending invitations.
-	if existing, err := s.store.GetConnection(ctx, userID, peer.ID); err == nil &&
-		existing.Status == domain.ConnectionPendingIn {
-		return s.Accept(ctx, userID, peer.ID)
+	s.transitions.Lock()
+	defer s.transitions.Unlock()
+
+	if existing, err := s.store.GetConnection(ctx, userID, peer.ID); err == nil {
+		switch existing.Status {
+		case domain.ConnectionPendingIn:
+			// They already invited me: this is accepting, not a crossed pair
+			// of pending invitations.
+			return s.accept(ctx, userID, peer.ID)
+		case domain.ConnectionAccepted:
+			// Re-inviting must never downgrade a live connection to pending.
+			return domain.Connection{}, conflict("You are already connected to " + displayName(peer) + ".")
+		case domain.ConnectionPendingOut:
+			return domain.Connection{}, conflict("You already invited " + displayName(peer) + "; they have not answered yet.")
+		}
 	}
 
 	mine, err := s.store.UpsertConnection(ctx, domain.Connection{
@@ -173,6 +192,12 @@ func (s *Service) Invite(ctx context.Context, userID, email string) (domain.Conn
 
 // Accept turns a received invitation into a live, two-way connection.
 func (s *Service) Accept(ctx context.Context, userID, peerID string) (domain.Connection, error) {
+	s.transitions.Lock()
+	defer s.transitions.Unlock()
+	return s.accept(ctx, userID, peerID)
+}
+
+func (s *Service) accept(ctx context.Context, userID, peerID string) (domain.Connection, error) {
 	ctx, span := obs.Start(ctx, "connect.accept")
 	defer span.End()
 
@@ -230,6 +255,8 @@ func (s *Service) SetSharing(ctx context.Context, userID, peerID string, sharing
 // Both rows go: leaving the peer's row behind would mean a connection that one
 // person can still see in their list and that no longer works.
 func (s *Service) Remove(ctx context.Context, userID, peerID string) error {
+	s.transitions.Lock()
+	defer s.transitions.Unlock()
 	if err := s.store.DeleteConnection(ctx, userID, peerID); err != nil {
 		return err
 	}
@@ -354,6 +381,12 @@ func (s *Service) notify(userID, peerID, action string) {
 		}
 	}
 }
+
+// conflict is a 409 whose message is a sentence for the person who caused it.
+type conflict string
+
+func (c conflict) Error() string { return string(c) }
+func (c conflict) Unwrap() error { return domain.ErrConflict }
 
 func displayName(u domain.User) string {
 	if u.DisplayName != "" {

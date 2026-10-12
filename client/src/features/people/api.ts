@@ -102,7 +102,10 @@ export function describeInviteError(error: unknown): string {
       if (/yourself/i.test(error.message)) return 'That is your own address — invite someone else.';
       return 'That address is not one this server will accept. Check it for typos.';
     }
+    // Already connected, or already invited: the server's sentence names them.
+    if (error.status === 409) return error.message;
     if (error.status === 0) return 'The server did not answer in time. Check the connection in Settings.';
+    if (error.status >= 500) return 'The server could not send the invitation. Try again in a moment.';
   }
   return error instanceof Error ? error.message : 'Could not send the invitation.';
 }
