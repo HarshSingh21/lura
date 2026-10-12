@@ -7,6 +7,7 @@ import { focusTarget, reminderTag } from '@/features/notify/announce';
 import { showDesktop } from '@/features/notify/desktop';
 import { chimeFor } from '@/features/notify/model';
 import { resolveEveryMs, type ReminderCard } from '@/features/notify/reminders';
+import { inQuietHours } from '@/features/notify/quiet';
 import { playChime } from '@/features/notify/sound';
 import { useStore } from '@/state/store';
 
@@ -74,7 +75,7 @@ function visible(): boolean {
 /** TICK_MS is how often the schedule is checked; the interval itself is per card. */
 const TICK_MS = 1_000;
 
-function recordChime(card: ReminderCard, how: 'sound' | 'desktop' | 'muted') {
+function recordChime(card: ReminderCard, how: 'sound' | 'desktop' | 'muted' | 'quiet') {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return;
   // Opt-in trace for end-to-end tests: set window.__luraChimeLog = [] first.
   const log = (window as unknown as { __luraChimeLog?: unknown }).__luraChimeLog;
@@ -98,6 +99,12 @@ export function useReminders(enabled = true) {
       const store = useStore.getState();
       const due = store.takeDueChimes(Date.now(), remindEveryMs());
       if (due.length === 0) return;
+      // Quiet hours hold back the repeat as they hold back the first chime
+      // (announce): the card stays on screen, silently, until acknowledged.
+      if (inQuietHours(store.quietHours)) {
+        recordChime(due[0]!, 'quiet');
+        return;
+      }
       if (visible()) {
         // One chime per tick even with several due: they would only overlap.
         const first = due[0]!;
