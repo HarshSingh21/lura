@@ -325,6 +325,58 @@ try {
   });
 
   // ---------------------------------------------------------------- 3
+  /**
+   * glideOf tells a glide from a jump in per-frame marker samples, on the
+   * frame clock rather than by counting frames: a loaded machine (several
+   * headless Chromes on SwiftShader) can drop to ~10 fps, and a perfectly linear
+   * glide then moves several pixels per frame — 26 of 27 frames moving, 9.5 px in
+   * one 700 ms stall — which a frame count reads as a jump. A jump is a step far
+   * bigger than the glide's own speed explains over the time it covered; at
+   * 60 fps both rules are the original ones (≥ 10 moving frames per fix, no step
+   * of a quarter of a fix's distance).
+   */
+  const FRAME_MS = 1000 / 60;
+  /** closeUp screenshots the map around one marker: its label, cone, ring and wake. */
+  const closeUp = async (person, markerId, name) => {
+    const m = await person.marker(markerId);
+    const v = await person.viewport();
+    if (!m || !v) return null;
+    const w = 420;
+    const h = 260;
+    const x = Math.round(Math.min(Math.max(m.x - w / 2, v.left), v.left + v.width - w));
+    const y = Math.round(Math.min(Math.max(m.y - h / 2, v.top), v.top + v.height - h));
+    const path = `${OUT}/${person.name.toLowerCase()}-${name}.png`;
+    await person.page.screenshot({ path, clip: { x, y, width: w, height: h } });
+    return path;
+  };
+  const glideOf = (samples, fixesDuring) => {
+    // The sampler's rAF can run before Animated's in the same frame, so a stalled
+    // frame's catch-up shows one sample late: each step is judged over its own
+    // interval and the one before it.
+    const steps = samples.slice(1).map((s, i) => ({
+      d: Math.hypot(s.x - samples[i].x, s.y - samples[i].y),
+      dt: s.t - samples[i].t,
+      w: s.t - samples[Math.max(0, i - 1)].t,
+    }));
+    const travelled = steps.reduce((sum, s) => sum + s.d, 0);
+    const durationMs = Math.max(1, (samples.at(-1)?.t ?? 0) - (samples[0]?.t ?? 0));
+    const pxPerMs = travelled / durationMs;
+    const perFix = travelled / Math.max(1, fixesDuring);
+    const moving = steps.filter((s) => s.d > 0.05);
+    const jumps = steps.filter((s) => s.d >= Math.max(2, perFix * 0.25, 2 * pxPerMs * s.w));
+    const round1 = (v) => Math.round(v * 10) / 10;
+    return {
+      frames: samples.length,
+      fps: Math.round((1000 * (samples.length - 1)) / durationMs),
+      movingFrames: moving.length,
+      movingMs: Math.round(moving.reduce((sum, s) => sum + s.dt, 0)),
+      fixesDuring,
+      travelledPx: Math.round(travelled),
+      biggestStepPx: round1(Math.max(0, ...steps.map((s) => s.d))),
+      jumps: jumps.slice(0, 5).map((s) => `${round1(s.d)}px in ${Math.round(s.w)}ms`),
+    };
+  };
+
   await step('3', 'Both publish; each sees the other move, live and accurately', async () => {
     await harsh.nav('Live map');
     await nishtha.nav('Live map');
@@ -358,7 +410,24 @@ try {
     await sleep(1500);
     const b = await harsh.marker(nMarker);
     const shotB = await harsh.shot(OUT, '03-nishtha-moving-b');
+    const closeB = await closeUp(harsh, nMarker, '03-nishtha-closeup');
     const railText = await harsh.page.innerText('body');
+
+    // Follow mode: the camera rides with Nishtha, so she stays put on screen
+    // while the city slides under her; stopping hands the camera back.
+    await harsh.page.getByRole('switch', { name: `Follow ${nishtha.displayName} on the map` }).first().click();
+    await sleep(2500);
+    const followA = { v: await harsh.viewport(), m: await harsh.marker(nMarker) };
+    await sleep(2000);
+    const followB = { v: await harsh.viewport(), m: await harsh.marker(nMarker) };
+    const followShot = await harsh.shot(OUT, '03-following-nishtha');
+    await harsh.page.getByRole('switch', { name: `Stop following ${nishtha.displayName}` }).first().click();
+    const fromMiddle = ({ v, m }) => (v && m ? Math.hypot(m.x - (v.left + v.width / 2), m.y - (v.top + v.height / 2)) : Infinity);
+    const follow = {
+      offCentrePx: [fromMiddle(followA), fromMiddle(followB)].map((d) => Math.round(d)),
+      cameraMovedM: followA.v && followB.v ? Math.round(haversineM(followA.v.center, followB.v.center)) : 0,
+    };
+    check(follow.offCentrePx.every((d) => d <= 40) && follow.cameraMovedM > 3, `follow mode did not keep Nishtha centred: ${JSON.stringify(follow)}`);
     loop.stop();
     await loop.done.catch(() => {});
 
@@ -372,16 +441,12 @@ try {
     const fixesDuring = since(recH.frames, samples[0]?.t ?? 0).filter(
       (f) => f.type === 'position' && f.deviceId === facts.nDevice.id && f.t <= (samples.at(-1)?.t ?? 0),
     ).length;
-    const steps = samples.slice(1).map((s, i) => Math.hypot(s.x - samples[i].x, s.y - samples[i].y));
-    const travelled = steps.reduce((a, b) => a + b, 0);
-    const movingFrames = steps.filter((d) => d > 0.05).length;
-    const biggestStep = Math.max(0, ...steps);
-    const glide = { frames: samples.length, movingFrames, fixesDuring, travelledPx: Math.round(travelled), biggestStepPx: Math.round(biggestStep * 10) / 10 };
+    const glide = glideOf(samples, fixesDuring);
     const latN = latencyFor(recH, facts.nDevice.id, nMarker, t0h);
 
     check(a && b && (Math.abs(a.x - b.x) > 2 || Math.abs(a.y - b.y) > 2), `Nishtha's marker did not move: ${JSON.stringify({ a, b })}`);
     check(
-      fixesDuring >= 2 && movingFrames >= fixesDuring * 10 && biggestStep < Math.max(2, (travelled / fixesDuring) * 0.25),
+      fixesDuring >= 2 && glide.movingMs >= fixesDuring * 10 * FRAME_MS && glide.jumps.length === 0,
       `marker jumped instead of gliding: ${JSON.stringify(glide)}`,
     );
     check(offN !== null && offN <= 3, `Nishtha's marker is ${offN?.toFixed(1)} px from her last fix`);
@@ -396,6 +461,7 @@ try {
     await sleep(5000);
     const d = await nishtha.marker(hMarker);
     const shotC = await nishtha.shot(OUT, '03-harsh-moving');
+    const closeC = await closeUp(nishtha, hMarker, '03-harsh-closeup');
     await walk;
     await sleep(3000);
     const recN = await nishtha.record();
@@ -410,9 +476,9 @@ try {
     const settled = [await harsh.shot(OUT, '03-settled'), await nishtha.shot(OUT, '03-settled')];
 
     return {
-      nishthaOnHarsh: { latency: latN, glide, offsetPx: Math.round(offN * 10) / 10 },
+      nishthaOnHarsh: { latency: latN, glide, offsetPx: Math.round(offN * 10) / 10, follow },
       harshOnNishtha: { latency: latH, offsetPx: Math.round(offH * 10) / 10 },
-      shots: [shotA, shotB, shotC, ...settled],
+      shots: [shotA, shotB, closeB, followShot, shotC, closeC, ...settled].filter(Boolean),
     };
   });
 
