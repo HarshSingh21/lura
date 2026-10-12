@@ -26,7 +26,7 @@ export const INSTRUMENT = `(() => {
         const t = now();
         let f;
         try { f = JSON.parse(ev.data); } catch { return; }
-        const r = { t, wall: Date.now(), type: f.type };
+        const r = { t, wall: Date.now(), type: f.type, sent: f.ts };
         if (f.type === 'position' && f.data) {
           r.deviceId = f.data.deviceId; r.userId = f.data.userId;
           r.lat = f.data.point.lat; r.lon = f.data.point.lon; r.recvTs = f.data.recvTs;
@@ -54,7 +54,10 @@ export const INSTRUMENT = `(() => {
   }
 
   const MARKER = 'lura-marker-';
-  const seenToasts = new Set();
+  // One toast element is one toast: a reminder that re-words a toast already on
+  // screen updates its record rather than adding a second, and two crossings
+  // that read the same ("Nishtha arrived at Bakery", twice) are still two.
+  const seenToasts = new WeakMap();
   const noteMarker = (el, t, added) => {
     const id = el.getAttribute('data-testid');
     if (!id || !id.startsWith(MARKER)) return;
@@ -64,10 +67,15 @@ export const INSTRUMENT = `(() => {
     const label = el.getAttribute && el.getAttribute('aria-label');
     if (!label || !label.endsWith('Show on the map.') || label.includes(', unread.')) return;
     if (el.closest && el.closest('[aria-modal="true"]')) return;
-    const key = label + '|' + (el.innerText || '');
-    if (seenToasts.has(key)) return;
-    seenToasts.add(key);
-    rec.toasts.push({ t, wall: Date.now(), label, text: el.innerText || '' });
+    const seen = seenToasts.get(el);
+    if (seen) {
+      seen.label = label;
+      seen.text = el.innerText || seen.text;
+      return;
+    }
+    const entry = { t, wall: Date.now(), label, text: el.innerText || '' };
+    seenToasts.set(el, entry);
+    rec.toasts.push(entry);
   };
   const scan = (node, t) => {
     if (node.nodeType !== 1) return;

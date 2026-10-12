@@ -6,6 +6,7 @@
 #   E2E_PORT=8091 e2e/run.sh       # its own server, so several runs can go at once
 #   E2E_STEPS=6,8 E2E_SEED=1 e2e/run.sh   # only those steps; step 4's fences come from the API
 #   E2E_KEEP_RUNNING=1 e2e/run.sh   # leave Lura on :8080 serving the build afterwards
+#   E2E_SUITE=edge-fences-ui e2e/run.sh   # another suite in e2e/ (see e2e/edge.sh)
 #
 # Requirements: Docker with the `lura-keycloak` container running (see
 # deploy/keycloak/README.md), Go, Node 20+, Google Chrome. For the Mappls phase,
@@ -91,6 +92,8 @@ server_env() {
   echo "LURA_ALLOWED_ORIGINS=http://localhost:$PORT,http://lura.com:$PORT"
   echo "LURA_COOLOFF=${E2E_COOLOFF:-15s}"
   echo "LURA_LOG_LEVEL=debug"
+  # A suite that checks push delivery runs its own webhook sink.
+  if [ -n "${LURA_WEBHOOK_URL:-}" ]; then echo "LURA_WEBHOOK_URL=$LURA_WEBHOOK_URL"; fi
   if [ "$provider" = "mappls" ]; then
     echo "LURA_MAP_PROVIDER=mappls"
     echo "LURA_MAPPLS_WEB_KEY=${LURA_MAPPLS_WEB_KEY:-}"
@@ -134,7 +137,7 @@ for phase in $PHASES; do
   mkdir -p "$OUT/$phase"
   start_server "$phase" "$OUT/$phase/server.log"
   if ! E2E_BASE="$base" E2E_API="http://localhost:$PORT" E2E_PORT="$PORT" E2E_PROVIDER="$phase" E2E_OUT="$OUT/$phase" E2E_LURASIM="$OUT/lurasim" \
-    node "$ROOT/e2e/scenario.mjs"; then
+    node "$ROOT/e2e/${E2E_SUITE:-scenario}.mjs"; then
     status=1
   fi
   stop_server

@@ -96,14 +96,28 @@ export class Person {
     return this.page.evaluate(() => localStorage.getItem('lura.session.access'));
   }
 
-  /** api calls the server as this person, with the token the app is holding. */
+  /**
+   * api calls the server as this person, with the token the app is holding.
+   * The suite borrows the app's token rather than owning a session, so a 401
+   * means the app's token lapsed: let the app renew it (its next request
+   * does), then try once more.
+   */
   async api(method, path, body) {
-    const token = await this.token();
-    const res = await fetch(`${process.env.E2E_API ?? 'http://localhost:8080'}${path}`, {
+    const call = async (token) => fetch(`${process.env.E2E_API ?? 'http://localhost:8080'}${path}`, {
       method,
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
+    const token = await this.token();
+    let res = await call(token);
+    if (res.status === 401) {
+      await this.page.evaluate(() => window.dispatchEvent(new Event('focus'))).catch(() => {});
+      const renewed = await waitFor(`${this.name}’s app to renew its token`, async () => {
+        const t = await this.token();
+        return t && t !== token ? t : null;
+      }, { timeout: 70000, every: 500 }).catch(() => null);
+      if (renewed) res = await call(renewed);
+    }
     const text = await res.text();
     if (!res.ok) throw new Error(`${this.name}: ${method} ${path} → ${res.status} ${text}`);
     return text ? JSON.parse(text) : null;
@@ -115,13 +129,17 @@ export class Person {
 
   /** nav uses the sidebar, so the socket and the notification centre survive. */
   async nav(label) {
-    await this.page.getByRole('link', { name: label, exact: true }).first().click();
+    // A nav item's name can carry its count ("Places 3"), so match the label
+    // as a whole word at the start.
+    const name = new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`);
+    await this.page.getByRole('link', { name }).first().click();
     await sleep(400);
   }
 
   async shot(dir, name) {
     const path = `${dir}/${this.name.toLowerCase()}-${name}.png`;
-    await this.page.screenshot({ path });
+    // Generous: a busy machine renders a software-GL map slowly.
+    await this.page.screenshot({ path, timeout: 90000 });
     return path;
   }
 
