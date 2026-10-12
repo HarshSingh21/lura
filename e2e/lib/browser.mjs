@@ -73,11 +73,15 @@ export class Person {
   async signIn() {
     const page = this.page;
     await page.goto(this.base, { waitUntil: 'domcontentloaded' });
-    const popup = this.ctx.waitForEvent('page', { timeout: 8000 }).catch(() => null);
+    // Keycloak opens in a popup on web, or (no popup) in the page itself;
+    // whichever shows the login form first is it. A fixed wait for the popup
+    // alone loses that race on a loaded machine.
+    const popup = this.ctx.waitForEvent('page', { timeout: 40000 }).catch(() => null);
     await page.getByText('Continue with email', { exact: true }).click();
-    const kc = (await popup) ?? page;
+    const inPage = page.waitForSelector('input[name="username"]', { timeout: 40000 }).then(() => page).catch(() => null);
+    const kc = (await Promise.race([popup, inPage])) ?? (await popup) ?? page;
     if (kc !== page) this.watch(kc);
-    await kc.waitForSelector('input[name="username"]', { timeout: 20000 });
+    await kc.waitForSelector('input[name="username"]', { timeout: 40000 });
     await kc.fill('input[name="username"]', this.email);
     await kc.fill('input[name="password"]', this.password);
     await kc.click('[type=submit]');

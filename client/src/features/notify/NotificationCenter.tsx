@@ -82,7 +82,7 @@ function NotificationPanel({ visible, onClose }: { visible: boolean; onClose: ()
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Close notifications" />
-      <View style={[styles.panel, isWide ? styles.panelWide : styles.panelPhone]}>
+      <View style={[styles.panel, isWide ? styles.panelWide : styles.panelPhone]} testID="lura-notification-panel">
         <View style={styles.head}>
           <View style={styles.headTitle}>
             <Txt variant="h2">Notifications</Txt>

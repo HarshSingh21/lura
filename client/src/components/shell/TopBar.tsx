@@ -1,4 +1,4 @@
-import { Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { Icon } from '@/components/ui/Icon';
 import { Dot } from '@/components/ui/primitives';
@@ -117,7 +117,12 @@ function StatusPill({ status, compact }: { status: LiveStatus; compact?: boolean
         : { dot: color.timelineNode, label: 'Offline', color: color.textMuted };
 
   return (
-    <View style={styles.status}>
+    <View
+      style={styles.status}
+      testID="lura-live-status"
+      accessibilityLabel={`Live connection: ${tone.label}`}
+      {...(Platform.OS === 'web' ? { dataSet: { status } } : {})}
+    >
       <Dot size={7} color={tone.dot} blink={status === 'connecting' || status === 'reconnecting'} />
       {compact ? null : (
         <Mono size={size.monoXs} color={tone.color}>
