@@ -6,7 +6,7 @@ import { fetchReminders } from '@/api/reminders';
 import { focusTarget, reminderTag } from '@/features/notify/announce';
 import { showDesktop } from '@/features/notify/desktop';
 import { chimeFor } from '@/features/notify/model';
-import { resolveEveryMs, type ReminderCard } from '@/features/notify/reminders';
+import { repeatAction, resolveEveryMs, type ReminderCard } from '@/features/notify/reminders';
 import { inQuietHours } from '@/features/notify/quiet';
 import { playChime } from '@/features/notify/sound';
 import { useStore } from '@/state/store';
@@ -101,19 +101,15 @@ export function useReminders(enabled = true) {
       if (due.length === 0) return;
       // Quiet hours hold back the repeat as they hold back the first chime
       // (announce): the card stays on screen, silently, until acknowledged.
-      if (inQuietHours(store.quietHours)) {
-        recordChime(due[0]!, 'quiet');
-        return;
-      }
-      if (visible()) {
+      const action = repeatAction({ quiet: inQuietHours(store.quietHours), visible: visible(), muted: store.muted });
+      if (action !== 'desktop') {
         // One chime per tick even with several due: they would only overlap.
         const first = due[0]!;
-        if (store.muted) recordChime(first, 'muted');
-        else {
+        if (action === 'sound') {
           const chime = chimeFor(first);
           playChime(chime.kind, { watched: chime.watched });
-          recordChime(first, 'sound');
         }
+        recordChime(first, action);
         return;
       }
       for (const card of due) {

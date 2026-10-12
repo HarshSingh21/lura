@@ -20,6 +20,7 @@ import {
   stackView,
   upsert,
   type RemindersState,
+  repeatAction,
 } from './reminders.ts';
 
 const HARSH = 'usr_harsh';
@@ -307,4 +308,12 @@ test('a stored row and a live frame are one entry even when they name the crossi
   const row = ingest(live.items, fromReminder(record({ eventId: 'evt_other' }), HARSH, T0));
   assert.equal(row.items.length, 1);
   assert.equal(row.announce, false, 'already announced');
+});
+
+test('a due repeat is held back in quiet hours, chimes in front, notifies the desktop otherwise', () => {
+  assert.equal(repeatAction({ quiet: true, visible: true, muted: false }), 'quiet');
+  assert.equal(repeatAction({ quiet: true, visible: false, muted: false }), 'quiet');
+  assert.equal(repeatAction({ quiet: false, visible: true, muted: false }), 'sound');
+  assert.equal(repeatAction({ quiet: false, visible: true, muted: true }), 'muted');
+  assert.equal(repeatAction({ quiet: false, visible: false, muted: true }), 'desktop');
 });

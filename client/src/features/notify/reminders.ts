@@ -288,3 +288,15 @@ export function stackView(cards: ReminderCard[], expanded: boolean): { shown: Re
   if (expanded || cards.length <= 1) return { shown: cards, hidden: 0 };
   return { shown: cards.slice(0, 1), hidden: cards.length - 1 };
 }
+
+/**
+ * repeatAction is how a due repeat of a pending reminder is delivered: not at
+ * all in the viewer's quiet hours (the card stays, silently), as a chime when
+ * the app is in front (or noted as muted), and as a system notification when
+ * it is not.
+ */
+export function repeatAction(opts: { quiet: boolean; visible: boolean; muted: boolean }): 'quiet' | 'muted' | 'sound' | 'desktop' {
+  if (opts.quiet) return 'quiet';
+  if (!opts.visible) return 'desktop';
+  return opts.muted ? 'muted' : 'sound';
+}
