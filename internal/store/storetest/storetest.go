@@ -53,6 +53,10 @@ func Run(t *testing.T, newStore Factory) {
 		{"Connections", testConnections},
 		{"UserScoping", testUserScoping},
 		{"PlaceStats", testPlaceStats},
+		{"Reminders", testReminders},
+		{"ReminderAck", testReminderAck},
+		{"TriggerEventsBetween", testTriggerEventsBetween},
+		{"ConnectionEvents", testConnectionEvents},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -671,49 +671,27 @@ func (s *Store) InsertTriggerEvent(ctx context.Context, e domain.TriggerEvent) (
 	e.NoteIDs = arr(e.NoteIDs)
 	e.Delivered = arr(e.Delivered)
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO trigger_events (id, user_id, place_id, place_name, device_id, trigger, ts, note_ids, delivered, note)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		INSERT INTO trigger_events (id, user_id, place_id, place_name, device_id, trigger, ts, note_ids, delivered, note,
+			subject_user_id, subject_name)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		e.ID, e.UserID, nullable(e.PlaceID), e.PlaceName, e.DeviceID,
-		string(e.Trigger), e.TS.UTC(), e.NoteIDs, e.Delivered, e.Note)
+		string(e.Trigger), e.TS.UTC(), e.NoteIDs, e.Delivered, e.Note,
+		e.SubjectUserID, e.SubjectName)
 	err = mapError("insert trigger event", err)
 	observe("InsertTriggerEvent", start, err)
 	return e, err
 }
 
 func (s *Store) ListTriggerEvents(ctx context.Context, userID string, limit int) ([]domain.TriggerEvent, error) {
-	start := time.Now()
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, user_id, coalesce(place_id,''), place_name, device_id, trigger, ts, note_ids, delivered, note
+	return s.queryTriggerEvents(ctx, "ListTriggerEvents", `
+		SELECT `+triggerEventCols+`
 		FROM trigger_events
 		WHERE user_id = $1
 		ORDER BY ts DESC
 		LIMIT $2`, userID, limit)
-	if err != nil {
-		observe("ListTriggerEvents", start, err)
-		return nil, mapError("list trigger events", err)
-	}
-	defer rows.Close()
-
-	out := []domain.TriggerEvent{}
-	for rows.Next() {
-		var (
-			e       domain.TriggerEvent
-			trigger string
-		)
-		if err := rows.Scan(&e.ID, &e.UserID, &e.PlaceID, &e.PlaceName, &e.DeviceID,
-			&trigger, &e.TS, &e.NoteIDs, &e.Delivered, &e.Note); err != nil {
-			observe("ListTriggerEvents", start, err)
-			return nil, mapError("scan trigger event", err)
-		}
-		e.Trigger = domain.Trigger(trigger)
-		out = append(out, e)
-	}
-	err = rows.Err()
-	observe("ListTriggerEvents", start, err)
-	return out, mapError("list trigger events", err)
 }
 
 // ---------------------------------------------------------------- pending dwells

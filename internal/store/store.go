@@ -136,6 +136,55 @@ type ChannelStore interface {
 type EventStore interface {
 	InsertTriggerEvent(ctx context.Context, e domain.TriggerEvent) (domain.TriggerEvent, error)
 	ListTriggerEvents(ctx context.Context, userID string, limit int) ([]domain.TriggerEvent, error)
+	// TriggerEventsBetween returns the user's events with from <= ts <= to
+	// (a zero bound is open), newest first.
+	TriggerEventsBetween(ctx context.Context, userID string, q RangeQuery) ([]domain.TriggerEvent, error)
+}
+
+// RangeQuery is a time window over an activity source. Zero bounds are open;
+// Limit <= 0 means the implementation's default.
+type RangeQuery struct {
+	From  time.Time
+	To    time.Time
+	Limit int
+}
+
+// ReminderFilter narrows a reminder listing.
+type ReminderFilter struct {
+	// Status "" lists every status.
+	Status domain.ReminderStatus
+	// From/To, when set, keep reminders created *or* acknowledged inside the
+	// window — the activity feed needs both moments.
+	From  time.Time
+	To    time.Time
+	Limit int
+}
+
+// ReminderStore keeps delivered reminders per recipient until acknowledged.
+type ReminderStore interface {
+	// SaveReminder stores a delivered reminder. It is idempotent on
+	// (userID, eventID) for a non-empty eventID: a redelivered geo event returns
+	// the record already stored instead of a second one.
+	SaveReminder(ctx context.Context, r domain.ReminderRecord) (domain.ReminderRecord, error)
+	// GetReminder is recipient-scoped: someone else's record is ErrNotFound.
+	GetReminder(ctx context.Context, userID, id string) (domain.ReminderRecord, error)
+	// ListReminders returns the recipient's reminders, newest first.
+	ListReminders(ctx context.Context, userID string, f ReminderFilter) ([]domain.ReminderRecord, error)
+	// AckReminder acknowledges a pending reminder. Only the recipient can: any
+	// other user gets ErrNotFound. Acknowledging twice is not an error; changed
+	// reports whether this call did it, and the record keeps the first ack time.
+	AckReminder(ctx context.Context, userID, id string, at time.Time) (r domain.ReminderRecord, changed bool, err error)
+	// PendingRemindersForNote counts pending reminders, across every recipient,
+	// carrying a note the owner owns. It backs "the note is done once everyone
+	// has acknowledged".
+	PendingRemindersForNote(ctx context.Context, ownerID, noteID string) (int, error)
+}
+
+// ConnectionEventStore is the history of relationship changes.
+type ConnectionEventStore interface {
+	InsertConnectionEvent(ctx context.Context, e domain.ConnectionEvent) (domain.ConnectionEvent, error)
+	// ListConnectionEvents is user-scoped and newest first.
+	ListConnectionEvents(ctx context.Context, userID string, q RangeQuery) ([]domain.ConnectionEvent, error)
 }
 
 // DwellStore persists armed dwell timers.
@@ -163,6 +212,8 @@ type Store interface {
 	ChannelStore
 	EventStore
 	DwellStore
+	ReminderStore
+	ConnectionEventStore
 
 	// Ping backs /readyz.
 	Ping(ctx context.Context) error

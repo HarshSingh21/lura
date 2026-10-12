@@ -355,6 +355,89 @@ type TriggerEvent struct {
 	NoteIDs   []string  `json:"noteIds"`
 	Delivered []string  `json:"delivered"` // channel types that accepted the message
 	Note      string    `json:"note,omitempty"`
+
+	// SubjectUserID/SubjectName say whose device crossed: the owner, or a
+	// connected peer on a fence the owner watches them on.
+	SubjectUserID string `json:"subjectUserId,omitempty"`
+	SubjectName   string `json:"subjectName,omitempty"`
+}
+
+// ReminderStatus is whether a delivered reminder still demands attention.
+type ReminderStatus string
+
+const (
+	ReminderPending      ReminderStatus = "pending"
+	ReminderAcknowledged ReminderStatus = "acknowledged"
+)
+
+// Reminder kinds.
+const (
+	// ReminderKindNote is a reminder about one or more notes.
+	ReminderKindNote = "note"
+	// ReminderKindWatch is "a person you watch crossed your fence".
+	ReminderKindWatch = "watch"
+	// ReminderKindAck tells a note's owner that a recipient acknowledged it.
+	// It is stored already acknowledged: it informs, it does not nag.
+	ReminderKindAck = "ack"
+)
+
+// ReminderRecord is one delivered reminder, stored per recipient so it keeps
+// demanding attention until that recipient acknowledges it — across reloads,
+// devices, sign-outs and server restarts.
+type ReminderRecord struct {
+	ID            string         `json:"id"`
+	UserID        string         `json:"userId"`  // the recipient
+	OwnerID       string         `json:"ownerId"` // owner of the note / place
+	NoteIDs       []string       `json:"noteIds"`
+	PlaceID       string         `json:"placeId"`
+	PlaceName     string         `json:"placeName"`
+	Trigger       Trigger        `json:"trigger"`
+	Kind          string         `json:"kind"`
+	Title         string         `json:"title"`
+	Body          string         `json:"body"`
+	SubjectUserID string         `json:"subjectUserId"`
+	SubjectName   string         `json:"subjectName"`
+	FromUserID    string         `json:"fromUserId,omitempty"`
+	FromName      string         `json:"fromName,omitempty"`
+	EventID       string         `json:"eventId"`
+	CreatedAt     time.Time      `json:"createdAt"`
+	Status        ReminderStatus `json:"status"`
+	AckedAt       *time.Time     `json:"ackedAt,omitempty"`
+	AckedBy       string         `json:"ackedBy,omitempty"`
+}
+
+// Normalized makes collections non-nil and fills the status default.
+func (r ReminderRecord) Normalized() ReminderRecord {
+	if r.NoteIDs == nil {
+		r.NoteIDs = []string{}
+	}
+	if r.Status == "" {
+		r.Status = ReminderPending
+	}
+	return r
+}
+
+// ConnectionAction is a change to a connection, as the activity feed shows it.
+type ConnectionAction string
+
+const (
+	ConnectionActionInvited  ConnectionAction = "invited"
+	ConnectionActionAccepted ConnectionAction = "accepted"
+	ConnectionActionPaused   ConnectionAction = "paused"
+	ConnectionActionResumed  ConnectionAction = "resumed"
+	ConnectionActionRemoved  ConnectionAction = "removed"
+)
+
+// ConnectionEvent is one change to a relationship, recorded once per side
+// (UserID is whose feed it belongs to; ActorID is who made the change).
+type ConnectionEvent struct {
+	ID       string           `json:"id"`
+	UserID   string           `json:"userId"`
+	PeerID   string           `json:"peerId"`
+	PeerName string           `json:"peerName"`
+	Action   ConnectionAction `json:"action"`
+	ActorID  string           `json:"actorId"`
+	TS       time.Time        `json:"ts"`
 }
 
 // GeoEvent is what the geofence engine publishes on geo.<user>. It is the
