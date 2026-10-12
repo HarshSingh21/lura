@@ -1,5 +1,8 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query';
 
+import { boundingRadiusM, polygonCentroid } from '@/components/map/geometry';
+import type { FenceGeometry } from '@/components/map/types';
+
 import { ApiError, request } from './client';
 import type {
   Channel,
@@ -8,6 +11,8 @@ import type {
   Note,
   Overview,
   Place,
+  PlaceShape,
+  Point,
   PublicShareView,
   ServerInfo,
   Share,
@@ -119,8 +124,13 @@ export function useDeleteDevice() {
 export type PlaceInput = {
   name: string;
   tags?: string[];
-  center: { lat: number; lon: number };
-  radiusM: number;
+  /** Circle fences carry a centre and radius; polygons omit both and the server derives them. */
+  center?: { lat: number; lon: number };
+  radiusM?: number;
+  /** Omitted means 'circle'. */
+  shape?: PlaceShape;
+  /** Polygon ring, 3–200 vertices, not closed. Sent only for polygons. */
+  polygon?: Point[];
   triggers: Trigger[];
   dwellMins?: number;
 };
@@ -147,6 +157,71 @@ export function useUpdatePlace() {
     mutationFn: ({ id, ...patch }: Partial<PlaceInput> & { id: string }) =>
       request<{ place: Place }>(`/api/v1/places/${id}`, { method: 'PATCH', body: patch }),
     onSuccess: () => invalidateWorkspace(qc),
+  });
+}
+
+/**
+ * geometryPatch is the PATCH body that moves or reshapes a fence.
+ *
+ * A circle sends its centre and radius; a polygon sends only its ring, because
+ * the server computes the centroid and bounding radius itself and a stale pair
+ * from the client would only disagree with it.
+ */
+export function geometryPatch(geometry: FenceGeometry): Partial<PlaceInput> {
+  return geometry.shape === 'circle'
+    ? { shape: 'circle', center: geometry.center, radiusM: Math.round(geometry.radiusM) }
+    : { shape: 'polygon', polygon: geometry.polygon };
+}
+
+/** withGeometry is a place as it will look once the server has applied a geometry patch. */
+function withGeometry(place: Place, geometry: FenceGeometry): Place {
+  if (geometry.shape === 'circle') {
+    return { ...place, shape: 'circle', center: geometry.center, radiusM: Math.round(geometry.radiusM), polygon: [] };
+  }
+  const center = polygonCentroid(geometry.polygon);
+  return {
+    ...place,
+    shape: 'polygon',
+    polygon: geometry.polygon,
+    center,
+    radiusM: boundingRadiusM(geometry.polygon, center),
+  };
+}
+
+/**
+ * useUpdatePlaceGeometry persists a fence that was dragged, resized or reshaped
+ * on the map.
+ *
+ * This is the one mutation here that patches the cache by hand instead of only
+ * invalidating it: the editor reports a new shape the instant the finger lifts,
+ * and a fence that jumped back to its old position for a round trip would read
+ * as "the drag did not take". The server is still the authority — the caches
+ * are re-read when it answers, and restored if it refuses. Mutations share a
+ * scope so two quick drags are applied in order rather than racing.
+ */
+export function useUpdatePlaceGeometry() {
+  const qc = useQueryClient();
+  return useMutation({
+    scope: { id: 'place-geometry' },
+    mutationFn: ({ id, geometry }: { id: string; geometry: FenceGeometry }) =>
+      request<{ place: Place }>(`/api/v1/places/${id}`, { method: 'PATCH', body: geometryPatch(geometry) }),
+    onMutate: async ({ id, geometry }) => {
+      await Promise.all([
+        qc.cancelQueries({ queryKey: keys.overview }),
+        qc.cancelQueries({ queryKey: keys.places }),
+      ]);
+      const overview = qc.getQueryData<Overview>(keys.overview);
+      const list = qc.getQueryData<{ places: Place[] }>(keys.places);
+      const patch = (p: Place) => (p.id === id ? withGeometry(p, geometry) : p);
+      if (overview) qc.setQueryData<Overview>(keys.overview, { ...overview, places: overview.places.map(patch) });
+      if (list) qc.setQueryData<{ places: Place[] }>(keys.places, { ...list, places: list.places.map(patch) });
+      return { overview, list };
+    },
+    onError: (_error, _input, context) => {
+      if (context?.overview) qc.setQueryData(keys.overview, context.overview);
+      if (context?.list) qc.setQueryData(keys.places, context.list);
+    },
+    onSettled: () => invalidateWorkspace(qc),
   });
 }
 
