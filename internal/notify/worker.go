@@ -190,6 +190,9 @@ func (w *Worker) Handle(ctx context.Context, ev domain.GeoEvent) error {
 		TS:        ev.TS,
 		NoteIDs:   noteIDs(notes),
 		Delivered: []string{},
+
+		SubjectUserID: subject,
+		SubjectName:   ev.SubjectName,
 	}
 
 	seenChannel := map[string]bool{}
@@ -217,6 +220,19 @@ func (w *Worker) Handle(ctx context.Context, ev domain.GeoEvent) error {
 		}
 
 		push := len(d.notes) > 0 || d.kind == KindWatch
+
+		// Stored before it is published: a reminder that reaches a screen
+		// must already be acknowledgeable, and one that reaches no screen
+		// (no session open, quiet hours) must be waiting on the next load.
+		if push {
+			rec, err := w.store.SaveReminder(ctx, recordFor(msg, ev, owner))
+			if err != nil {
+				w.log.WarnContext(ctx, "notify: store reminder failed", "recipient", d.recipient, "error", err)
+			} else {
+				msg = withRecord(msg, rec)
+			}
+		}
+
 		delivered := w.deliver(ctx, msg, d.notes, push, quiet)
 		for _, c := range delivered {
 			if !seenChannel[c] {

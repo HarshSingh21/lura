@@ -166,6 +166,8 @@ func (s *Service) Invite(ctx context.Context, userID, email string) (domain.Conn
 		return domain.Connection{}, err
 	}
 
+	s.record(ctx, domain.ConnectionActionInvited, userID,
+		side{userID, peer.ID, displayName(peer)}, side{peer.ID, userID, displayName(me)})
 	s.notify(userID, peer.ID, "invite")
 	s.log.InfoContext(ctx, "connection invited", "from", userID, "to", peer.ID)
 	return mine, nil
@@ -202,6 +204,8 @@ func (s *Service) Accept(ctx context.Context, userID, peerID string) (domain.Con
 		return domain.Connection{}, err
 	}
 
+	s.record(ctx, domain.ConnectionActionAccepted, userID,
+		side{userID, peerID, mine.PeerName}, side{peerID, userID, theirs.PeerName})
 	s.notify(userID, peerID, "accept")
 	s.log.InfoContext(ctx, "connection accepted", "user", userID, "peer", peerID)
 	return accepted, nil
@@ -213,10 +217,22 @@ func (s *Service) SetSharing(ctx context.Context, userID, peerID string, sharing
 	if err != nil {
 		return domain.Connection{}, err
 	}
+	was := mine.Sharing
 	mine.Sharing = sharing
 	updated, err := s.store.UpsertConnection(ctx, mine)
 	if err != nil {
 		return domain.Connection{}, err
+	}
+	if was != sharing {
+		action := domain.ConnectionActionPaused
+		if sharing {
+			action = domain.ConnectionActionResumed
+		}
+		theirName := ""
+		if theirs, err := s.store.GetConnection(ctx, peerID, userID); err == nil {
+			theirName = theirs.PeerName
+		}
+		s.record(ctx, action, userID, side{userID, peerID, mine.PeerName}, side{peerID, userID, theirName})
 	}
 
 	// The peer's subscription has to change now, not on their next reconnect.
@@ -230,9 +246,13 @@ func (s *Service) SetSharing(ctx context.Context, userID, peerID string, sharing
 // Both rows go: leaving the peer's row behind would mean a connection that one
 // person can still see in their list and that no longer works.
 func (s *Service) Remove(ctx context.Context, userID, peerID string) error {
+	mine, _ := s.store.GetConnection(ctx, userID, peerID)
+	theirs, _ := s.store.GetConnection(ctx, peerID, userID)
 	if err := s.store.DeleteConnection(ctx, userID, peerID); err != nil {
 		return err
 	}
+	s.record(ctx, domain.ConnectionActionRemoved, userID,
+		side{userID, peerID, mine.PeerName}, side{peerID, userID, theirs.PeerName})
 	if err := s.store.DeleteConnection(ctx, peerID, userID); err != nil && !isNotFound(err) {
 		return err
 	}
@@ -305,9 +325,10 @@ func without(ids []string, drop string) []string {
 // from the *peer's* row, never the caller's.
 func (s *Service) Subjects(ctx context.Context, userID string) ([]string, error) {
 	subjects := []string{
-		bus.PosUserWildcard(userID), // my own devices
-		bus.GeoSubject(userID),      // my geofence events
-		bus.NotifySubject(userID),   // my reminders
+		bus.PosUserWildcard(userID),    // my own devices
+		bus.GeoSubject(userID),         // my geofence events
+		bus.NotifySubject(userID),      // my reminders
+		bus.ReminderAckSubject(userID), // my reminders acknowledged elsewhere
 	}
 
 	conns, err := s.store.ListConnections(ctx, userID)
@@ -343,6 +364,23 @@ func (s *Service) Watchers(ctx context.Context, userID string) ([]domain.Connect
 		}
 	}
 	return out, nil
+}
+
+// side is one row of a relationship change: whose feed, about whom.
+type side struct{ user, peer, peerName string }
+
+// record writes the change into both people's activity history. Best effort:
+// the change itself has happened, and a lost history line must not undo it.
+func (s *Service) record(ctx context.Context, action domain.ConnectionAction, actor string, sides ...side) {
+	at := s.now()
+	for _, sd := range sides {
+		if _, err := s.store.InsertConnectionEvent(ctx, domain.ConnectionEvent{
+			UserID: sd.user, PeerID: sd.peer, PeerName: sd.peerName,
+			Action: action, ActorID: actor, TS: at,
+		}); err != nil {
+			s.log.WarnContext(ctx, "connect: record connection event failed", "user", sd.user, "action", action, "error", err)
+		}
+	}
 }
 
 // notify tells both sides to re-evaluate their subscriptions.

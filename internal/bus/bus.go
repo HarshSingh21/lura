@@ -78,6 +78,10 @@ func ACLSubject(viewerID string) string         { return "acl." + viewerID }
 func NotifySubject(userID string) string        { return "notify." + userID }
 func NotifyAll() string                         { return "notify.*" }
 
+// ReminderAckSubject carries {id, ackedAt} to every session of the recipient
+// when one of their reminders is acknowledged, so it clears everywhere.
+func ReminderAckSubject(userID string) string { return "remack." + userID }
+
 // Match reports whether a concrete subject matches a (possibly wildcarded)
 // pattern, using NATS semantics.
 func Match(pattern, subject string) bool {

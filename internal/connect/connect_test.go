@@ -232,8 +232,8 @@ func TestUnrelatedUserSeesNothing(t *testing.T) {
 	if watches(subs, alice) || watches(subs, bob) {
 		t.Errorf("an unrelated user is subscribed to a connection they are not part of: %v", subs)
 	}
-	if len(subs) != 3 {
-		t.Errorf("carol's subjects = %v, want only her own three", subs)
+	if len(subs) != 4 {
+		t.Errorf("carol's subjects = %v, want only her own four", subs)
 	}
 }
 
