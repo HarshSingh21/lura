@@ -215,7 +215,25 @@ func (e *Engine) Evaluate(ctx context.Context, pos domain.Position) error {
 	defer func() { metrics.GeoEvalSeconds.ObserveSince(start) }()
 
 	// ---- gate 1: freshness. Stale fixes are history, not news.
+	//
+	// A fix's age is the older of when it arrived and when the device says it
+	// took it: a phone that comes back from a tunnel uploads its queue *now*,
+	// and judging those fixes by their arrival would announce an arrival that
+	// happened twenty minutes ago. A device clock in the future cannot make a
+	// fix younger than its arrival, so a wrong clock can only ever silence a
+	// fix, never resurrect one.
+	if pos.Late {
+		// Older than a fix this device already sent (ingest decided, by device
+		// clock): the inside-set must not rewind.
+		span.SetAttributes(attribute.Bool("lura.out_of_order", true))
+		return nil
+	}
 	age := start.Sub(pos.RecvTS)
+	if !pos.DeviceTS.IsZero() && pos.DeviceTS.Before(pos.RecvTS) {
+		if byDevice := start.Sub(pos.DeviceTS); byDevice > age {
+			age = byDevice
+		}
+	}
 	if age > e.cfg.FreshWindow {
 		metrics.GeoDroppedStale.Inc(metrics.AttrDevice.String(pos.DeviceID))
 		span.SetAttributes(attribute.Bool("lura.dropped_stale", true))

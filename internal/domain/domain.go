@@ -108,6 +108,12 @@ type Position struct {
 	HeadingD  float64   `json:"headingDeg"`
 	Battery   int       `json:"battery"`
 	Seq       int64     `json:"seq"` // client sequence number, strengthens the idempotency key
+
+	// Late marks a fix whose device clock is older than a fix this server has
+	// already accepted for the device: a queued fix arriving out of order. It
+	// is history — kept, never drawn, never evaluated against a fence — because
+	// the live map and the inside-set must only ever move forwards.
+	Late bool `json:"late,omitempty"`
 }
 
 // PlaceShape is the geometry a geofence uses.

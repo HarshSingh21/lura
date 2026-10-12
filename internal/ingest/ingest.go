@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/HarshSingh21/locnot/internal/bus"
@@ -31,6 +32,20 @@ import (
 
 // ErrRateLimited is returned when a device exceeds its fix budget.
 var ErrRateLimited = errors.New("rate limited")
+
+// Outcome says what Accept did with a valid fix.
+type Outcome int
+
+const (
+	// Fresh is the newest fix for its device: history, live map and geofences.
+	Fresh Outcome = iota
+	// Late is older, by the device's clock, than a fix already accepted for the
+	// device. It goes to history only (Position.Late).
+	Late
+	// Duplicate is a byte-for-byte resend of the device's newest fix (same
+	// device time, point and sequence). Nothing is published; the ack repeats.
+	Duplicate
+)
 
 // Payload is an OwnTracks `_type:location` message, extended with two optional
 // Lura fields.
@@ -85,6 +100,23 @@ type Service struct {
 	log     *slog.Logger
 	limiter *ratelimit.Limiter
 	now     func() time.Time
+
+	// newest is the newest fix accepted per device (*deviceOrder), by device
+	// clock. It is what tells a phone's queued fix — sent after a newer one
+	// over a flaky network — from news. In memory on purpose: after a restart
+	// the first fix simply wins, which is what a fresh map would show anyway.
+	newest sync.Map
+}
+
+// deviceOrder serialises one device's fixes: the decision "is this newer?"
+// and the publish that follows it happen under one lock, so two concurrent
+// requests from the same phone cannot reach the bus in the wrong order.
+type deviceOrder struct {
+	mu    sync.Mutex
+	ts    time.Time
+	point domain.Point
+	seq   int64
+	seen  bool
 }
 
 // New returns an ingest service.
@@ -135,6 +167,24 @@ func (s *Service) Accept(ctx context.Context, dev domain.Device, p Payload) (dom
 
 	pos := s.toPosition(dev, p, start)
 
+	v, _ := s.newest.LoadOrStore(dev.ID, &deviceOrder{})
+	order := v.(*deviceOrder)
+	order.mu.Lock()
+	defer order.mu.Unlock()
+	switch classify(order, p, pos) {
+	case Duplicate:
+		metrics.IngestRejected.Inc(metrics.AttrOutcome.String("duplicate"))
+		span.SetAttributes(attribute.Bool("lura.duplicate", true))
+		return pos, nil
+	case Late:
+		pos.Late = true
+		span.SetAttributes(attribute.Bool("lura.late", true))
+	default:
+		if p.TST > 0 {
+			order.ts, order.point, order.seq, order.seen = pos.DeviceTS, pos.Point, pos.Seq, true
+		}
+	}
+
 	// Durable path: the position writer and the geofence engine consume this,
 	// partitioned by device so one device's fixes stay ordered (HLD §5.4).
 	if err := bus.PublishDurableJSON(s.bus, bus.PosSubject(dev.UserID, dev.ID), pos); err != nil {
@@ -144,6 +194,12 @@ func (s *Service) Accept(ctx context.Context, dev domain.Device, p Payload) (dom
 	}
 
 	// Live path: at-most-once fan-out to whichever Gateway subscribers exist.
+	// A late fix is not news: drawing it would step the marker backwards.
+	if pos.Late {
+		metrics.IngestAccepted.Inc()
+		metrics.IngestAckSeconds.ObserveSince(start)
+		return pos, nil
+	}
 	if err := bus.PublishJSON(s.bus, bus.PosSubject(dev.UserID, dev.ID), pos); err != nil {
 		// Not fatal: history and reminders are already guaranteed by the durable
 		// publish above, and the next fix will repaint the live map.
@@ -154,6 +210,26 @@ func (s *Service) Accept(ctx context.Context, dev domain.Device, p Payload) (dom
 	metrics.IngestAckSeconds.ObserveSince(start)
 	span.SetAttributes(attribute.Float64("lura.speed_mps", pos.SpeedMPS))
 	return pos, nil
+}
+
+// classify orders a fix against the newest one accepted for its device.
+//
+// Only a fix that carries its own time (OwnTracks tst) can be ordered: one
+// without is stamped with the receive time and is always the newest. Two fixes
+// in the same second are both news unless they are the same fix — tst has
+// one-second resolution, and a phone moving at 30 m/s covers a fence in it.
+func classify(order *deviceOrder, p Payload, pos domain.Position) Outcome {
+	if p.TST <= 0 || !order.seen {
+		return Fresh
+	}
+	switch {
+	case pos.DeviceTS.Before(order.ts):
+		return Late
+	case pos.DeviceTS.Equal(order.ts) && pos.Point == order.point && pos.Seq == order.seq:
+		return Duplicate
+	default:
+		return Fresh
+	}
 }
 
 // RetryAfter reports how long a rate-limited device should wait.

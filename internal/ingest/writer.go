@@ -170,6 +170,9 @@ func (w *Writer) flush(ctx context.Context, batch []domain.Position) {
 	// One last_point update per device per batch: only the newest fix can win.
 	newest := map[string]domain.Position{}
 	for _, p := range batch {
+		if p.Late {
+			continue // history, not where the device is now
+		}
 		if cur, ok := newest[p.DeviceID]; !ok || p.RecvTS.After(cur.RecvTS) {
 			newest[p.DeviceID] = p
 		}
