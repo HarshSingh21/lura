@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useRouter } from 'expo-router';
 
 import { useCreatePlace, useDeletePlace, useOverview, useUpdatePlace } from '@/api/hooks';
 import type { Place } from '@/api/types';
 import { MapCanvas } from '@/components/map/MapCanvas';
+import { formatMetres } from '@/components/map/geometry';
 import { Button, Card, Chip, EmptyState, Sheet, TriggerBadge, styles as ui } from '@/components/ui/primitives';
 import { Mono, Txt } from '@/theme/text';
-import { color, radius, size, space } from '@/theme/tokens';
+import { color, palette, radius, size, space } from '@/theme/tokens';
 import { useLayoutMode } from '@/theme/useLayout';
 
 import { PlaceForm } from './PlaceForm';
@@ -20,6 +22,7 @@ import { PlaceForm } from './PlaceForm';
  * one screen is a waste, and at 96 px the difference is a texture, not information.
  */
 export function PlacesScreen({ search }: { search?: string }) {
+  const router = useRouter();
   const { isPhone, width } = useLayoutMode();
   const { data, isLoading } = useOverview();
   const createPlace = useCreatePlace();
@@ -70,7 +73,12 @@ export function PlacesScreen({ search }: { search?: string }) {
         <View style={styles.grid}>
           {places.map((place) => (
             <View key={place.id} style={{ width: `${100 / columns}%`, padding: space.md }}>
-              <PlaceCard place={place} onPress={() => setEditing(place)} />
+              <PlaceCard
+                place={place}
+                onPress={() => setEditing(place)}
+                // The live map owns the shape editor; it opens on this fence.
+                onEditOnMap={() => router.push({ pathname: '/', params: { edit: place.id } })}
+              />
             </View>
           ))}
         </View>
@@ -108,8 +116,10 @@ export function PlacesScreen({ search }: { search?: string }) {
   );
 }
 
-function PlaceCard({ place, onPress }: { place: Place; onPress: () => void }) {
+function PlaceCard({ place, onPress, onEditOnMap }: { place: Place; onPress: () => void; onEditOnMap: () => void }) {
   const passby = place.triggers.includes('passby');
+  const polygon = place.shape === 'polygon' && place.polygon.length >= 3 ? place.polygon : null;
+  const tone = passby ? 'amber' : 'accent';
 
   return (
     <Card padded={false} style={styles.card} onPress={onPress}>
@@ -118,16 +128,15 @@ function PlaceCard({ place, onPress }: { place: Place; onPress: () => void }) {
           center={place.center}
           // A zoom that frames the fence: bigger fences pull the camera back.
           zoom={place.radiusM > 400 ? 13 : place.radiusM > 150 ? 14.5 : 15.5}
-          fences={[
-            {
-              id: place.id,
-              center: place.center,
-              radiusM: place.radiusM,
-              tone: passby ? 'amber' : 'accent',
-              dashed: passby,
-            },
-          ]}
-          markers={[{ id: `${place.id}-pin`, point: place.center, tone: passby ? 'amber' : 'accent', small: true }]}
+          fences={
+            polygon
+              ? []
+              : [{ id: place.id, center: place.center, radiusM: place.radiusM, tone, dashed: passby }]
+          }
+          // A polygon's outline is drawn as a closed track: the preview is the
+          // canvas renderer, whose fence layer only knows circles.
+          tracks={polygon ? [{ id: `${place.id}-ring`, points: [...polygon, polygon[0]!], tone, width: 2 }] : []}
+          markers={[{ id: `${place.id}-pin`, point: place.center, tone, small: true }]}
         />
       </View>
 
@@ -147,7 +156,7 @@ function PlaceCard({ place, onPress }: { place: Place; onPress: () => void }) {
 
         <View style={styles.metaRow}>
           <Mono size={size.monoXs} color={color.textMuted}>
-            ◎ {place.radiusM} m
+            {polygon ? `⬠ polygon · ${polygon.length} corners` : `◎ ${formatMetres(place.radiusM)}`}
           </Mono>
           <Mono size={size.monoXs} color={color.textMuted}>
             ✎ {place.stats?.notes ?? 0} notes
@@ -161,6 +170,17 @@ function PlaceCard({ place, onPress }: { place: Place; onPress: () => void }) {
             </Mono>
           ) : null}
         </View>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Edit ${place.name} on the map`}
+          onPress={onEditOnMap}
+          style={({ pressed }) => [styles.mapAction, pressed && styles.mapActionPressed]}
+        >
+          <Txt variant="small" color={palette.accentDark} style={styles.mapActionText}>
+            Edit on map →
+          </Txt>
+        </Pressable>
       </View>
     </Card>
   );
@@ -179,4 +199,14 @@ const styles = StyleSheet.create({
   cardHead: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   triggerRow: { flexDirection: 'row', gap: space.sm, flexWrap: 'wrap' },
   metaRow: { flexDirection: 'row', gap: 14, flexWrap: 'wrap' },
+  mapAction: {
+    alignSelf: 'flex-start',
+    minHeight: 28,
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+    marginLeft: -8,
+    borderRadius: radius.md,
+  },
+  mapActionPressed: { backgroundColor: color.accentSoft },
+  mapActionText: { fontWeight: '600' },
 });
