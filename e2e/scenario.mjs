@@ -53,6 +53,9 @@ const browser = await chromium.launch({
   headless: process.env.E2E_HEADED !== '1',
   args: [
     `--host-resolver-rules=MAP lura.com 127.0.0.1:${process.env.E2E_PORT ?? 8080}`,
+    // Sign-in needs WebCrypto (PKCE), which Chrome only offers a secure origin;
+    // the Mappls phase serves the whitelisted name over plain http.
+    `--unsafely-treat-insecure-origin-as-secure=http://lura.com:${process.env.E2E_PORT ?? 8080}`,
     '--autoplay-policy=no-user-gesture-required',
     '--use-angle=swiftshader',
     '--enable-unsafe-swiftshader',
