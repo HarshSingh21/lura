@@ -401,7 +401,10 @@ try {
   const glideOf = (samples, fixesDuring) => {
     // The sampler's rAF can run before Animated's in the same frame, so a stalled
     // frame's catch-up shows one sample late: each step is judged over its own
-    // interval and the one before it.
+    // interval and the one before it. The very first step has no "before": the
+    // first sample can carry a stall from before sampling began (the screenshot
+    // just taken holds the page's frames), so it is measured but not judged — at
+    // 17 fps it once moved 5.1 px in 13 ms for that reason alone.
     const steps = samples.slice(1).map((s, i) => ({
       d: Math.hypot(s.x - samples[i].x, s.y - samples[i].y),
       dt: s.t - samples[i].t,
@@ -413,7 +416,7 @@ try {
     const pxPerMs = travelled / durationMs;
     const perFix = travelled / Math.max(1, fixesDuring);
     const moving = steps.filter((s) => s.d > 0.05);
-    const jumps = steps.filter((s) => s.d >= Math.max(2, perFix * 0.25, 2 * pxPerMs * s.w));
+    const jumps = steps.slice(1).filter((s) => s.d >= Math.max(2, perFix * 0.25, 2 * pxPerMs * s.w));
     const round1 = (v) => Math.round(v * 10) / 10;
     return {
       frames: samples.length,
