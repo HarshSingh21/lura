@@ -15,8 +15,15 @@ import type { GeoEvent, Point, Reminder, Trigger } from '../../api/types';
  * tests without a bundler (see model.test.mjs).
  */
 
-/** ChimeKind picks the sound: one per trigger, plus "watch" for a watched person. */
-export type ChimeKind = 'arrive' | 'leave' | 'passby' | 'dwell' | 'watch';
+/**
+ * ChimeKind picks the sound: one per trigger, so arrive, leave and pass-by can be
+ * told apart by ear (release spec §4). A watched person's crossing rings the same
+ * trigger's chime with the watch bell layered on top (see `Chime.watched`).
+ */
+export type ChimeKind = 'arrive' | 'leave' | 'passby' | 'dwell';
+
+/** Chime is what one announcement sounds like. */
+export type Chime = { kind: ChimeKind; watched: boolean };
 
 export type NotificationItem = {
   /** The crossing's id — the GeoEvent id — so both frames for it land on one entry. */
@@ -224,8 +231,13 @@ export function groupByDay(
   return { today: sorted.filter((i) => i.at >= cut), earlier: sorted.filter((i) => i.at < cut) };
 }
 
-/** chimeFor maps an entry to its sound: a watched person always rings the watch chime. */
-export function chimeFor(item: Pick<NotificationItem, 'kind' | 'trigger'>): ChimeKind {
-  if (item.kind === 'watch') return 'watch';
-  return item.trigger === 'leave' || item.trigger === 'passby' || item.trigger === 'dwell' ? item.trigger : 'arrive';
+/**
+ * chimeFor maps an entry to its sound: the trigger's chime, with the watch bell
+ * on top when it is about someone the viewer watches — "Nishtha arrived" and
+ * "Nishtha left" must not sound the same.
+ */
+export function chimeFor(item: Pick<NotificationItem, 'kind' | 'trigger'>): Chime {
+  const kind: ChimeKind =
+    item.trigger === 'leave' || item.trigger === 'passby' || item.trigger === 'dwell' ? item.trigger : 'arrive';
+  return { kind, watched: item.kind === 'watch' };
 }

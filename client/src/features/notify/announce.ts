@@ -10,7 +10,10 @@ import { playChime } from './sound';
  * calls it exactly once per crossing — the dedupe has already happened by then.
  */
 export function announce(item: NotificationItem, opts: { muted: boolean; onOpen?: () => void }): void {
-  if (!opts.muted) playChime(chimeFor(item));
+  if (!opts.muted) {
+    const chime = chimeFor(item);
+    playChime(chime.kind, { watched: chime.watched });
+  }
   showDesktop(item, opts.onOpen);
 }
 
