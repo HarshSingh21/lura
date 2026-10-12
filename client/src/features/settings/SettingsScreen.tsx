@@ -15,6 +15,9 @@ import {
 } from '@/api/hooks';
 import { Button, Card, Chip, Field, Toggle, styles as ui } from '@/components/ui/primitives';
 import { useSession } from '@/features/auth';
+import { playChime } from '@/features/notify/sound';
+import type { ChimeKind } from '@/features/notify/model';
+import { describePermission, useDesktopPermission } from '@/features/notify/ui';
 import { resetOnboarding } from '@/features/onboarding';
 import { Mono, SectionLabel, Txt } from '@/theme/text';
 import { color, palette, radius, size, space } from '@/theme/tokens';
@@ -243,6 +246,12 @@ export function SettingsScreen() {
         </Card>
       </View>
 
+      {/* ---------------------------------------------------------------- alerts */}
+      <View>
+        <SectionLabel>ALERTS ON THIS DEVICE</SectionLabel>
+        <AlertSettings />
+      </View>
+
       {/* ---------------------------------------------------------------- channels */}
       <View>
         <SectionLabel>NOTIFICATION CHANNELS</SectionLabel>
@@ -351,6 +360,76 @@ export function SettingsScreen() {
         </Card>
       </View>
     </ScrollView>
+  );
+}
+
+const CHIMES: { kind: ChimeKind; label: string }[] = [
+  { kind: 'arrive', label: 'Arrive' },
+  { kind: 'leave', label: 'Leave' },
+  { kind: 'passby', label: 'Pass-by' },
+  { kind: 'dwell', label: 'Dwell' },
+  { kind: 'watch', label: 'Someone you watch' },
+];
+
+/**
+ * AlertSettings is the per-viewer half of notifications: whether this browser
+ * chimes, and whether it raises a system alert while hidden. Both live with the
+ * viewer rather than on the server, because they are about this screen — the
+ * same account can want sound on a laptop and silence on a shared kiosk.
+ */
+function AlertSettings() {
+  const muted = useStore((s) => s.muted);
+  const setMuted = useStore((s) => s.setMuted);
+  const desktop = useDesktopPermission();
+
+  return (
+    <Card style={styles.card}>
+      <View style={styles.rowBetween}>
+        <View style={ui.flex}>
+          <Txt variant="cardTitle">Notification sounds</Txt>
+          <Txt variant="tiny" color={color.textMuted} style={styles.hint}>
+            A short chime when you or someone you watch crosses a place — a different one for each trigger. On a
+            phone it is a vibration instead. Toasts still appear when muted.
+          </Txt>
+        </View>
+        <Toggle
+          value={!muted}
+          accessibilityLabel="Notification sounds"
+          onChange={(on) => {
+            setMuted(!on);
+            if (on) playChime('arrive');
+          }}
+        />
+      </View>
+      <View style={styles.row}>
+        {CHIMES.map((chime) => (
+          <Button
+            key={chime.kind}
+            label={`▶ ${chime.label}`}
+            variant="ghost"
+            small
+            disabled={muted}
+            onPress={() => playChime(chime.kind)}
+          />
+        ))}
+      </View>
+
+      <View style={styles.divider} />
+
+      <View style={styles.rowBetween}>
+        <View style={ui.flex}>
+          <Txt variant="cardTitle">Desktop alerts</Txt>
+          <Txt variant="tiny" color={color.textMuted} style={styles.hint}>
+            {describePermission(desktop.permission)}
+          </Txt>
+        </View>
+        {desktop.permission === 'default' ? (
+          <Button label="Enable desktop alerts" small onPress={() => void desktop.request()} />
+        ) : desktop.permission === 'granted' ? (
+          <Chip label="On" tone="accent" />
+        ) : null}
+      </View>
+    </Card>
   );
 }
 
