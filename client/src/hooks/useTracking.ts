@@ -137,14 +137,20 @@ export function useTracking(opts: TrackingOptions): TrackingStatus {
   const [status, setStatus] = useState<TrackingStatus>({});
   // Held in a ref so a new callback identity does not restart the GPS watch.
   const registered = useRef(opts.onRegistered);
+  // The device to publish as is read per fix, not watched: a browser that just
+  // registered itself makes the overview name a first device, and restarting the
+  // GPS watch for that would re-send the fix it has just sent.
+  const deviceId = useRef(opts.deviceId);
   useEffect(() => {
     registered.current = opts.onRegistered;
+    deviceId.current = opts.deviceId;
   });
   const userKey = opts.userId ?? 'local';
+  const identified = !!opts.deviceId || !!opts.userId;
 
   useEffect(() => {
     // A brand-new account has no device yet; the publisher registers one.
-    if (!enabled || (!opts.deviceId && !opts.userId)) return;
+    if (!enabled || !identified) return;
 
     let cancelled = false;
     const gate = new FixGate();
@@ -175,7 +181,7 @@ export function useTracking(opts: TrackingOptions): TrackingStatus {
       const battery = Platform.OS === 'web' ? await webBattery() : undefined;
       setStatus((s) => ({ ...s, accuracyM: fix.accuracyM, lastSentAt: Date.now(), moving: decision.moving, held: undefined }));
       try {
-        const result = await publisher.publish(ownTracksPayload(decision.fix, seq.current, { altitudeM, battery }), opts.deviceId);
+        const result = await publisher.publish(ownTracksPayload(decision.fix, seq.current, { altitudeM, battery }), deviceId.current);
         if (result.registered) registered.current?.();
         setStatus((s) => (s.deviceId === result.deviceId ? s : { ...s, deviceId: result.deviceId }));
       } catch (err) {
@@ -257,7 +263,7 @@ export function useTracking(opts: TrackingOptions): TrackingStatus {
       cancelled = true;
       subscription?.remove();
     };
-  }, [enabled, opts.deviceId, opts.userId, userKey, pushToast, setTracking]);
+  }, [enabled, identified, userKey, pushToast, setTracking]);
 
   return enabled ? status : {};
 }

@@ -18,7 +18,7 @@ export const PERSON_COLORS = [
   '#0aa2c0', // teal
   '#b5651d', // copper
   '#c03fd6', // orchid
-  '#d29a00', // mustard
+  '#4338ca', // indigo
 ] as const;
 
 export function personColor(userId: string | undefined): string {

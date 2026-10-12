@@ -53,6 +53,9 @@ const browser = await chromium.launch({
   headless: process.env.E2E_HEADED !== '1',
   args: [
     `--host-resolver-rules=MAP lura.com 127.0.0.1:${process.env.E2E_PORT ?? 8080}`,
+    // Sign-in needs WebCrypto (PKCE), which Chrome only offers a secure origin;
+    // the Mappls phase serves the whitelisted name over plain http.
+    `--unsafely-treat-insecure-origin-as-secure=http://lura.com:${process.env.E2E_PORT ?? 8080}`,
     '--autoplay-policy=no-user-gesture-required',
     '--use-angle=swiftshader',
     '--enable-unsafe-swiftshader',
@@ -325,6 +328,123 @@ try {
   });
 
   // ---------------------------------------------------------------- 3
+  /**
+   * glideOf tells a glide from a jump in per-frame marker samples, on the
+   * frame clock rather than by counting frames: a loaded machine (several
+   * headless Chromes on SwiftShader) can drop to ~10 fps, and a perfectly linear
+   * glide then moves several pixels per frame — 26 of 27 frames moving, 9.5 px in
+   * one 700 ms stall — which a frame count reads as a jump. A jump is a step far
+   * bigger than the glide's own speed explains over the time it covered; at
+   * 60 fps both rules are the original ones (≥ 10 moving frames per fix, no step
+   * of a quarter of a fix's distance).
+   */
+  const FRAME_MS = 1000 / 60;
+  /**
+   * Below this the page is too starved of frames to tell a glide from a jump.
+   * A jump of one fix's distance is caught while a two-frame window is shorter
+   * than a third of the 1 s fix interval (the bound is three times the glide's
+   * mean speed over the window), i.e. above 6 fps; 8 leaves a margin.
+   */
+  const MIN_JUDGE_FPS = 8;
+  /**
+   * How much faster than its mean a glide may legitimately move over a window:
+   * each leg runs one fix's distance (jittered ±3 m) in the previous fix gap,
+   * so legs differ — at 23 fps one leg moved 6.7 px in 156 ms against a
+   * twice-the-mean bound of 6.5.
+   */
+  const GLIDE_SPEED_SLACK = 3;
+  /**
+   * sampleOnMap records, every animation frame, where a marker is on screen and
+   * the viewport it was drawn through, and returns its track in map space (the
+   * first frame's pixels): a glide is the marker moving over the map, so a camera
+   * move — a re-fit, a resize — must not read as the marker jumping. Frames where
+   * the camera moved are counted separately.
+   */
+  const sampleOnMap = async (person, markerId, ms) => {
+    const raw = await person.page.evaluate(
+      ([id, ms]) =>
+        new Promise((resolve) => {
+          const out = [];
+          const t0 = performance.now();
+          const tick = () => {
+            const el = document.querySelector(`[data-testid="lura-marker-${id}"]`);
+            const vp = [...document.querySelectorAll('[data-testid="lura-map-viewport"]')].find((n) => n.offsetParent !== null);
+            if (el && vp) {
+              const r = el.getBoundingClientRect();
+              const vr = vp.getBoundingClientRect();
+              const d = vp.dataset;
+              out.push({
+                t: performance.now(),
+                x: r.left - vr.left,
+                y: r.top - vr.top,
+                view: { center: { lat: +d.lat, lon: +d.lon }, zoom: +d.zoom, width: +d.width, height: +d.height },
+              });
+            }
+            if (performance.now() - t0 < ms) requestAnimationFrame(tick);
+            else resolve(out);
+          };
+          requestAnimationFrame(tick);
+        }),
+      [markerId, ms],
+    );
+    const z0 = raw[0]?.view.zoom ?? 0;
+    let cameraMoves = 0;
+    const track = raw.map((s, i) => {
+      if (i > 0 && JSON.stringify(s.view) !== JSON.stringify(raw[i - 1].view)) cameraMoves += 1;
+      // The viewport centre in world pixels at this frame's zoom, then scaled to the first frame's.
+      const c = project(s.view.center, { center: { lat: 0, lon: 0 }, zoom: s.view.zoom, width: 0, height: 0 });
+      const k = 2 ** (z0 - s.view.zoom);
+      return { t: s.t, x: (s.x - s.view.width / 2 + c.x) * k, y: (s.y - s.view.height / 2 + c.y) * k };
+    });
+    const spanMs = Math.max(1, (raw.at(-1)?.t ?? 0) - (raw[0]?.t ?? 0));
+    return { track, cameraMoves, fps: (1000 * Math.max(0, raw.length - 1)) / spanMs };
+  };
+
+  /** closeUp screenshots the map around one marker: its label, cone, ring and wake. */
+  const closeUp = async (person, markerId, name) => {
+    const m = await person.marker(markerId);
+    const v = await person.viewport();
+    if (!m || !v) return null;
+    const w = 420;
+    const h = 260;
+    const x = Math.round(Math.min(Math.max(m.x - w / 2, v.left), v.left + v.width - w));
+    const y = Math.round(Math.min(Math.max(m.y - h / 2, v.top), v.top + v.height - h));
+    const path = `${OUT}/${person.name.toLowerCase()}-${name}.png`;
+    await person.page.screenshot({ path, clip: { x, y, width: w, height: h } });
+    return path;
+  };
+  const glideOf = (samples, fixesDuring) => {
+    // The sampler's rAF can run before Animated's in the same frame, so a stalled
+    // frame's catch-up shows one sample late: each step is judged over its own
+    // interval and the one before it. The very first step has no "before": the
+    // first sample can carry a stall from before sampling began (the screenshot
+    // just taken holds the page's frames), so it is measured but not judged — at
+    // 17 fps it once moved 5.1 px in 13 ms for that reason alone.
+    const steps = samples.slice(1).map((s, i) => ({
+      d: Math.hypot(s.x - samples[i].x, s.y - samples[i].y),
+      dt: s.t - samples[i].t,
+      w: s.t - samples[Math.max(0, i - 1)].t,
+      at: s.t - samples[0].t,
+    }));
+    const travelled = steps.reduce((sum, s) => sum + s.d, 0);
+    const durationMs = Math.max(1, (samples.at(-1)?.t ?? 0) - (samples[0]?.t ?? 0));
+    const pxPerMs = travelled / durationMs;
+    const perFix = travelled / Math.max(1, fixesDuring);
+    const moving = steps.filter((s) => s.d > 0.05);
+    const jumps = steps.slice(1).filter((s) => s.d >= Math.max(2, perFix * 0.25, GLIDE_SPEED_SLACK * pxPerMs * s.w));
+    const round1 = (v) => Math.round(v * 10) / 10;
+    return {
+      frames: samples.length,
+      fps: Math.round((1000 * (samples.length - 1)) / durationMs),
+      movingFrames: moving.length,
+      movingMs: Math.round(moving.reduce((sum, s) => sum + s.dt, 0)),
+      fixesDuring,
+      travelledPx: Math.round(travelled),
+      biggestStepPx: round1(Math.max(0, ...steps.map((s) => s.d))),
+      jumps: jumps.slice(0, 5).map((s) => `${round1(s.d)}px in ${Math.round(s.w)}ms at +${Math.round(s.at)}ms`),
+    };
+  };
+
   await step('3', 'Both publish; each sees the other move, live and accurately', async () => {
     await harsh.nav('Live map');
     await nishtha.nav('Live map');
@@ -354,11 +474,44 @@ try {
     const shotA = await harsh.shot(OUT, '03-nishtha-moving-a');
     // Between two pings the marker must glide, not jump: sample its screen
     // position every frame across ~2.5 pings.
-    const samples = await harsh.page.evaluate((id) => window.__luraSample(id, 2600), nMarker);
+    // A page starved of frames (a loaded machine) cannot show a glide either
+    // way, so sample again (up to eight times) rather than judge two frames a second.
+    let sampled = await sampleOnMap(harsh, nMarker, 2600);
+    const sampleTries = [Math.round(sampled.fps)];
+    while (sampled.fps < MIN_JUDGE_FPS && sampleTries.length < 8) {
+      sampled = await sampleOnMap(harsh, nMarker, 2600);
+      sampleTries.push(Math.round(sampled.fps));
+    }
+    const { track: samples, cameraMoves } = sampled;
     await sleep(1500);
     const b = await harsh.marker(nMarker);
     const shotB = await harsh.shot(OUT, '03-nishtha-moving-b');
+    const closeB = await closeUp(harsh, nMarker, '03-nishtha-closeup');
     const railText = await harsh.page.innerText('body');
+
+    // Follow mode: the camera rides with Nishtha, so she stays put on screen
+    // while the city slides under her; stopping hands the camera back.
+    await harsh.page.getByRole('switch', { name: `Follow ${nishtha.displayName} on the map` }).first().click();
+    const fromMiddle = ({ v, m }) => (v && m ? Math.hypot(m.x - (v.left + v.width / 2), m.y - (v.top + v.height / 2)) : Infinity);
+    const followFrame = async () => ({ v: await harsh.viewport(), m: await harsh.marker(nMarker) });
+    // The camera first flies from the framed pair to her (a few hundred metres;
+    // slower when the machine is starved of frames), then rides along.
+    const followStart = Date.now();
+    const followA = await waitFor('the camera to reach Nishtha', async () => {
+      const f = await followFrame();
+      return fromMiddle(f) <= 40 ? f : null;
+    }, { timeout: 15000, every: 250 });
+    const followArriveMs = Date.now() - followStart;
+    await sleep(2000);
+    const followB = await followFrame();
+    const followShot = await harsh.shot(OUT, '03-following-nishtha');
+    await harsh.page.getByRole('switch', { name: `Stop following ${nishtha.displayName}` }).first().click();
+    const follow = {
+      offCentrePx: [fromMiddle(followA), fromMiddle(followB)].map((d) => Math.round(d)),
+      cameraMovedM: followA.v && followB.v ? Math.round(haversineM(followA.v.center, followB.v.center)) : 0,
+      arriveMs: followArriveMs,
+    };
+    check(follow.offCentrePx.every((d) => d <= 40) && follow.cameraMovedM > 3, `follow mode did not keep Nishtha centred: ${JSON.stringify(follow)}`);
     loop.stop();
     await loop.done.catch(() => {});
 
@@ -372,16 +525,19 @@ try {
     const fixesDuring = since(recH.frames, samples[0]?.t ?? 0).filter(
       (f) => f.type === 'position' && f.deviceId === facts.nDevice.id && f.t <= (samples.at(-1)?.t ?? 0),
     ).length;
-    const steps = samples.slice(1).map((s, i) => Math.hypot(s.x - samples[i].x, s.y - samples[i].y));
-    const travelled = steps.reduce((a, b) => a + b, 0);
-    const movingFrames = steps.filter((d) => d > 0.05).length;
-    const biggestStep = Math.max(0, ...steps);
-    const glide = { frames: samples.length, movingFrames, fixesDuring, travelledPx: Math.round(travelled), biggestStepPx: Math.round(biggestStep * 10) / 10 };
+    const fixesAtMs = since(recH.frames, samples[0]?.t ?? 0)
+      .filter((f) => f.type === 'position' && f.deviceId === facts.nDevice.id && f.t <= (samples.at(-1)?.t ?? 0))
+      .map((f) => Math.round(f.t - samples[0].t));
+    const glide = { ...glideOf(samples, fixesDuring), cameraMoves, fixesAtMs, sampleTries };
     const latN = latencyFor(recH, facts.nDevice.id, nMarker, t0h);
 
     check(a && b && (Math.abs(a.x - b.x) > 2 || Math.abs(a.y - b.y) > 2), `Nishtha's marker did not move: ${JSON.stringify({ a, b })}`);
     check(
-      fixesDuring >= 2 && movingFrames >= fixesDuring * 10 && biggestStep < Math.max(2, (travelled / fixesDuring) * 0.25),
+      sampled.fps >= MIN_JUDGE_FPS,
+      `the page rendered ${sampleTries.join(', ')} fps over ${sampleTries.length} samples — too few frames to judge the glide (is the machine overloaded?): ${JSON.stringify(glide)}`,
+    );
+    check(
+      fixesDuring >= 2 && glide.movingMs >= fixesDuring * 10 * FRAME_MS && glide.jumps.length === 0,
       `marker jumped instead of gliding: ${JSON.stringify(glide)}`,
     );
     check(offN !== null && offN <= 3, `Nishtha's marker is ${offN?.toFixed(1)} px from her last fix`);
@@ -396,6 +552,7 @@ try {
     await sleep(5000);
     const d = await nishtha.marker(hMarker);
     const shotC = await nishtha.shot(OUT, '03-harsh-moving');
+    const closeC = await closeUp(nishtha, hMarker, '03-harsh-closeup');
     await walk;
     await sleep(3000);
     const recN = await nishtha.record();
@@ -410,9 +567,9 @@ try {
     const settled = [await harsh.shot(OUT, '03-settled'), await nishtha.shot(OUT, '03-settled')];
 
     return {
-      nishthaOnHarsh: { latency: latN, glide, offsetPx: Math.round(offN * 10) / 10 },
+      nishthaOnHarsh: { latency: latN, glide, offsetPx: Math.round(offN * 10) / 10, follow },
       harshOnNishtha: { latency: latH, offsetPx: Math.round(offH * 10) / 10 },
-      shots: [shotA, shotB, shotC, ...settled],
+      shots: [shotA, shotB, closeB, followShot, shotC, closeC, ...settled].filter(Boolean),
     };
   });
 
