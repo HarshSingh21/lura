@@ -53,6 +53,9 @@ const browser = await chromium.launch({
   headless: process.env.E2E_HEADED !== '1',
   args: [
     `--host-resolver-rules=MAP lura.com 127.0.0.1:${process.env.E2E_PORT ?? 8080}`,
+    // http://lura.com is not a secure context, so without this sign-in has no
+    // WebCrypto (PKCE) and the page no geolocation; a real lura.com is https.
+    `--unsafely-treat-insecure-origin-as-secure=http://lura.com:${process.env.E2E_PORT ?? 8080}`,
     '--autoplay-policy=no-user-gesture-required',
     '--use-angle=swiftshader',
     '--enable-unsafe-swiftshader',
@@ -251,6 +254,54 @@ async function edgeHasFenceColour(person, ring) {
     },
     { b64: png.toString('base64'), pts },
   );
+}
+
+/**
+ * basemapsReady puts Harsh on the live map with the Grocery fence and Nishtha's
+ * marker drawn. Fences seeded through the API (E2E_SEED) reach a page that is
+ * already open only when it re-reads the overview, so the page is reloaded once
+ * if the fence is not there yet.
+ */
+async function basemapsReady(person) {
+  const page = person.page;
+  if (!(await page.getByRole('button', { name: 'Draw' }).count())) {
+    // The row's name carries its badge ("Live map 1"), so match the start.
+    await page.getByRole('link', { name: /^Live map\b/ }).first().click();
+    await page.getByRole('button', { name: 'Draw' }).waitFor({ timeout: 20000 });
+  }
+  const grocery = page.getByRole('button', { name: 'Place Grocery' });
+  const drawn = async () => (await grocery.count()) > 0 && Boolean(await person.marker(`peer_${facts.nDevice.id}`));
+  try {
+    await waitFor('the Grocery fence and Nishtha’s marker on Harsh’s map', drawn, { timeout: 5000 });
+  } catch {
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.getByRole('button', { name: 'Draw' }).waitFor({ timeout: 20000 });
+    await waitFor('the Grocery fence and Nishtha’s marker after a reload', drawn, { timeout: 20000 });
+  }
+  await person.stableViewport(600);
+}
+
+const isMapplsTile = (url) => /(^|\.)mappls\.com$/.test(new URL(url).host);
+/** redactKey keeps the Mappls key out of failure messages and results.json. */
+const redactKey = (url) => url.replace(/access_token=[^&]*/g, 'access_token=<key>');
+
+/**
+ * drawnBy says which renderer is drawing Harsh's basemap — the Mappls SDK's
+ * container or MapLibre's canvas — and what the credit line under it says.
+ */
+async function drawnBy(person) {
+  return person.page.evaluate(() => {
+    const visible = (el) => el && el.offsetParent !== null;
+    const renderer = [...document.querySelectorAll('[id^="lura-mappls-"]')].some(visible)
+      ? 'mappls'
+      : [...document.querySelectorAll('.maplibregl-canvas')].some(visible)
+        ? 'maplibre'
+        : 'canvas';
+    const credit = document.querySelector('[data-testid="lura-map-credit"]')?.textContent ?? '';
+    // The Mappls SDK credits itself inside its own container.
+    const sdkCredit = [...document.querySelectorAll('[id^="lura-mappls-"]')].filter(visible).map((el) => el.textContent ?? '').join(' ');
+    return { renderer, credit, sdkCredit };
+  });
 }
 
 /** seedStep4 builds what step 4 draws, over the API, with the same facts. */
@@ -705,7 +756,8 @@ try {
   // ---------------------------------------------------------------- 7
   await step('7', `Basemaps on ${PROVIDER}: every style loads tiles and keeps fences and markers`, async () => {
     const page = harsh.page;
-    const ids = [
+    await basemapsReady(harsh);
+    const all = [
       ['streets', 'Streets'],
       ['satellite', 'Satellite'],
       ['hybrid', 'Hybrid'],
@@ -713,6 +765,11 @@ try {
       ['dark', 'Dark'],
       ['terrain', 'Terrain'],
     ];
+    // Choosing the basemap that is already showing changes nothing and loads
+    // no tile, so the current one is visited last, coming back from another.
+    const current = (await page.locator('[aria-label^="Change basemap"]').getAttribute('aria-label')) ?? '';
+    const at = Math.max(0, all.findIndex(([, label]) => current.endsWith(label)));
+    const ids = [...all.slice(at + 1), ...all.slice(0, at + 1)];
     const out = {};
     const shots = [];
     for (const [id, label] of ids) {
@@ -728,13 +785,47 @@ try {
       const label0 = await page.locator('[aria-label^="Change basemap"]').getAttribute('aria-label');
       check(label0?.includes(label), `the picker says ${label0} after choosing ${label}`);
       check(ok.length > 0, `${label}: no tile loaded (${tiles.length} requests)`);
-      check(failed.length === 0, `${label}: ${failed.length} tiles failed: ${failed.slice(0, 3).map((f) => `${f.status} ${f.url}`)}`);
+      // Mappls' tile CDN answers a few tiles of every load with 412 (base,
+      // label, indoor) or 408 (the "sea" world tiles) — 2 to 5 of ~20 in every
+      // run on this key — and draws the map regardless. That is theirs, not
+      // Lura's: it is reported, and only fails the step if it stops being a
+      // few. Every other tile server must answer every tile.
+      const ours = failed.filter((f) => !isMapplsTile(f.url));
+      const theirs = failed.length - ours.length;
+      check(ours.length === 0, `${label}: ${ours.length} tiles failed: ${ours.slice(0, 3).map((f) => `${f.status} ${redactKey(f.url)}`)}`);
+      check(theirs <= Math.max(5, ok.length * 0.35), `${label}: ${theirs} of ${tiles.length} Mappls tiles failed`);
+      const drawn = await drawnBy(harsh);
+      const mapplsOk = ok.filter((x) => isMapplsTile(x.url)).length;
+      // The credit follows whoever draws: Mappls credits itself (and Lura's
+      // chip must not cover its logo); anything else is credited by Lura.
+      check(
+        drawn.renderer === 'mappls'
+          ? drawn.credit === '' && /MapmyIndia/.test(drawn.sdkCredit)
+          : drawn.credit !== '' && !/Mappls/.test(drawn.credit),
+        `${label}: drawn by ${drawn.renderer} but credited "${drawn.credit}" (SDK: "${drawn.sdkCredit.slice(0, 80)}")`,
+      );
+      if (drawn.renderer === 'mappls') check(mapplsOk > 0, `${label}: the Mappls map loaded no Mappls tile`);
       check(await page.getByRole('button', { name: 'Place Grocery' }).count(), `${label}: the Grocery label is gone`);
       check(await harsh.marker(`peer_${facts.nDevice.id}`), `${label}: Nishtha's marker is gone`);
       const edge = await edgeHasFenceColour(harsh, facts.grocery.polygon);
       check(edge.hits >= edge.probes * 0.5, `${label}: the Grocery outline is not drawn (${edge.hits}/${edge.probes} edge probes)`);
       shots.push(await harsh.shot(OUT, `07-basemap-${id}`));
-      out[id] = { tiles: ok.length, hosts, edge: `${edge.hits}/${edge.probes}` };
+      out[id] = {
+        renderer: drawn.renderer,
+        tiles: ok.length,
+        hosts,
+        ...(theirs ? { mapplsTileRetries: theirs } : {}),
+        edge: `${edge.hits}/${edge.probes}`,
+      };
+    }
+    if (PROVIDER === 'mappls') {
+      // Mappls must actually draw what it has a style for. If it handed every
+      // basemap to MapLibre, say why rather than passing on MapLibre's tiles.
+      const byMappls = Object.entries(out).filter(([, r]) => r.renderer === 'mappls').map(([id]) => id);
+      const statuses = {};
+      for (const x of harsh.tiles.filter((x) => isMapplsTile(x.url))) statuses[x.status] = (statuses[x.status] ?? 0) + 1;
+      check(byMappls.length > 0, `Mappls drew no basemap (Mappls tile statuses ${JSON.stringify(statuses)}); MapLibre drew them all`);
+      out.mappls = { drew: byMappls, tileStatuses: statuses };
     }
     // Back to streets for the rest of the run.
     await page.locator('[aria-label^="Change basemap"]').click();
