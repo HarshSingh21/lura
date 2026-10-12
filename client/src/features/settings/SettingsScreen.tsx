@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import { router } from 'expo-router';
 
@@ -65,11 +65,16 @@ export function SettingsScreen() {
   const serverQuietFrom = data?.user.quietFrom;
   const serverQuietTo = data?.user.quietTo;
   const serverTz = data?.user.tz;
-  useEffect(() => {
+  // Adjusted during render rather than in an effect, so the fields never paint
+  // once with the stale value.
+  const serverKey = `${serverQuietFrom}|${serverQuietTo}|${serverTz}`;
+  const [adoptedKey, setAdoptedKey] = useState(serverKey);
+  if (adoptedKey !== serverKey) {
+    setAdoptedKey(serverKey);
     if (serverQuietFrom !== undefined) setQuietFrom(serverQuietFrom);
     if (serverQuietTo !== undefined) setQuietTo(serverQuietTo);
     if (serverTz !== undefined) setTz(serverTz);
-  }, [serverQuietFrom, serverQuietTo, serverTz]);
+  }
 
   const airgap = data?.user.airgap ?? false;
 

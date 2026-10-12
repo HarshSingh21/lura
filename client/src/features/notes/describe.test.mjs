@@ -4,6 +4,7 @@ import { test } from 'node:test';
 
 import { describeAudience } from './describe.ts';
 import { personColor, PERSON_COLORS } from '../people/color.ts';
+import { colorForUser } from '../live/motion.ts';
 
 const names = { usr_n: 'Nishtha', usr_a: 'Arjun' };
 const nameOf = (id) => names[id];
@@ -52,4 +53,10 @@ test('personColor is stable and inside the palette', () => {
   assert.equal(personColor('usr_n'), personColor('usr_n'));
   assert.ok(PERSON_COLORS.includes(personColor('usr_n')));
   assert.equal(personColor(undefined), PERSON_COLORS[0]);
+});
+
+test('personColor matches the map marker colour for the same person', () => {
+  for (const id of ['usr_harsh', 'usr_nishtha', 'usr_aravind', 'a', 'user_123456']) {
+    assert.equal(personColor(id), colorForUser(id));
+  }
 });

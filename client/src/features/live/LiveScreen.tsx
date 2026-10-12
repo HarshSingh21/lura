@@ -173,8 +173,9 @@ export function LiveScreen() {
   const meId = data?.user.id;
   const offline = data?.user.airgap || data?.server.airgap;
 
-  const places = data?.places ?? [];
-  const devices = data?.devices ?? [];
+  // Memoised so "no data yet" is the same empty array between renders.
+  const places = useMemo(() => data?.places ?? [], [data?.places]);
+  const devices = useMemo(() => data?.devices ?? [], [data?.devices]);
   // The overview carries the connections a peer marker needs: their device ids
   // (to match live frames) and their last known points (to paint before one
   // arrives). A peer with a paused switch has no devices here at all.

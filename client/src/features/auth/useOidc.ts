@@ -118,9 +118,9 @@ export function useOidc(): Oidc {
   const requests = useRef<Partial<Record<OidcProvider, AuthRequest>>>({});
 
   useEffect(() => {
+    // `discovering` starts true and retry() resets it, so the effect itself
+    // only ever moves state on when discovery settles.
     let cancelled = false;
-    setDiscovering(true);
-    setError(null);
 
     loadDiscovery()
       .then((doc) => {
@@ -160,6 +160,8 @@ export function useOidc(): Oidc {
     forgetDiscovery();
     requests.current = {};
     setDiscovery(null);
+    setDiscovering(true);
+    setError(null);
     setAttempt((n) => n + 1);
   }, []);
 

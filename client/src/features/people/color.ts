@@ -5,16 +5,20 @@
  * centre and on the map, on every device, without anyone storing a preference —
  * so it is a hash of the id into a fixed palette. The palette avoids the brand
  * green (the viewer's own devices own it) and the danger red.
+ *
+ * It must agree with the map's `colorForUser` (features/live/motion.ts): same
+ * palette, same order, same hash, so a person's toast and marker match. The
+ * unit tests hold the two together.
  */
 export const PERSON_COLORS = [
-  '#df8f48', // amber
-  '#5b7fe0', // blue
-  '#b05bd6', // violet
-  '#d6577f', // rose
-  '#2f9fb3', // teal
-  '#8a9a3a', // olive
-  '#c9a227', // mustard
-  '#6a6fd1', // indigo
+  '#7c5cff', // violet
+  '#e0568f', // rose
+  '#2f80ed', // blue
+  '#e5603b', // vermilion
+  '#0aa2c0', // teal
+  '#b5651d', // copper
+  '#c03fd6', // orchid
+  '#d29a00', // mustard
 ] as const;
 
 export function personColor(userId: string | undefined): string {

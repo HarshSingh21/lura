@@ -26,7 +26,8 @@ export const JUMP_M = 5_000;
  * Person colours. The brand green is reserved for "me", and amber stays the
  * colour sharing *about* me is drawn in elsewhere, so peers draw from hues that
  * read as distinct from both and from each other on light, dark and satellite
- * basemaps alike.
+ * basemaps alike. features/people/color.ts carries the same list for toasts and
+ * the People screen; keep the two in step.
  */
 export const PERSON_PALETTE = ['#7c5cff', '#e0568f', '#2f80ed', '#e5603b', '#0aa2c0', '#b5651d', '#c03fd6', '#d29a00'] as const;
 

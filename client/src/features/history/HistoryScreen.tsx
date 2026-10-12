@@ -32,7 +32,7 @@ const RANGES = [
 ] as const;
 
 export function HistoryScreen() {
-  const { isDesktop, isPhone, width, height } = useLayoutMode();
+  const { isDesktop, width, height } = useLayoutMode();
   const { data: overview } = useOverview();
   const [range, setRange] = useState<(typeof RANGES)[number]['key']>('-24h');
   const [deviceId, setDeviceId] = useState<string | undefined>(undefined);
@@ -43,8 +43,9 @@ export function HistoryScreen() {
   const activeDevice = deviceId ?? devices[0]?.id;
   const { data, isLoading, error } = useHistory({ deviceId: activeDevice, from: range });
 
-  const segments = data?.segments ?? [];
-  const track = data?.track ?? [];
+  // Memoised so an empty range is the same array between renders.
+  const segments = useMemo(() => data?.segments ?? [], [data?.segments]);
+  const track = useMemo(() => data?.track ?? [], [data?.track]);
 
   // Open on the day rather than on a hard-coded city.
   const view = useMemo(

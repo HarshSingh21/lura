@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   Animated,
   Easing,
@@ -194,7 +194,8 @@ export function Dot({
   blink?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
-  const anim = useRef(new Animated.Value(0)).current;
+  // State, not a ref: the value is created once and read during render.
+  const [anim] = useState(() => new Animated.Value(0));
 
   useEffect(() => {
     if (!pulse && !blink) return;

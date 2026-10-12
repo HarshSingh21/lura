@@ -51,8 +51,13 @@ export function NotesScreen() {
   const suggest = useSuggest();
 
   const [text, setText] = useState('');
-  const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
-  const [suggestFailed, setSuggestFailed] = useState(false);
+  const [lastSuggestion, setSuggestion] = useState<Suggestion | null>(null);
+  const [lastSuggestFailed, setSuggestFailed] = useState(false);
+  // Text too short to suggest for shows no suggestion, whatever the last
+  // request said; derived here rather than reset from the effect below.
+  const suggestable = text.trim().length >= 4;
+  const suggestion = suggestable ? lastSuggestion : null;
+  const suggestFailed = suggestable && lastSuggestFailed;
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Manual choices override the suggestion; undefined means "use the suggestion"
@@ -110,11 +115,7 @@ export function NotesScreen() {
   useEffect(() => {
     if (debounce.current) clearTimeout(debounce.current);
     const trimmed = text.trim();
-    if (trimmed.length < 4) {
-      setSuggestion(null);
-      setSuggestFailed(false);
-      return;
-    }
+    if (trimmed.length < 4) return;
     debounce.current = setTimeout(() => {
       suggest.mutate(trimmed, {
         onSuccess: (res) => {

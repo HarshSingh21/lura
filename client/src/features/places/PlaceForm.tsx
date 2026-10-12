@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
-import { Controller, useForm } from 'react-hook-form';
+import { Controller, useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 
 import type { Place, Point, Trigger } from '@/api/types';
@@ -118,11 +118,11 @@ export function PlaceForm({
     [initial, seedPoint, drawnCircle],
   );
 
-  const { control, handleSubmit, setError, watch, formState } = useForm<PlaceFormValues>({
+  const { control, handleSubmit, setError, formState } = useForm<PlaceFormValues>({
     defaultValues: defaults,
   });
 
-  const triggers = watch('triggers');
+  const triggers = useWatch({ control, name: 'triggers' });
   const wantsDwell = triggers.includes('dwell');
 
   // Only accepted connections can be watched (the server answers not_connected
