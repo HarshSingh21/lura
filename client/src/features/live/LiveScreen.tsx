@@ -724,16 +724,20 @@ export function LiveScreen() {
           />
         </View>
 
-        {/* attribution: a licence requirement for OSM-derived tiles */}
-        <View style={[styles.attribution, !isDesktop && styles.attributionPhone]} pointerEvents="none">
-          <Mono size={size.monoTiny} color={color.textSubtle} testID="lura-map-credit">
-            {attribution(basemap, {
-              serverStyleUrl: data?.server.mapStyleUrl,
-              provider: renderer ?? data?.server.mapProvider,
-              offline: !!offline,
-            })}
-          </Mono>
-        </View>
+        {/* attribution: a licence requirement for OSM-derived tiles. The Mappls
+            SDK draws its own logo and credit in this corner, and its terms
+            forbid covering them, so the chip stands aside while Mappls draws. */}
+        {(renderer ?? data?.server.mapProvider) === 'mappls' && !offline ? null : (
+          <View style={[styles.attribution, !isDesktop && styles.attributionPhone]} pointerEvents="none">
+            <Mono size={size.monoTiny} color={color.textSubtle} testID="lura-map-credit">
+              {attribution(basemap, {
+                serverStyleUrl: data?.server.mapStyleUrl,
+                provider: renderer ?? data?.server.mapProvider,
+                offline: !!offline,
+              })}
+            </Mono>
+          </View>
+        )}
 
         {isLoading ? (
           <View style={styles.statusOverlay} pointerEvents="none">

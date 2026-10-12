@@ -118,6 +118,21 @@ function loadMapplsSdk(key: string): Promise<MapplsGlobal> {
 
 let nextId = 0;
 
+/** The style names each key turned out to have, learned from the first map that loaded. */
+const knownStyles = new Map<string, string[]>();
+
+/**
+ * mapplsCannotDraw says, before any Mappls map is made, that this key has no
+ * style for a basemap — once a map with the key has loaded and listed them.
+ * Without it every first pick of such a basemap booted a whole Mappls map,
+ * loaded its tiles and only then handed over to MapLibre: a second of the
+ * wrong map and a flash on every switch.
+ */
+export function mapplsCannotDraw(key: string, basemap: BasemapId): boolean {
+  const names = knownStyles.get(key);
+  return !!names && basemap !== 'streets' && mapplsStyleFor(basemap, names) === undefined;
+}
+
 /** listen attaches a handler with whichever event API this SDK build exposes. */
 function listen(map: MapplsMapObject, event: string, handler: (e?: unknown) => void) {
   if (typeof map.on === 'function') map.on(event, handler);
@@ -285,6 +300,10 @@ export function MapplsWebMap(
           center: { lat: center.lat, lng: center.lon },
           zoom,
           zoomControl: false,
+          // Lura has its own map controls; the SDK's fullscreen button and
+          // scale bar landed on top of the people pill and under the zoom stack.
+          fullscreenControl: false,
+          scaleControl: false,
           location: false,
           // Rotation and tilt make a geofence circle unreadable, as on MapLibre.
           rotateControl: false,
@@ -332,6 +351,7 @@ export function MapplsWebMap(
           void styleNamesOf(mappls, live).then((names) => {
             if (cancelled) return;
             styleNames.current = names;
+            if (names.length > 0) knownStyles.set(apiKey, names);
             applyBasemap(live, basemapRef.current);
           });
         };

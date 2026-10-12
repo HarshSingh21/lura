@@ -22,7 +22,7 @@ import { absoluteFill } from './fill';
 import { FenceOverlay, fenceRing, hasPolygon, MarkerOverlay } from './Overlays';
 import { FenceEditor } from './FenceEditor';
 import { MapCanvas } from './MapCanvas';
-import { MapplsWebMap } from './MapplsMap.web';
+import { mapplsCannotDraw, MapplsWebMap } from './MapplsMap.web';
 import type { Viewport } from './projection';
 import type { BasemapId, MapFence, MapTrack, MapViewProps } from './types';
 
@@ -127,7 +127,12 @@ export function MapView(props: MapViewProps) {
   const key = props.mapplsKey;
   const basemap = props.basemap ?? 'streets';
   const mappls =
-    !props.offline && props.provider === 'mappls' && !!key && mapplsFailedFor !== key && !mapplsCannot.includes(basemap);
+    !props.offline &&
+    props.provider === 'mappls' &&
+    !!key &&
+    mapplsFailedFor !== key &&
+    !mapplsCannot.includes(basemap) &&
+    !mapplsCannotDraw(key, basemap);
   // The credit line under the map has to name whoever is actually drawing it.
   const onRenderer = props.onRenderer;
   const renderer = mappls ? 'mappls' : 'maplibre';

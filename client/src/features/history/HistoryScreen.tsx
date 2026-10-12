@@ -39,6 +39,7 @@ export function HistoryScreen() {
   const [basemap, setBasemap] = useBasemap();
   const [renderer, setRenderer] = useState<MapProvider>();
   const offline = overview?.user.airgap || overview?.server.airgap;
+  const drawnByMappls = (renderer ?? overview?.server.mapProvider) === 'mappls' && !offline;
 
   const devices = overview?.devices ?? [];
   const activeDevice = deviceId ?? devices[0]?.id;
@@ -192,17 +193,21 @@ export function HistoryScreen() {
           </Txt>
         </View>
 
-        <View style={styles.attribution} pointerEvents="none">
+        {/* While Mappls draws, its SDK credits itself in this corner (and its
+            logo must not be covered), so the box sits above it without a credit. */}
+        <View style={[styles.attribution, drawnByMappls && styles.attributionAboveMappls]} pointerEvents="none">
           <Mono size={size.monoTiny} color={color.textSubtle}>
             Private history · stored on your infrastructure
           </Mono>
-          <Mono size={size.monoTiny} color={color.textSubtle}>
-            {attribution(basemap, {
-              serverStyleUrl: overview?.server.mapStyleUrl,
-              provider: renderer ?? overview?.server.mapProvider,
-              offline: !!offline,
-            })}
-          </Mono>
+          {drawnByMappls ? null : (
+            <Mono size={size.monoTiny} color={color.textSubtle}>
+              {attribution(basemap, {
+                serverStyleUrl: overview?.server.mapStyleUrl,
+                provider: renderer ?? overview?.server.mapProvider,
+                offline: !!offline,
+              })}
+            </Mono>
+          )}
         </View>
       </View>
 
@@ -341,6 +346,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
+  attributionAboveMappls: { bottom: 34 },
   basemapPicker: { position: 'absolute', top: 16, right: 16 },
 
   rail: {
