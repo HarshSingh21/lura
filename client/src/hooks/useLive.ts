@@ -3,6 +3,8 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { connectLive } from '@/api/live';
 import { keys } from '@/api/hooks';
+import type { Position } from '@/api/types';
+import { useTrails } from '@/features/live/trails';
 import { useStore } from '@/state/store';
 
 /**
@@ -22,7 +24,16 @@ export function useLive(enabled = true) {
   useEffect(() => {
     if (!enabled) return;
 
-    const { applyPosition, applyGeoEvent, applyReminder, applyAcl, setStatus, pushToast } = useStore.getState();
+    const { applyGeoEvent, applyReminder, applyAcl, setStatus, pushToast } = useStore.getState();
+    // Every fix also lands in the trail buffer, which is what lets a marker
+    // glide, point where it is going and leave a short wake behind it.
+    const { push: pushTrail, clear: clearTrails } = useTrails.getState();
+    const applyPosition = (p: Position) => {
+      useStore.getState().applyPosition(p);
+      pushTrail(p);
+    };
+    // A different server or credential is a different stream: its trails start empty.
+    clearTrails();
 
     const conn = connectLive({
       path: '/ws',

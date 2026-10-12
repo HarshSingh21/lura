@@ -1,11 +1,15 @@
+import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import type { Device, Note, Place, Position, Share } from '@/api/types';
 import { Button, Card, Dot, EmptyState, TriggerBadge, styles as ui } from '@/components/ui/primitives';
 import { joinNames, latestFix, watchers } from '@/features/people/peer';
 import type { Peer } from '@/features/people/types';
+import type { TrackingStatus } from '@/hooks/useTracking';
 import { Mono, SectionLabel, Txt } from '@/theme/text';
-import { color, font, palette, radius, size, space } from '@/theme/tokens';
+import { color, palette, radius, size, space } from '@/theme/tokens';
+
+import { formatAge, formatSpeed, MOVING_MPS, speedOf, type TrailPoint } from './motion';
 
 /**
  * The live rail: what is sharing, who can see me, what is moving, what is about
@@ -16,6 +20,54 @@ import { color, font, palette, radius, size, space } from '@/theme/tokens';
  * people — are first and loudest on purpose: HLD §11 requires an always-on
  * indicator, not a status buried below a device list.
  */
+
+/**
+ * useNow ticks a clock for "3s ago" labels.
+ *
+ * Only the rail subscribes, so the once-a-second re-render is a handful of rows,
+ * never the map.
+ */
+export function useNow(intervalMs = 1000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
+
+/** Follow keys name a person ("user:<id>") or one of my devices ("device:<id>"). */
+export type FollowKey = `user:${string}` | `device:${string}`;
+
+/** FollowButton is the per-row "keep the camera on them" toggle. */
+function FollowButton({ on, name, onPress }: { on: boolean; name: string; onPress: () => void }) {
+  return (
+    <Pressable
+      accessibilityRole="switch"
+      accessibilityState={{ checked: on }}
+      accessibilityLabel={on ? `Stop following ${name}` : `Follow ${name} on the map`}
+      onPress={onPress}
+      hitSlop={6}
+      style={({ pressed }) => [styles.follow, on ? styles.followOn : null, pressed ? ui.pressed : null]}
+    >
+      <Mono size={size.monoTiny} medium color={on ? '#ffffff' : color.textMuted}>
+        {on ? 'FOLLOWING' : 'FOLLOW'}
+      </Mono>
+    </Pressable>
+  );
+}
+
+/**
+ * pingLine writes the live half of a row: speed or "still", how long since the
+ * last ping (ticking), and the battery when the device reported one.
+ */
+function pingLine({ speed, lastSeenMs, battery, now }: { speed: number; lastSeenMs?: number; battery?: number; now: number }): string {
+  const parts: string[] = [];
+  parts.push(speed > MOVING_MPS ? `Moving · ${formatSpeed(speed)}` : 'Still');
+  if (lastSeenMs !== undefined && Number.isFinite(lastSeenMs)) parts.push(formatAge(now - lastSeenMs));
+  if (battery !== undefined && battery > 0) parts.push(`${Math.round(battery)}% battery`);
+  return parts.join(' · ');
+}
 
 export function SharingBanner({
   shares,
@@ -88,11 +140,22 @@ export function PeopleList({
   people,
   positions,
   onManage,
+  trails = {},
+  colors = {},
+  followKey,
+  onFollow,
 }: {
   people: Peer[];
   positions: Record<string, Position>;
   onManage?: () => void;
+  /** Recent fixes per device id, for speed and ping age. */
+  trails?: Record<string, TrailPoint[]>;
+  /** Marker colour per peer user id, so a row and its marker read as one person. */
+  colors?: Record<string, string>;
+  followKey?: FollowKey;
+  onFollow?: (key: FollowKey | undefined) => void;
 }) {
+  const now = useNow();
   const seenBy = watchers(people);
   const accepted = people.filter((p) => p.status === 'accepted');
   const incoming = people.filter((p) => p.status === 'pending_in');
@@ -143,21 +206,40 @@ export function PeopleList({
         ) : (
           accepted.map((peer) => {
             const fix = peer.sharingWithMe ? latestFix(peer, positions) : undefined;
+            const trail = fix ? trails[fix.deviceId] : undefined;
+            const live = fix ? positions[fix.deviceId] : undefined;
+            const tint = colors[peer.peerId] ?? palette.amber;
+            const key: FollowKey = `user:${peer.peerId}`;
+            const following = followKey === key;
+            const name = peer.peerName || peer.peerEmail;
             return (
-              <Card key={peer.id} padded={false} style={styles.deviceCard}>
+              <Card key={peer.id} padded={false} style={[styles.deviceCard, following ? styles.cardFollowing : null]}>
                 <View style={styles.deviceRow}>
-                  <View style={[styles.deviceIcon, peer.sharingWithMe ? styles.deviceIconLive : null]}>
-                    <Dot size={9} color={peer.sharingWithMe ? palette.accent : color.neutralDot} />
+                  <View
+                    style={[styles.deviceIcon, peer.sharingWithMe ? { backgroundColor: withAlpha(tint, 0.16) } : null]}
+                  >
+                    <Dot size={9} color={peer.sharingWithMe ? tint : color.neutralDot} pulse={!!fix && isFresh(fix.lastSeen, now)} />
                   </View>
 
                   <View style={ui.flex}>
                     <Txt variant="bodySemi" numberOfLines={1}>
-                      {peer.peerName || peer.peerEmail}
+                      {name}
                     </Txt>
                     <Txt variant="micro" color={color.textSubtle} numberOfLines={1}>
-                      {describePeer(peer, fix?.moving ?? false, fix?.speedMps ?? 0, fix?.lastSeen)}
+                      {fix
+                        ? pingLine({
+                            speed: trail && trail.length > 0 ? speedOf(trail) : fix.speedMps,
+                            lastSeenMs: fix.lastSeen ? new Date(fix.lastSeen).getTime() : undefined,
+                            battery: live?.battery,
+                            now,
+                          })
+                        : describePeer(peer)}
                     </Txt>
                   </View>
+
+                  {fix && onFollow ? (
+                    <FollowButton on={following} name={name} onPress={() => onFollow(following ? undefined : key)} />
+                  ) : null}
 
                   <View style={[styles.peerTag, peer.watchingMe ? styles.peerTagOn : null]}>
                     <Mono
@@ -189,12 +271,25 @@ export function PeopleList({
   );
 }
 
-/** describePeer writes the inbound half of a peer row: what *they* let me see. */
-function describePeer(peer: Peer, moving: boolean, speed: number, lastSeen?: string): string {
+/** describePeer writes the inbound half of a peer row when there is no fix to describe. */
+function describePeer(peer: Peer): string {
   if (!peer.sharingWithMe) return 'Not sharing with you';
-  if (moving) return `Moving · ${Math.round(speed * 3.6)} km/h`;
-  if (lastSeen) return `Sharing · seen ${formatRelative(lastSeen)}`;
   return 'Sharing · no fix yet';
+}
+
+/** A ping within the last two minutes counts as live for the pulsing dot. */
+function isFresh(iso: string | undefined, now: number): boolean {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) && now - t < 120_000;
+}
+
+function withAlpha(hex: string, alpha: number): string {
+  const clean = hex.replace('#', '');
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 export function DeviceList({
@@ -202,12 +297,19 @@ export function DeviceList({
   positions,
   places,
   onSelect,
+  trails = {},
+  followKey,
+  onFollow,
 }: {
   devices: Device[];
   positions: Record<string, Position>;
   places: Place[];
   onSelect?: (id: string) => void;
+  trails?: Record<string, TrailPoint[]>;
+  followKey?: FollowKey;
+  onFollow?: (key: FollowKey | undefined) => void;
 }) {
+  const now = useNow();
   return (
     <View>
       <SectionLabel>MY DEVICES</SectionLabel>
@@ -217,14 +319,26 @@ export function DeviceList({
         ) : (
           devices.map((device) => {
             const live = positions[device.id];
-            const speed = live?.speedMps ?? device.speedMps ?? 0;
-            const moving = speed > 1;
+            const trail = trails[device.id];
+            const speed = trail && trail.length > 0 ? speedOf(trail) : (live?.speedMps ?? device.speedMps ?? 0);
+            const moving = speed > MOVING_MPS;
+            const lastSeen = live?.recvTs ?? device.lastSeen;
+            const lastSeenMs = lastSeen ? new Date(lastSeen).getTime() : undefined;
+            const key: FollowKey = `device:${device.id}`;
+            const following = followKey === key;
+            const hasFix = !!(live?.point ?? device.lastPoint);
+            const battery = live?.battery || device.battery || 0;
             const inside = (device.insidePlaces ?? [])
               .map((id) => places.find((p) => p.id === id)?.name)
               .filter(Boolean)[0];
 
             return (
-              <Card key={device.id} padded={false} style={styles.deviceCard} onPress={onSelect ? () => onSelect(device.id) : undefined}>
+              <Card
+                key={device.id}
+                padded={false}
+                style={[styles.deviceCard, following ? styles.cardFollowing : null]}
+                onPress={onSelect ? () => onSelect(device.id) : undefined}
+              >
                 <View style={styles.deviceRow}>
                   <View style={[styles.deviceIcon, moving ? styles.deviceIconLive : null]}>
                     <Dot size={9} color={moving ? palette.accent : color.neutralDot} />
@@ -235,14 +349,18 @@ export function DeviceList({
                       {device.name}
                     </Txt>
                     <Txt variant="micro" color={color.textSubtle} numberOfLines={1}>
-                      {describeDevice({ moving, speed, inside, lastSeen: live?.recvTs ?? device.lastSeen })}
+                      {describeDevice({ moving, speed, inside, lastSeenMs, now })}
                     </Txt>
                   </View>
 
-                  {device.battery ? (
+                  {battery > 0 ? (
                     <Mono size={size.monoSm} color={color.textMuted}>
-                      {device.battery}%
+                      {Math.round(battery)}%
                     </Mono>
+                  ) : null}
+
+                  {hasFix && onFollow ? (
+                    <FollowButton on={following} name={device.name} onPress={() => onFollow(following ? undefined : key)} />
                   ) : null}
                 </View>
               </Card>
@@ -254,21 +372,24 @@ export function DeviceList({
   );
 }
 
-/** describeDevice writes the "Moving · 34 km/h" / "Idle · Home" line from the mock. */
+/** describeDevice writes the "Moving · 34 km/h · 3s ago" / "Idle · Home" line from the mock. */
 function describeDevice({
   moving,
   speed,
   inside,
-  lastSeen,
+  lastSeenMs,
+  now,
 }: {
   moving: boolean;
   speed: number;
   inside?: string;
-  lastSeen?: string;
+  lastSeenMs?: number;
+  now: number;
 }): string {
-  if (moving) return `Moving · ${Math.round(speed * 3.6)} km/h`;
-  if (inside) return `Idle · ${inside}`;
-  if (lastSeen) return `Idle · seen ${formatRelative(lastSeen)}`;
+  const age = lastSeenMs !== undefined && Number.isFinite(lastSeenMs) ? ` · ${formatAge(now - lastSeenMs)}` : '';
+  if (moving) return `Moving · ${formatSpeed(speed)}${age}`;
+  if (inside) return `Idle · ${inside}${age}`;
+  if (age) return `Idle${age}`;
   return 'No fix yet';
 }
 
@@ -316,10 +437,13 @@ export function DeviceTracking({
   enabled,
   onToggle,
   deviceName,
+  status,
 }: {
   enabled: boolean;
   onToggle: () => void;
   deviceName?: string;
+  /** This device's own GPS, from useTracking. */
+  status?: TrackingStatus;
 }) {
   return (
     <Card style={styles.trackingCard}>
@@ -327,6 +451,7 @@ export function DeviceTracking({
         <Dot size={8} color={enabled ? palette.accent : color.timelineNode} pulse={enabled} />
         <Txt variant="bodySemi">{enabled ? 'Publishing this device' : 'This device is not publishing'}</Txt>
       </View>
+      {enabled ? <GpsReadout status={status} /> : null}
       <Txt variant="tiny" color={color.textMuted}>
         {enabled
           ? `Foreground fixes are being sent as ${deviceName ?? 'this device'}. They stop when you leave the app — background tracking needs the mobile build.`
@@ -340,6 +465,40 @@ export function DeviceTracking({
         style={styles.trackingButton}
       />
     </Card>
+  );
+}
+
+/**
+ * GpsReadout shows how good this device's own fix is — the number that decides
+ * how accurately everyone else sees you — and whether the latest fix was held
+ * back as too rough to send.
+ */
+function GpsReadout({ status }: { status?: TrackingStatus }) {
+  const now = useNow();
+  const acc = status?.accuracyM;
+  if (acc === undefined || !Number.isFinite(acc)) {
+    return (
+      <Mono size={size.monoXs} color={color.textFaint}>
+        GPS · waiting for a fix…
+      </Mono>
+    );
+  }
+  const quality = acc <= 20 ? 'good' : acc <= 100 ? 'fair' : 'poor';
+  const tint = quality === 'good' ? palette.accentDark : quality === 'fair' ? palette.amberDark : palette.danger;
+  const held = status?.held === 'inaccurate' ? ' · too rough to send' : '';
+  return (
+    <View style={styles.gpsRow} accessibilityLabel={`GPS accuracy plus or minus ${Math.round(acc)} metres, ${quality}`}>
+      <Dot size={6} color={tint} />
+      <Mono size={size.monoXs} color={tint}>
+        GPS ±{Math.round(acc)} m · {quality}
+        {held}
+      </Mono>
+      {status?.lastSentAt ? (
+        <Mono size={size.monoXs} color={color.textFaint}>
+          sent {formatAge(now - status.lastSentAt)}
+        </Mono>
+      ) : null}
+    </View>
   );
 }
 
@@ -424,6 +583,16 @@ const styles = StyleSheet.create({
   reminderHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 },
 
   trackingCard: { gap: 6 },
+  gpsRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  follow: {
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: color.border,
+    paddingVertical: 4,
+    paddingHorizontal: 7,
+  },
+  followOn: { backgroundColor: palette.accentDark, borderColor: palette.accentDark },
+  cardFollowing: { borderColor: palette.accent },
   trackingHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   trackingButton: { marginTop: 6 },
 });
