@@ -163,17 +163,24 @@ LURA_OIDC_AUDIENCE=lura-api \
 LURA_WEB_DIR=./client/dist go run ./cmd/lura
 ```
 
-The realm ships two accounts: `aravind@lura.local` / `lura-dev-1` and
-`nistha@lura.local` / `lura-dev-2`.
+The realm ships four accounts: `aravind@lura.local` / `lura-dev-1` and
+`nistha@lura.local` / `lura-dev-2`, and the two people of the release scenario,
+`harsh@lura.local` / `lura-harsh` and `nishtha@lura.local` / `lura-nishtha`
+(§3b). A Keycloak container started before Harsh and Nishtha were added does not
+have them: the realm file is only imported on first start —
+[`deploy/keycloak/README.md`](../deploy/keycloak/README.md#changing-a-running-realm)
+has the `kcadm` commands to add them to a running realm.
 
 Open <http://localhost:8080> and it redirects to the sign-in screen; **Continue
 with email** hands off to Keycloak's own page, and coming back runs the
 introduction once. The account is created on the first authenticated request, so
 there is nothing to register.
 
-To see both sides at once, open the second account in a **separate browser
-profile** — not a private window: the two share a Keycloak SSO cookie and you
-would end up signed in as the same person twice.
+To see both sides at once, sign the second account in where it cannot see the
+first one's cookies: a **private / Incognito window** next to a normal one, or a
+**separate browser profile**. Two windows of the same profile — or two private
+windows of the same browser, which share one private session — share a Keycloak
+SSO cookie, and you would end up signed in as the same person twice.
 
 1. As Aravind: **People → Their email →** `nistha@lura.local` → **Send invite**.
 2. As Nistha: **People →** the invitation is at the top → **Accept**.
@@ -181,6 +188,74 @@ would end up signed in as the same person twice.
    person as an amber marker, with "1 person can see you" in the rail.
 4. Turn off Nistha's **You → Aravind** switch: Aravind's marker for her stops
    updating on the open socket, without either of them reloading.
+
+### 3b. Two people tracking each other: Harsh and Nishtha
+
+The release scenario by hand. Bring the server up as in §3a, with a short
+cool-off so the same fence can fire again while you experiment:
+
+```bash
+LURA_OIDC_ISSUER=http://localhost:8085/realms/lura LURA_OIDC_AUDIENCE=lura-api \
+LURA_COOLOFF=15s LURA_WEB_DIR=./client/dist go run ./cmd/lura
+```
+
+1. **Window A** (normal): <http://localhost:8080>, sign in as `harsh@lura.local`
+   / `lura-harsh`. **Window B** (Incognito, or another profile):
+   `nishtha@lura.local` / `lura-nishtha`.
+2. Connect them: as Harsh, **People → Their email →** `nishtha@lura.local` →
+   **Send invite**; as Nishtha, **Accept**.
+3. Harsh publishes from the browser: **Live map → Publish my location**, and allow
+   location. On its first fix the browser registers a device of its own and keeps
+   publishing on every screen, not only the map.
+4. Nishtha is driven by the simulator. As Nishtha, **Settings → Add a device**
+   → **Add**, and copy the ingest token (it is shown once) and the device id. Then
+   walk her past a grocery in Indiranagar and back, stopping a minute at the shop:
+
+   ```bash
+   go run ./cmd/lurasim -token <Nishtha's device token> -device <device id> \
+     -route "12.9712,77.6402;12.9730,77.6420,60;12.9752,77.6442;12.9712,77.6465" \
+     -interval 700ms -scale 4 -jitter 3 -loops 0
+   ```
+
+   `-route` is `lat,lon[,dwellSeconds];…`. A device token names its own device,
+   so `-device` only matters with the static API token. Each window now shows
+   the other person in their own colour, gliding between fixes with a trail;
+   **Follow** on a person in the rail keeps the camera on them.
+5. As Harsh: **Draw → Polygon** around the shop (around `12.9730,77.6420`), tap
+   the first corner or **Done**, name it "Grocery" and pick Nishtha under
+   **Watch people**. Then on **Notes**, write "buy milk", **Where** Grocery, **When**
+   Arrive, **Whose movement** Nishtha, **Notify** Me and Nishtha.
+6. When the simulator reaches the shop, both windows get one toast, one badge in
+   the notification centre and one chime: Harsh reads "Nishtha arrived at
+   Grocery", Nishtha reads the note from Harsh. Drag the fence elsewhere and the
+   next fix is judged against where it is now.
+7. Privacy: as Nishtha, turn off **You → Harsh** on People. Her marker stops
+   updating in Harsh's window and the fence no longer fires for her; turning it
+   back on resumes both. **Remove for both** ends it and takes her off Harsh's
+   watch and recipient lists.
+
+`e2e/run.sh` plays exactly this with assertions; see the README's *End-to-end
+test*.
+
+### 3c. Mappls on your machine: the `lura.com` name
+
+A Mappls web key is validated against the page's domain, and Mappls will not
+whitelist `localhost` ([`docs/mappls.md`](mappls.md)). The realm accepts
+`http://lura.com:8080` for exactly this, so point the name at your machine:
+
+```bash
+echo '127.0.0.1 lura.com' | sudo tee -a /etc/hosts
+LURA_MAP_PROVIDER=mappls LURA_MAPPLS_WEB_KEY=<key whitelisted for lura.com> \
+LURA_OIDC_ISSUER=http://localhost:8085/realms/lura LURA_OIDC_AUDIENCE=lura-api \
+LURA_WEB_DIR=./client/dist go run ./cmd/lura
+```
+
+and open <http://lura.com:8080>. Keycloak itself stays at `localhost:8085`, so
+its SSO cookie is shared between a `localhost` and a `lura.com` window of the same
+profile — use a private window or another profile for the second person, as
+above. Chrome only offers geolocation to secure origins, and
+`http://localhost` is one while `http://lura.com` is not: publish the browser's
+own location from a `localhost` window, or drive that person with `lurasim`.
 
 ### What to try in the UI
 
