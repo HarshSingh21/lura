@@ -145,13 +145,20 @@ export function MapView(props: MapViewProps) {
   return <MapLibreWebMap {...props} />;
 }
 
+// Stable empties: the Live map passes no tracks, and a fresh `[]` default per
+// render re-ran the GL source effect below on every render — two setData calls
+// and a worker re-parse on each camera move frame, since every `move` re-renders.
+const NO_FENCES: MapFence[] = [];
+const NO_MARKERS: NonNullable<MapViewProps['markers']> = [];
+const NO_TRACKS: MapTrack[] = [];
+
 function MapLibreWebMap(props: MapViewProps) {
   const {
     center,
     zoom = 14,
-    fences = [],
-    markers = [],
-    tracks = [],
+    fences = NO_FENCES,
+    markers = NO_MARKERS,
+    tracks = NO_TRACKS,
     styleUrl,
     basemap,
     offline,
