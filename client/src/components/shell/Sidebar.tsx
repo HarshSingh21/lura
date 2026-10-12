@@ -98,6 +98,7 @@ function NavRow({
         // whose name changes every time a device or note is added cannot be found.
         accessibilityLabel={item.label}
         aria-selected={active}
+        accessibilityState={{ selected: active }}
         onPress={() => router.push(item.href)}
         style={({ pressed }) => [
           styles.navRow,

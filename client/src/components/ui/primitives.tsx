@@ -346,6 +346,9 @@ export function Toggle({
     <Pressable
       accessibilityRole="switch"
       accessibilityState={{ checked: value }}
+      // react-native-web 0.21 ignores accessibilityState, so without aria-checked
+      // a screen reader (and the web) cannot tell whether a sharing switch is on.
+      aria-checked={value}
       accessibilityLabel={accessibilityLabel ?? label}
       onPress={() => onChange(!value)}
       style={styles.toggleRow}

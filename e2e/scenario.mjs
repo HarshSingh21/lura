@@ -1166,13 +1166,64 @@ try {
   });
 
   // ---------------------------------------------------------------- 8
+  // The cool-off the engine applies between two firings of one fence (run.sh
+  // shortens it to 15 s). A privacy check that crosses a fence inside it would
+  // pass even if the gate leaked, so each crossing below waits it out first.
+  const COOLOFF_MS = Number(process.env.E2E_COOLOFF_MS ?? 16000);
+  const waitCooloff = async (since) => {
+    const wait = COOLOFF_MS - (Date.now() - (since ?? 0));
+    if (wait > 0) await sleep(wait);
+  };
+
+  /**
+   * wireSocket opens the live socket as a person straight from Node, outside the
+   * browser, so what the server is willing to send is checked on its own rather
+   * than through whatever the app chooses to draw.
+   */
+  async function wireSocket(person) {
+    const base = (process.env.E2E_API ?? 'http://localhost:8080').replace(/^http/, 'ws');
+    const ws = new WebSocket(`${base}/ws?access_token=${encodeURIComponent(await person.token())}`);
+    const frames = [];
+    ws.addEventListener('message', (ev) => {
+      try {
+        const f = JSON.parse(ev.data);
+        frames.push({ wall: Date.now(), type: f.type, data: f.data });
+      } catch {
+        // not a frame
+      }
+    });
+    await new Promise((resolve, reject) => {
+      ws.addEventListener('open', resolve, { once: true });
+      ws.addEventListener('error', () => reject(new Error(`${person.name}: the live socket did not open`)), { once: true });
+    });
+    return { frames, since: (t) => frames.filter((f) => f.wall >= t), close: () => ws.close() };
+  }
+
+  /** aboutPeer is what in a set of wire frames concerns this peer's device or a fence watching them. */
+  const aboutPeer = (frames, deviceId, peerId) =>
+    frames.filter(
+      (f) =>
+        (f.type === 'position' && f.data?.deviceId === deviceId) ||
+        (f.type === 'geo' && f.data?.subjectUserId === peerId) ||
+        f.type === 'notify',
+    );
+
+  /** pathsWith lists the JSON paths in a value whose string contains needle. */
+  const pathsWith = (v, needle, at = '$') => {
+    if (typeof v === 'string') return v.includes(needle) ? [at] : [];
+    if (Array.isArray(v)) return v.flatMap((x, i) => pathsWith(x, needle, `${at}[${i}]`));
+    if (v && typeof v === 'object') return Object.entries(v).flatMap(([k, x]) => pathsWith(x, needle, `${at}.${k}`));
+    return [];
+  };
+
+  const eventCount = async (person) => (await person.api('GET', '/api/v1/events?limit=500')).events.length;
+
   await step('8', 'Pause stops positions and the watched fence; resume restores; remove ends it', async () => {
     const nMarker = `peer_${facts.nDevice.id}`;
     const hMarker = `peer_${facts.hDevice.id}`;
-    // The engine's cool-off (shortened for this run) must have passed so a
-    // second crossing is allowed to fire at all.
-    const wait = Number(process.env.E2E_COOLOFF_MS ?? 16000) - (Date.now() - facts.lastFireWall);
-    if (wait > 0) await sleep(wait);
+    // A second crossing of Grocery is only allowed to fire once the cool-off
+    // since step 6's has passed (no wait when step 6 did not run).
+    await waitCooloff(facts.lastFireWall);
 
     // ---- pause
     await nishtha.nav('People');
@@ -1182,12 +1233,15 @@ try {
     await toggle.click();
     check((await paused).ok(), 'pausing failed');
     const tPause = await pageNow(harsh);
+    await waitFor('Nishtha’s switch to read off', async () => (await toggle.getAttribute('aria-checked')) === 'false', { timeout: 5000 });
     await waitFor('Harsh’s People row to say Nishtha stopped sharing', async () => {
       const { people: rows } = await harsh.api('GET', '/api/v1/people');
       return rows.find((r) => r.peerId === nishtha.id)?.sharingWithMe === false;
     });
     await waitFor('Nishtha’s marker to leave Harsh’s map', async () => !(await harsh.marker(nMarker)), { timeout: 8000 });
     const tGone = await pageNow(harsh);
+    const wireP = await wireSocket(harsh);
+    const eventsP = await eventCount(harsh);
     const pausedRun = sim(facts.nDevice, crossing(4), { interval: '700ms', scale: 4 });
     await pausedRun.done;
     await sleep(2000);
@@ -1197,17 +1251,30 @@ try {
     );
     check(leaked.length === 0, `Harsh still received ${leaked.length} frames about Nishtha while paused: ${JSON.stringify(leaked.slice(0, 3))}`);
     check(since(recH.toasts, tPause).length === 0, 'Harsh got a toast while Nishtha was paused');
+    const wireLeakP = aboutPeer(wireP.frames, facts.nDevice.id, nishtha.id);
+    wireP.close();
+    check(wireLeakP.length === 0, `the server sent Harsh ${wireLeakP.length} frames about Nishtha while paused: ${JSON.stringify(wireLeakP.slice(0, 3))}`);
+    check((await eventCount(harsh)) === eventsP, 'a Grocery event was recorded for Harsh while Nishtha was paused');
+    const rowP = (await harsh.api('GET', '/api/v1/people')).people.find((r) => r.peerId === nishtha.id);
+    check(rowP && (rowP.devices ?? []).length === 0, `Harsh's People row still carries Nishtha's devices while paused: ${JSON.stringify(rowP)}`);
+    // His "buy milk" note watches her, so it cannot fire now, and the rail says so.
+    await waitFor('Harsh’s rail to put the "buy milk" note on hold', async () =>
+      (await harsh.page.innerText('body')).includes('On hold · Nishtha paused sharing with you'), { timeout: 8000 });
     const pausedShot = [await harsh.shot(OUT, '08-paused-harsh'), await nishtha.shot(OUT, '08-paused-nishtha')];
 
     // ---- resume
     const resumed = nishtha.page.waitForResponse((r) => r.url().includes('/api/v1/people/') && r.request().method() === 'PATCH');
     await toggle.click();
     check((await resumed).ok(), 'resuming failed');
+    await waitFor('Nishtha’s switch to read on', async () => (await toggle.getAttribute('aria-checked')) === 'true', { timeout: 5000 });
     const tResume = await pageNow(harsh);
-    await sleep(Math.max(0, Number(process.env.E2E_COOLOFF_MS ?? 16000) - 9000));
+    // The paused crossing fired nothing, so there is no cool-off to wait out;
+    // this only keeps the resumed crossing apart from the paused one.
+    await sleep(Math.max(0, COOLOFF_MS - 9000));
     const resumedRun = sim(facts.nDevice, crossing(4), { interval: '700ms', scale: 4 });
     await waitFor('Nishtha’s marker back on Harsh’s map', () => harsh.marker(nMarker), { timeout: 15000 });
     await resumedRun.done;
+    const wResumedFire = Date.now();
     await sleep(2500);
     recH = await harsh.record();
     const back = since(recH.frames, tResume);
@@ -1223,29 +1290,79 @@ try {
     const removed = harsh.page.waitForResponse((r) => r.url().includes('/api/v1/people/') && r.request().method() === 'DELETE');
     await harsh.page.getByRole('button', { name: /^Remove Nishtha .* for both of you/ }).click();
     check((await removed).ok(), 'removing failed');
+    const wRemove = Date.now();
     for (const p of people) {
       await waitFor(`${p.name}’s people list to be empty`, async () => (await p.api('GET', '/api/v1/people')).people.length === 0);
     }
+    await nishtha.nav('People');
+    await waitFor('Nishtha’s People screen to drop Harsh', async () => !(await nishtha.page.innerText('body')).includes('harsh@lura.local'), { timeout: 10000 });
+    await waitFor('the People screens to say nothing flows either way', async () => {
+      const [h, n] = [await harsh.page.innerText('body'), await nishtha.page.innerText('body')];
+      return [h, n].every((t) => t.includes('Your live position is not going to anyone.') && t.includes('No one is sending you their live position.'));
+    }, { timeout: 8000 });
+    const peopleShot = [await harsh.shot(OUT, '08-removed-people-harsh'), await nishtha.shot(OUT, '08-removed-people-nishtha')];
     await harsh.nav('Live map');
     await nishtha.nav('Live map');
     const tRemoved = { h: await pageNow(harsh), n: await pageNow(nishtha) };
+    await waitFor('Harsh’s rail to say the note’s person is gone', async () =>
+      (await harsh.page.innerText('body')).includes('On hold · the person it watches is no longer connected'), { timeout: 8000 });
     await waitFor('both markers to be gone', async () => !(await harsh.marker(nMarker)) && !(await nishtha.marker(hMarker)), { timeout: 10000 });
-    const afterRun = sim(facts.nDevice, [NISHTHA_START, { lat: 12.9695, lon: 77.6365 }], { interval: '500ms', scale: 4 });
+    // Harsh's Grocery still lists Nishtha as watched and his "buy milk" note is
+    // still bound to her: crossing it again must reach no one, once the cool-off
+    // that would hide a leak has passed.
+    await waitCooloff(wResumedFire);
+    const wireH = await wireSocket(harsh);
+    const wireN = await wireSocket(nishtha);
+    const wRemoved = Date.now();
+    const eventsR = await eventCount(harsh);
+    const afterRun = sim(facts.nDevice, crossing(4), { interval: '700ms', scale: 4 });
     const harshWalk = gpsWalk(harsh, [{ lat: 12.9795, lon: 77.6425 }, { lat: 12.9798, lon: 77.643 }, { lat: 12.98, lon: 77.6436 }], 2300);
     await Promise.all([afterRun.done, harshWalk]);
-    await sleep(1500);
+    await sleep(2500);
     recH = await harsh.record();
     const recN = await nishtha.record();
     const toH = since(recH.frames, tRemoved.h + 1000).filter((f) => f.type === 'position' && f.deviceId === facts.nDevice.id);
     const toN = since(recN.frames, tRemoved.n + 1000).filter((f) => f.type === 'position' && f.deviceId === facts.hDevice.id);
+    const alertsH = since(recH.frames, tRemoved.h).filter((f) => f.type === 'geo' || f.type === 'notify');
+    const alertsN = since(recN.frames, tRemoved.n).filter((f) => f.type === 'geo' || f.type === 'notify');
     check(toH.length === 0 && toN.length === 0, `after removal Harsh got ${toH.length} and Nishtha ${toN.length} of the other's positions`);
+    check(alertsH.length === 0 && alertsN.length === 0, `after removal Harsh got ${alertsH.length} and Nishtha ${alertsN.length} alerts: ${JSON.stringify([...alertsH, ...alertsN].slice(0, 3))}`);
+    check(since(recH.toasts, tRemoved.h).length === 0 && since(recN.toasts, tRemoved.n).length === 0, 'a toast appeared after removal');
     check(!(await harsh.marker(nMarker)) && !(await nishtha.marker(hMarker)), 'a marker came back after removal');
+    // On the wire, outside either app.
+    const wireToH = aboutPeer(wireH.since(wRemoved), facts.nDevice.id, nishtha.id);
+    const wireToN = aboutPeer(wireN.since(wRemoved), facts.hDevice.id, harsh.id);
+    const ownN = wireN.since(wRemoved).filter((f) => f.type === 'position' && f.data?.deviceId === facts.nDevice.id).length;
+    wireH.close();
+    wireN.close();
+    check(ownN > 0, 'the wire check saw none of Nishtha’s own fixes, so it proves nothing');
+    check(wireToH.length === 0 && wireToN.length === 0, `after removal the server sent Harsh ${wireToH.length} and Nishtha ${wireToN.length} frames about the other: ${JSON.stringify([...wireToH, ...wireToN].slice(0, 3))}`);
+    check((await eventCount(harsh)) === eventsR, 'a Grocery event was recorded for Harsh after removal');
+    // And over REST: none of her devices or history are his to read.
+    const ov = await harsh.api('GET', '/api/v1/overview');
+    // His own log of the alerts he was sent while she shared stays his (each
+    // names her device by id, nothing more); anything else naming her device —
+    // a device, a peer row, a pending dwell, a newer event — is a leak.
+    const ovHits = pathsWith(ov, facts.nDevice.id);
+    const historic = ovHits.filter((h) => {
+      const m = /^\$\.events\[(\d+)\]\.deviceId$/.exec(h);
+      return m && new Date(ov.events[Number(m[1])].ts).getTime() < wRemove;
+    });
+    const ovLeak = ovHits.filter((h) => !historic.includes(h));
+    check(ovLeak.length === 0, `Harsh’s overview still mentions Nishtha’s device at ${ovLeak.slice(0, 5).join(', ')}`);
+    const rest = [];
+    for (const path of [`/api/v1/devices/${facts.nDevice.id}`, `/api/v1/history?deviceId=${facts.nDevice.id}`]) {
+      const res = await harsh.api('GET', path).then((body) => ({ ok: true, body }), (err) => ({ ok: false, err: String(err.message) }));
+      const leak = res.ok && JSON.stringify(res.body).includes(facts.nDevice.id) && /"lat"/.test(JSON.stringify(res.body));
+      rest.push({ path: path.replace(facts.nDevice.id, '<her device>'), status: res.ok ? 'ok' : res.err.replace(/^.*→ /, '').slice(0, 40), leak });
+      check(!leak, `Harsh can still read Nishtha's data at ${path}: ${JSON.stringify(res.body ?? null).slice(0, 300)}`);
+    }
     return {
       pausedMarkerGoneMs: Math.round(tGone - tPause),
-      leakedWhilePaused: leaked.length,
+      leakedWhilePaused: { app: leaked.length, wire: wireLeakP.length },
       resumedEvents: resumedGeo,
-      afterRemoval: { toHarsh: toH.length, toNishtha: toN.length },
-      shots: [...pausedShot, resumedShot, await harsh.shot(OUT, '08-removed-harsh'), await nishtha.shot(OUT, '08-removed-nishtha')],
+      afterRemoval: { toHarsh: toH.length, toNishtha: toN.length, alerts: alertsH.length + alertsN.length, wire: wireToH.length + wireToN.length, nishthaOwnFixes: ownN, overviewHistoricEvents: historic.length, rest },
+      shots: [...pausedShot, resumedShot, ...peopleShot, await harsh.shot(OUT, '08-removed-harsh'), await nishtha.shot(OUT, '08-removed-nishtha')],
     };
   });
 

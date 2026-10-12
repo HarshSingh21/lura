@@ -544,7 +544,7 @@ export function LiveScreen() {
           setSheetOpen(false);
         }}
       />
-      <UpcomingReminders notes={data?.notes ?? []} places={places} />
+      <UpcomingReminders notes={data?.notes ?? []} places={places} people={people} />
     </View>
   );
 
