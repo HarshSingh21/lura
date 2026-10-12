@@ -27,6 +27,7 @@ import { useGpsStatus } from '@/hooks/usePublishing';
 import { colorForUser, fixTimeMs, formatAge, formatSpeed, glideMsFor, headingFor, isStale, MOVING_MPS, speedOf, type TrailPoint } from './motion';
 import { DeviceList, DeviceTracking, PeopleList, SharingBanner, UpcomingReminders, useNow, type FollowKey } from './rail';
 import { useTrails } from './trails';
+import { bannerSlot, pushDown } from './bannerSlot';
 
 /** A ping older than this no longer pulses: the person may have gone offline. */
 const LIVE_PULSE_MS = 120_000;
@@ -122,6 +123,10 @@ export function LiveScreen() {
   // a set of markers is a question about pixels, and the zoom level alone cannot
   // answer it.
   const [box, setBox] = useState<Box>({ width: 0, height: 0 });
+  // The action row's and the live banner's laid-out sizes, so the banner can
+  // find a place that covers neither the row nor what opens under it.
+  const [actionsBox, setActionsBox] = useState<Box>({ width: 0, height: 0 });
+  const [bannerHeight, setBannerHeight] = useState(0);
   // The geofence editor: a draw mode, or an existing (or just-drawn) fence
   // being moved and reshaped. `draft` is a drawn shape waiting for its form.
   const [fenceEdit, setFenceEdit] = useState<FenceEditState | null>(null);
@@ -593,6 +598,13 @@ export function LiveScreen() {
     </View>
   );
 
+  // The live banner's place on the map (bannerSlot.ts), and how far what opens
+  // under the action row moves to make room when the banner sits there.
+  const bannerShown = liveStatus === 'offline' || liveStatus === 'reconnecting';
+  const bannerAt = bannerShown ? bannerSlot(box.width, actionsBox) : null;
+  const shift = pushDown(bannerAt, bannerHeight);
+  const belowBanner = shift > 0 ? { transform: [{ translateY: shift }] } : null;
+
   return (
     <View style={styles.root}>
       <View style={styles.mapWrap}>
@@ -619,7 +631,14 @@ export function LiveScreen() {
         />
 
         {/* top-left actions */}
-        <View style={styles.topActions} pointerEvents="box-none">
+        <View
+          style={styles.topActions}
+          pointerEvents="box-none"
+          onLayout={(e) => {
+            const { width, height } = e.nativeEvent.layout;
+            setActionsBox((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+          }}
+        >
           {fenceEdit ? (
             <>
               <View style={styles.editPill}>
@@ -664,7 +683,7 @@ export function LiveScreen() {
         </View>
 
         {followed && followName ? (
-          <View style={[styles.followChip, (drawMenu || fenceEdit || selectedPlace) ? styles.followChipLow : null]}>
+          <View style={[styles.followChip, (drawMenu || fenceEdit || selectedPlace) ? styles.followChipLow : null, belowBanner]}>
             <Dot size={8} color={followed.color ?? palette.accent} pulse />
             <Txt variant="small" color={color.textBody}>
               Following <Txt variant="bodySemi">{followName}</Txt>
@@ -682,7 +701,7 @@ export function LiveScreen() {
         ) : null}
 
         {drawMenu && !fenceEdit ? (
-          <View style={styles.drawMenu} accessibilityRole="menu">
+          <View style={[styles.drawMenu, belowBanner]} accessibilityRole="menu">
             <Txt variant="micro" color={color.textFaint}>
               Draw a geofence as a
             </Txt>
@@ -707,7 +726,7 @@ export function LiveScreen() {
         ) : null}
 
         {selectedPlace && !fenceEdit && !drawMenu ? (
-          <View style={styles.placeCard}>
+          <View style={[styles.placeCard, belowBanner]}>
             <View style={styles.placeCardText}>
               <Txt variant="bodySemi" numberOfLines={1}>
                 {selectedPlace.name}
@@ -771,8 +790,21 @@ export function LiveScreen() {
 
         {/* The map keeps drawing what it last heard while the socket is down;
             without saying so, a frozen map reads as everyone standing still. */}
-        {liveStatus === 'offline' || liveStatus === 'reconnecting' ? (
-          <View style={styles.liveBanner} testID="lura-live-banner" accessibilityRole="alert" pointerEvents="none">
+        {bannerShown ? (
+          <View
+            style={[
+              styles.liveBanner,
+              bannerAt?.kind === 'beside'
+                ? { top: bannerAt.top, right: bannerAt.right, width: bannerAt.width }
+                : bannerAt
+                  ? { top: bannerAt.top, left: bannerAt.left, right: bannerAt.right }
+                  : null,
+            ]}
+            testID="lura-live-banner"
+            accessibilityRole="alert"
+            pointerEvents="none"
+            onLayout={(e) => setBannerHeight(Math.round(e.nativeEvent.layout.height))}
+          >
             <Dot size={8} color={liveStatus === 'offline' ? color.neutralDot : palette.amberDot} blink />
             <View style={styles.liveBannerText}>
               <Txt variant="bodySemi" color={palette.amberInk}>
@@ -1053,9 +1085,6 @@ const styles = StyleSheet.create({
 
   liveBanner: {
     position: 'absolute',
-    top: 16,
-    alignSelf: 'center',
-    maxWidth: 440,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
