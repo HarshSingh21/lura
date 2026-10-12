@@ -148,7 +148,8 @@ export function LiveScreen() {
           // The mock labels a pass-by fence with the trigger and everything else
           // with its radius — the radius matters when you are tuning a fence, the
           // trigger matters when you are wondering why it fired.
-          badge: passby ? 'pass-by' : `${place.radiusM}m`,
+          // A polygon's radius is only its bounding circle, which would mislead.
+          badge: passby ? 'pass-by' : place.shape === 'polygon' ? 'area' : `${place.radiusM}m`,
           tone: passby ? 'amber' : 'accent',
           dashed: passby,
           selected: place.id === selectedPlaceId,

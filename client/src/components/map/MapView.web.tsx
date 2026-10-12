@@ -418,7 +418,8 @@ function installLayers(map: MapLibreMap, dark: boolean) {
         source: FENCE_SOURCE,
         paint: {
           'fill-color': ['coalesce', ['get', 'color'], palette.accent],
-          'fill-opacity': 0.1,
+          // Strong enough to read over satellite imagery, faint enough for streets.
+          'fill-opacity': 0.14,
         },
       },
       TRACK_LINE,
@@ -432,8 +433,8 @@ function installLayers(map: MapLibreMap, dark: boolean) {
         source: FENCE_SOURCE,
         paint: {
           'line-color': ['coalesce', ['get', 'color'], palette.accent],
-          'line-width': ['case', ['==', ['get', 'selected'], true], 2.5, 1.5],
-          'line-opacity': 0.55,
+          'line-width': ['case', ['==', ['get', 'selected'], true], 3, 2],
+          'line-opacity': 0.85,
           'line-dasharray': ['case', ['==', ['get', 'dashed'], true], ['literal', [2, 2]], ['literal', [1, 0]]],
         },
       },

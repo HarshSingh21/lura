@@ -125,7 +125,9 @@ export function FenceOverlay({
 
 /**
  * PolygonFence draws one polygon fence in screen space: the shape itself when
- * the renderer has no GL layer for it, and a label pill at its centroid.
+ * the renderer has no GL layer for it, and a label pill centred on its centroid
+ * just above its top edge — where a circle's label sits, and clear of the marker
+ * of whoever is standing inside it.
  */
 function PolygonFence({
   fence,
@@ -170,10 +172,10 @@ function PolygonFence({
             <Polygon
               points={pts.map((p) => `${(p.x - minX + pad).toFixed(1)},${(p.y - minY + pad).toFixed(1)}`).join(' ')}
               fill={stroke}
-              fillOpacity={fence.tone === 'amber' ? 0.12 : 0.1}
+              fillOpacity={fence.tone === 'amber' ? 0.16 : 0.14}
               stroke={stroke}
-              strokeOpacity={fence.selected ? 0.85 : 0.55}
-              strokeWidth={fence.selected ? 2 : 1.5}
+              strokeOpacity={fence.selected ? 0.95 : 0.85}
+              strokeWidth={fence.selected ? 3 : 2}
               strokeDasharray={fence.dashed ? '6 5' : undefined}
               strokeLinejoin="round"
             />
@@ -181,7 +183,7 @@ function PolygonFence({
         </View>
       ) : null}
       {fence.name ? (
-        <FenceLabel fence={fence} left={c.x} top={c.y - 13} onPress={onPress ? () => onPress(fence.id) : undefined} />
+        <FenceLabel fence={fence} left={c.x} top={minY - 30} onPress={onPress ? () => onPress(fence.id) : undefined} />
       ) : null}
     </View>
   );
@@ -544,8 +546,8 @@ const styles = StyleSheet.create({
   fenceLabel: {
     position: 'absolute',
     // Centre the pill on the fence without measuring it.
-    transform: [{ translateX: -60 }],
-    width: 120,
+    transform: [{ translateX: -90 }],
+    width: 180,
     alignItems: 'center',
   },
   fenceLabelInner: {

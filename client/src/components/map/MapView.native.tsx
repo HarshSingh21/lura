@@ -198,11 +198,11 @@ function NativeMap(props: MapViewProps) {
               : undefined
           }
         >
-          <Layer id="lura-fence-fill" type="fill" paint={{ 'fill-color': ['get', 'color'], 'fill-opacity': 0.1 }} />
+          <Layer id="lura-fence-fill" type="fill" paint={{ 'fill-color': ['get', 'color'], 'fill-opacity': 0.14 }} />
           <Layer
             id="lura-fence-line"
             type="line"
-            paint={{ 'line-color': ['get', 'color'], 'line-width': 1.5, 'line-opacity': 0.55 }}
+            paint={{ 'line-color': ['get', 'color'], 'line-width': 2, 'line-opacity': 0.85 }}
           />
         </GeoJSONSource>
 
