@@ -6,7 +6,7 @@ import { color } from '@/theme/tokens';
 
 import { mapplsStyleFor, mapplsStyleNames, onDarkGround } from './basemaps';
 import { absoluteFill } from './fill';
-import { FenceOverlay, MarkerOverlay, TrackOverlay } from './Overlays';
+import { FenceOverlay, MarkerOverlay, polygonFenceAt, TrackOverlay } from './Overlays';
 import { FenceEditor } from './FenceEditor';
 import { describeFailure, isFatalMapplsError } from './mapplsErrors';
 import type { Viewport } from './projection';
@@ -224,6 +224,7 @@ export function MapplsWebMap(
   // Held in refs so a new callback does not tear down the map.
   const viewportListener = useRef(onViewportChange);
   const pressListener = useRef(onPressMap);
+  const fencePress = useRef({ fences, onPressFence });
   const failListener = useRef(onFail);
   const unsupportedListener = useRef(onBasemapUnsupported);
   const basemapRef = useRef(basemap);
@@ -233,6 +234,7 @@ export function MapplsWebMap(
   useEffect(() => {
     viewportListener.current = onViewportChange;
     pressListener.current = onPressMap;
+    fencePress.current = { fences, onPressFence };
     failListener.current = onFail;
     unsupportedListener.current = onBasemapUnsupported;
     basemapRef.current = basemap;
@@ -385,7 +387,14 @@ export function MapplsWebMap(
         });
         listen(live, 'click', (event) => {
           const lngLat = (event as { lngLat?: { lat: number; lng: number } } | undefined)?.lngLat;
-          if (lngLat && pressListener.current) pressListener.current({ lat: lngLat.lat, lon: lngLat.lng });
+          if (!lngLat) return;
+          const point = { lat: lngLat.lat, lon: lngLat.lng };
+          // Polygons are drawn in screen space here with no tap target of their
+          // own, so a tap inside one selects it, as the GL fill does on MapLibre.
+          const { fences: drawn, onPressFence: pressFence } = fencePress.current;
+          const hit = pressFence ? polygonFenceAt(drawn, point) : undefined;
+          if (hit && pressFence) pressFence(hit.id);
+          if (pressListener.current) pressListener.current(point);
         });
         // Auth and style failures are fatal; a single missing tile is not. A map
         // whose tiles keep failing without ever settling is, though — that is a

@@ -6,7 +6,7 @@ import { color } from '@/theme/tokens';
 
 import { absoluteFill } from './fill';
 
-import { FenceOverlay, MarkerOverlay, TrackOverlay } from './Overlays';
+import { FenceOverlay, MarkerOverlay, polygonFenceAt, TrackOverlay } from './Overlays';
 import { FenceEditor } from './FenceEditor';
 import { unproject, type Viewport } from './projection';
 import type { MapViewProps } from './types';
@@ -59,10 +59,14 @@ export function MapCanvas(props: MapViewProps) {
     <Pressable
       onLayout={onLayout}
       onPress={
-        onPressMap
+        onPressMap || props.onPressFence
           ? (event) => {
               const { locationX, locationY } = event.nativeEvent;
-              onPressMap(unproject(locationX, locationY, view));
+              const point = unproject(locationX, locationY, view);
+              // Polygons are screen-space drawings with no tap target of their own.
+              const hit = props.onPressFence ? polygonFenceAt(fences ?? [], point) : undefined;
+              if (hit) props.onPressFence?.(hit.id);
+              onPressMap?.(point);
             }
           : undefined
       }

@@ -7,6 +7,7 @@ import { color, palette, radius, shadow, size } from '@/theme/tokens';
 
 import { Dot } from '@/components/ui/primitives';
 import { absoluteFill } from './fill';
+import { pointInPolygon } from './geometry';
 import { circlePolygon, metresPerPixel, project, type Viewport } from './projection';
 import type { MapFence, MapMarker, MapTone, MapTrack } from './types';
 
@@ -34,6 +35,20 @@ export function toneColor(tone: MapTone | undefined, dark: boolean): string {
 /** hasPolygon is the one test every renderer uses to choose polygon over circle. */
 export function hasPolygon(fence: MapFence): fence is MapFence & { polygon: MapFence['center'][] } {
   return Array.isArray(fence.polygon) && fence.polygon.length >= 3;
+}
+
+/**
+ * polygonFenceAt is the polygon fence a tap at `point` lands on, for renderers
+ * that draw polygons in screen space and so have no tap target for their body
+ * (a circle's body is its own Pressable). Judged planar in lon/lat, as drawn;
+ * the last one listed is drawn on top, so it wins.
+ */
+export function polygonFenceAt(fences: MapFence[], point: MapFence['center']): MapFence | undefined {
+  for (let i = fences.length - 1; i >= 0; i -= 1) {
+    const fence = fences[i]!;
+    if (hasPolygon(fence) && pointInPolygon(point, fence.polygon)) return fence;
+  }
+  return undefined;
 }
 
 /** fenceRing is a fence's outline as a closed GeoJSON ring of [lon, lat], polygon or circle. */
