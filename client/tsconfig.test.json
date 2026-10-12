@@ -1,0 +1,14 @@
+{
+  // Type-checks the plain `node --test` unit tests (src/**/*.test.mts).
+  //
+  // They are kept out of the app's tsconfig on purpose: they need Node's types,
+  // which would otherwise leak into React Native code (timers, globals), and they
+  // import modules with explicit `.ts` extensions, which is what lets Node run
+  // TypeScript directly without a bundler or a test framework.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*.test.mts"]
+}

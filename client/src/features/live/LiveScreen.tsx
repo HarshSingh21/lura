@@ -1,12 +1,17 @@
 import { useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
 
-import { useCreatePlace, useOverview, useRevokeShare } from '@/api/hooks';
+import { keys, useCreatePlace, useOverview, useRevokeShare } from '@/api/hooks';
 import type { Point } from '@/api/types';
+import { attribution } from '@/components/map/basemaps';
+import { BasemapPicker } from '@/components/map/BasemapPicker';
 import { MapView } from '@/components/map/MapView';
 import { zoomToInclude, type Box } from '@/components/map/fit';
+import { fitBounds } from '@/components/map/projection';
 import type { MapFence, MapMarker } from '@/components/map/types';
+import { useBasemap } from '@/components/map/useBasemap';
 import { Icon } from '@/components/ui/Icon';
 import { Button, Dot, IconButton, Sheet } from '@/components/ui/primitives';
 import { peerFixes, watchers } from '@/features/people/peer';
@@ -18,7 +23,15 @@ import { useLayoutMode } from '@/theme/useLayout';
 import { useStore } from '@/state/store';
 import { useTracking } from '@/hooks/useTracking';
 
-import { DeviceList, DeviceTracking, PeopleList, SharingBanner, UpcomingReminders } from './rail';
+import { colorForUser, formatSpeed, glideMsFor, headingFor, MOVING_MPS, speedOf, type TrailPoint } from './motion';
+import { DeviceList, DeviceTracking, PeopleList, SharingBanner, UpcomingReminders, useNow, type FollowKey } from './rail';
+import { useTrails } from './trails';
+
+/** A ping older than this no longer pulses: the person may have gone offline. */
+const LIVE_PULSE_MS = 120_000;
+
+/** Follow mode never eases faster than this, so a jump still reads as motion. */
+const MIN_FOLLOW_MS = 450;
 
 /** Fallback view when a workspace has no places and no fixes yet (central Bengaluru). */
 const FALLBACK_CENTER: Point = { lat: 12.9716, lon: 77.5946 };
@@ -37,6 +50,8 @@ export function LiveScreen() {
   const { data, isLoading, error } = useOverview();
 
   const positions = useStore((s) => s.positions);
+  const trails = useTrails((s) => s.trails);
+  const lastEvent = useStore((s) => s.lastEvent);
   const drawing = useStore((s) => s.drawing);
   const setDrawing = useStore((s) => s.setDrawing);
   const selectedPlaceId = useStore((s) => s.selectedPlaceId);
@@ -58,11 +73,31 @@ export function LiveScreen() {
   // answer it.
   const [box, setBox] = useState<Box>({ width: 0, height: 0 });
   const [draft, setDraft] = useState<Point | null>(null);
+  const [basemap, setBasemap] = useBasemap();
+  // Whom the camera is following, if anyone (a person or one of my devices).
+  const [followKey, setFollowKey] = useState<FollowKey | undefined>(undefined);
+  // The centre chosen by fitting everyone into view on first load.
+  const [fitCenter, setFitCenter] = useState<Point | null>(null);
 
   // This device publishes as the first device in the workspace. A real
   // multi-device setup would pick explicitly; Phase 1 has one phone.
   const primaryDevice = data?.devices[0];
-  useTracking({ deviceId: primaryDevice?.id ?? '' });
+  const qc = useQueryClient();
+  const gps = useTracking({
+    deviceId: primaryDevice?.id ?? '',
+    userId: data?.user.id,
+    // A signed-in browser registers a device of its own on its first fix; the
+    // overview has to be re-read for that device's marker to appear.
+    onRegistered: () => {
+      void qc.invalidateQueries({ queryKey: keys.overview });
+      void qc.invalidateQueries({ queryKey: keys.devices });
+    },
+  });
+  // A coarse clock for "is this ping still live": a marker stops pulsing within
+  // ~15 s of its device going quiet, without re-rendering the map every second.
+  const pulseNow = useNow(15_000);
+  const meId = data?.user.id;
+  const offline = data?.user.airgap || data?.server.airgap;
 
   const places = data?.places ?? [];
   const devices = data?.devices ?? [];
@@ -71,10 +106,15 @@ export function LiveScreen() {
   // arrives). A peer with a paused switch has no devices here at all.
   const people = useMemo(() => peopleOf(data), [data]);
   const seenBy = useMemo(() => watchers(people), [people]);
+  const peerColors = useMemo(
+    () => Object.fromEntries(people.map((p) => [p.peerId, colorForUser(p.peerId, meId, palette.accent)])),
+    [people, meId],
+  );
 
   /** The map opens on the freshest thing it knows: a live fix, then a last fix,
    *  then the centre of the user's places, then a sensible city. */
   const center = useMemo<Point>(() => {
+    if (fitCenter && !selectedDeviceId) return fitCenter;
     if (selectedDeviceId) {
       const chosen = positions[selectedDeviceId]?.point ?? devices.find((d) => d.id === selectedDeviceId)?.lastPoint;
       if (chosen) return chosen;
@@ -93,7 +133,7 @@ export function LiveScreen() {
       return { lat, lon };
     }
     return FALLBACK_CENTER;
-  }, [positions, devices, places, selectedDeviceId]);
+  }, [positions, devices, places, selectedDeviceId, fitCenter]);
 
   const fences = useMemo<MapFence[]>(
     () =>
@@ -103,11 +143,13 @@ export function LiveScreen() {
           id: place.id,
           center: place.center,
           radiusM: place.radiusM,
+          polygon: place.shape === 'polygon' ? place.polygon : undefined,
           name: place.name,
           // The mock labels a pass-by fence with the trigger and everything else
           // with its radius — the radius matters when you are tuning a fence, the
           // trigger matters when you are wondering why it fired.
-          badge: passby ? 'pass-by' : `${place.radiusM}m`,
+          // A polygon's radius is only its bounding circle, which would mislead.
+          badge: passby ? 'pass-by' : place.shape === 'polygon' ? 'area' : `${place.radiusM}m`,
           tone: passby ? 'amber' : 'accent',
           dashed: passby,
           selected: place.id === selectedPlaceId,
@@ -116,29 +158,56 @@ export function LiveScreen() {
     [places, selectedPlaceId],
   );
 
+  /**
+   * A live marker is built from the device's recent fixes: where it is, which
+   * way it is heading, how long to glide there, how sure the GPS is, and the
+   * wake behind it. Everything here is derived per fix, never per frame — the
+   * glide itself runs inside the marker (Overlays.tsx).
+   */
+  const liveMarker = (
+    id: string,
+    deviceId: string,
+    point: Point,
+    label: string,
+    colour: string,
+    fallbackSpeed: number,
+  ): MapMarker => {
+    const trail: TrailPoint[] = trails[deviceId] ?? [];
+    const live = positions[deviceId];
+    const speed = trail.length > 0 ? speedOf(trail) : fallbackSpeed;
+    const lastSeen = live ? new Date(live.recvTs).getTime() : undefined;
+    const arrived = lastEvent && lastEvent.deviceId === deviceId && lastEvent.trigger === 'arrive' ? lastEvent.id : undefined;
+    return {
+      id,
+      point,
+      label: speed > MOVING_MPS ? `${label} · ${formatSpeed(speed)}` : label,
+      color: colour,
+      pulse: lastSeen !== undefined && pulseNow - lastSeen < LIVE_PULSE_MS,
+      headingDeg: headingFor(trail),
+      accuracyM: live?.accuracyM || undefined,
+      animateMs: glideMsFor(trail),
+      rippleKey: arrived,
+      trail: trail.length > 1 ? trail.map((t) => t.point) : undefined,
+    };
+  };
+
   const markers = useMemo<MapMarker[]>(() => {
     return devices
       .map((device): MapMarker | null => {
         const live = positions[device.id];
         const point = live?.point ?? device.lastPoint;
         if (!point) return null;
-        const speed = live?.speedMps ?? device.speedMps ?? 0;
-        const moving = speed > 1;
-        return {
-          id: device.id,
-          point,
-          label: moving ? `${device.name} · ${Math.round(speed * 3.6)} km/h` : device.name,
-          tone: 'accent' as const,
-          pulse: moving,
-        };
+        return liveMarker(device.id, device.id, point, device.name, palette.accent, live?.speedMps ?? device.speedMps ?? 0);
       })
       .filter((m) => m !== null);
-  }, [devices, positions]);
+    // liveMarker reads exactly these.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [devices, positions, trails, lastEvent, pulseNow]);
 
   /**
-   * Peers are drawn in amber, never in the accent green the user's own devices
-   * own, and always carry the person's name: on a map where every dot means "a
-   * live human", the one thing a marker must never be ambiguous about is *whose*
+   * Each peer gets their own colour — never the accent green my own devices
+   * own — and always carries their name: on a map where every dot means "a live
+   * human", the one thing a marker must never be ambiguous about is *whose*
    * position it is. Their fixes arrive on the same socket as mine — ordinary
    * `position` frames — so matching a frame to a peer is a device-id lookup.
    */
@@ -147,18 +216,53 @@ export function LiveScreen() {
       const fixes = peerFixes(peer, positions);
       return fixes.map((fix): MapMarker => {
         const base = fixes.length > 1 ? `${peer.peerName} · ${fix.deviceName}` : peer.peerName;
-        return {
-          id: `peer_${fix.deviceId}`,
-          point: fix.point,
-          label: fix.moving ? `${base} · ${Math.round(fix.speedMps * 3.6)} km/h` : base,
-          tone: 'amber' as const,
-        };
+        return liveMarker(
+          `peer_${fix.deviceId}`,
+          fix.deviceId,
+          fix.point,
+          base,
+          peerColors[peer.peerId] ?? palette.amber,
+          fix.speedMps,
+        );
       });
     });
-  }, [people, positions]);
+    // liveMarker reads exactly these.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [people, positions, trails, lastEvent, peerColors, pulseNow]);
 
   // Peers first so my own markers stay on top where they overlap.
   const allMarkers = useMemo(() => [...peerMarkers, ...markers], [peerMarkers, markers]);
+
+  /**
+   * Follow mode: the camera stays on one person. A person is resolved to their
+   * freshest device's marker, so following Nishtha keeps working when she
+   * switches from her phone to her laptop.
+   */
+  const followed = useMemo<MapMarker | undefined>(() => {
+    if (!followKey) return undefined;
+    if (followKey.startsWith('device:')) {
+      const id = followKey.slice('device:'.length);
+      return allMarkers.find((m) => m.id === id);
+    }
+    const userId = followKey.slice('user:'.length);
+    const peer = people.find((p) => p.peerId === userId);
+    if (!peer) return undefined;
+    const freshest = peerFixes(peer, positions).sort(
+      (a, b) => new Date(b.lastSeen ?? 0).getTime() - new Date(a.lastSeen ?? 0).getTime(),
+    )[0];
+    return freshest ? allMarkers.find((m) => m.id === `peer_${freshest.deviceId}`) : undefined;
+  }, [followKey, allMarkers, people, positions]);
+  const followName = followed?.label?.split(' · ')[0];
+
+  const startFollowing = (key: FollowKey | undefined) => {
+    setFollowKey(key);
+    if (key) {
+      selectDevice(undefined);
+      // Following someone from city level is not following them.
+      setZoom((z) => Math.max(z, 15));
+    }
+    setSheetOpen(false);
+  };
 
   /**
    * Widen the view when someone new appears on it.
@@ -175,26 +279,42 @@ export function LiveScreen() {
    */
   const markerKey = useMemo(() => allMarkers.map((m) => m.id).sort().join(','), [allMarkers]);
   const [fittedKey, setFittedKey] = useState<string | null>(null);
-  if (fittedKey !== markerKey) {
+  if (fittedKey !== markerKey && !followKey) {
     // Adjusting state during render rather than in an effect: React re-runs this
     // component before committing, so the map is never painted once at the wrong
     // zoom and then again at the right one.
-    const fitted = zoomToInclude(
-      center,
-      allMarkers.map((m) => m.point),
-      box,
-      // What covers the map differs by shape: a phone has the action buttons on
-      // top and the pull-up handle along the bottom; a desktop has the zoom stack
-      // in the bottom-right corner and the rail outside the map entirely.
-      isPhone ? { top: 90, right: 40, bottom: 130, left: 40 } : { top: 80, right: 90, bottom: 60, left: 50 },
-    );
-    // `undefined` means there is no viewport yet — leave the key unset so this
-    // runs again when the map reports its size.
-    if (fitted !== undefined) {
-      setFittedKey(markerKey);
-      setZoom((current) => Math.min(current, Math.floor(fitted * 10) / 10));
+    //
+    // What covers the map differs by shape: a phone has the action buttons on
+    // top and the pull-up handle along the bottom; a desktop has the zoom stack
+    // in the bottom-right corner and the rail outside the map entirely.
+    const insets = isPhone ? { top: 90, right: 40, bottom: 130, left: 40 } : { top: 80, right: 90, bottom: 60, left: 50 };
+    const points = allMarkers.map((m) => m.point);
+    if (fittedKey === null && points.length > 1 && box.width > 0 && box.height > 0) {
+      // First load with more than one person on it: frame everyone, centred on
+      // all of them rather than on whoever pinged last — "where are we both" is
+      // the first question the live map answers.
+      const fit = fitBounds(points, box.width, box.height, Math.max(insets.top, insets.bottom, insets.left, insets.right), 16);
+      if (fit) {
+        setFittedKey(markerKey);
+        setFitCenter(fit.center);
+        setZoom(Math.floor(fit.zoom * 10) / 10);
+        setRecenterKey((k) => k + 1);
+      }
+    } else {
+      const fitted = zoomToInclude(center, points, box, insets);
+      // `undefined` means there is no viewport yet — leave the key unset so this
+      // runs again when the map reports its size.
+      if (fitted !== undefined) {
+        setFittedKey(markerKey);
+        setZoom((current) => Math.min(current, Math.floor(fitted * 10) / 10));
+      }
     }
   }
+
+  // In follow mode the camera eases to each fix over the same time the marker
+  // glides there, so the person stays still on screen while the city moves.
+  const mapCenter = followed?.point ?? center;
+  const followMs = followed ? Math.max(MIN_FOLLOW_MS, followed.animateMs ?? 0) : undefined;
 
   const rail = (
     <View style={styles.railContent}>
@@ -207,6 +327,10 @@ export function LiveScreen() {
       <PeopleList
         people={people}
         positions={positions}
+        trails={trails}
+        colors={peerColors}
+        followKey={followKey}
+        onFollow={startFollowing}
         onManage={() => {
           // On a phone the rail lives in a sheet, which would otherwise stay
           // open on top of the screen it just navigated to.
@@ -214,10 +338,13 @@ export function LiveScreen() {
           router.push('/people');
         }}
       />
-      {isPhone || tracking ? (
+      {/* Every screen can publish: a laptop on the move is a tracked device too,
+          and two people watching each other from two browsers is the point. */}
+      {data ? (
         <DeviceTracking
           enabled={tracking}
-          deviceName={primaryDevice?.name}
+          deviceName={devices.find((d) => d.id === gps.deviceId)?.name ?? primaryDevice?.name}
+          status={gps}
           onToggle={() => setTracking(!tracking)}
         />
       ) : null}
@@ -225,7 +352,11 @@ export function LiveScreen() {
         devices={devices}
         positions={positions}
         places={places}
+        trails={trails}
+        followKey={followKey}
+        onFollow={startFollowing}
         onSelect={(id) => {
+          setFollowKey(undefined);
           selectDevice(id);
           // Tapping a device in the rail is a request to look at it.
           setRecenterKey((k) => k + 1);
@@ -240,15 +371,17 @@ export function LiveScreen() {
     <View style={styles.root}>
       <View style={styles.mapWrap}>
         <MapView
-          center={center}
+          center={mapCenter}
           zoom={zoom}
           fences={fences}
           markers={allMarkers}
           styleUrl={data?.server.mapStyleUrl}
+          basemap={basemap}
           provider={data?.server.mapProvider}
           mapplsKey={data?.server.mapplsWebKey}
-          offline={data?.user.airgap || data?.server.airgap}
+          offline={offline}
           recenterKey={recenterKey}
+          followMs={followMs}
           onViewportChange={(v) => {
             setZoom(v.zoom);
             setBox((prev) => (prev.width === v.width && prev.height === v.height ? prev : { width: v.width, height: v.height }));
@@ -280,6 +413,24 @@ export function LiveScreen() {
           />
         </View>
 
+        {followed && followName ? (
+          <View style={[styles.followChip, drawing ? styles.followChipLow : null]}>
+            <Dot size={8} color={followed.color ?? palette.accent} pulse />
+            <Txt variant="small" color={color.textBody}>
+              Following <Txt variant="bodySemi">{followName}</Txt>
+            </Txt>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Stop following ${followName}`}
+              onPress={() => setFollowKey(undefined)}
+              hitSlop={8}
+              style={styles.followStop}
+            >
+              <Icon name="close" size={14} color={color.textMuted} />
+            </Pressable>
+          </View>
+        ) : null}
+
         {drawing ? (
           <View style={styles.drawHint} pointerEvents="none">
             <Txt variant="small" color={color.textMuted}>
@@ -291,6 +442,8 @@ export function LiveScreen() {
         {/* Map controls sit above the phone's pull-up handle, which otherwise
             covers the recentre button. */}
         <View style={[styles.controls, !isDesktop && styles.controlsPhone]} pointerEvents="box-none">
+          {/* Airgap draws the local basemap only, so there is nothing to choose. */}
+          {!offline ? <BasemapPicker value={basemap} onChange={setBasemap} /> : null}
           <View style={styles.zoomStack}>
             <Pressable
               accessibilityRole="button"
@@ -314,6 +467,9 @@ export function LiveScreen() {
             accessibilityLabel="Recentre on my device"
             iconColor={color.accent}
             onPress={() => {
+              setFollowKey(undefined);
+              selectDevice(undefined);
+              setFitCenter(null);
               setFittedKey(null); // pressing "locate me" asks for the fit again
               setRecenterKey((k) => k + 1);
             }}
@@ -323,7 +479,11 @@ export function LiveScreen() {
         {/* attribution: a licence requirement for OSM-derived tiles */}
         <View style={[styles.attribution, !isDesktop && styles.attributionPhone]} pointerEvents="none">
           <Mono size={size.monoTiny} color={color.textSubtle}>
-            {data?.user.airgap ? 'Local basemap · airgap mode' : 'Protomaps · OpenStreetMap · MapLibre'}
+            {attribution(basemap, {
+              serverStyleUrl: data?.server.mapStyleUrl,
+              provider: data?.server.mapProvider,
+              offline: !!offline,
+            })}
           </Mono>
         </View>
 
@@ -441,6 +601,25 @@ const styles = StyleSheet.create({
     ...shadow('float'),
   },
 
+  followChip: {
+    position: 'absolute',
+    top: 62,
+    left: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: color.surface,
+    borderWidth: 1,
+    borderColor: color.border,
+    borderRadius: radius.md,
+    paddingLeft: 10,
+    paddingRight: 6,
+    paddingVertical: 5,
+    ...shadow('float'),
+  },
+  followChipLow: { top: 100 },
+  followStop: { padding: 4, borderRadius: radius.sm },
+
   controls: { position: 'absolute', right: 18, bottom: 18, gap: 8, alignItems: 'flex-end' },
   controlsPhone: { bottom: 90 },
   zoomStack: {
@@ -454,7 +633,15 @@ const styles = StyleSheet.create({
   zoomButton: { width: 38, height: 36, alignItems: 'center', justifyContent: 'center' },
   zoomButtonTop: { borderBottomWidth: 1, borderBottomColor: color.hairlineSoft },
 
-  attribution: { position: 'absolute', left: 14, bottom: 10 },
+  attribution: {
+    position: 'absolute',
+    left: 10,
+    bottom: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.78)',
+    borderRadius: radius.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
   attributionPhone: { bottom: 84 },
 
   statusOverlay: {

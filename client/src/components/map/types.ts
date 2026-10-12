@@ -47,6 +47,11 @@ export type MapMarker = {
   animateMs?: number;
   /** Changing this value plays a one-shot "arrived" ripple on the marker. */
   rippleKey?: string | number;
+  /**
+   * Recent positions, oldest first, drawn as a fading wake behind the marker in
+   * its colour. The newest entry is normally `point` itself.
+   */
+  trail?: Point[];
 };
 
 /** Basemaps the user can choose between. Each renderer maps these to its own styles. */
@@ -110,6 +115,12 @@ export type MapViewProps = {
   variant?: 'light' | 'dark';
   /** Recentres when this value changes (used by the "locate me" control). */
   recenterKey?: number;
+  /**
+   * Follow mode: when set, every change of `center` moves the camera there over
+   * this many milliseconds with linear easing — even after the user has panned —
+   * so the camera keeps pace with a marker gliding at the same rate.
+   */
+  followMs?: number;
   /**
    * Reports the live viewport back to the caller.
    *

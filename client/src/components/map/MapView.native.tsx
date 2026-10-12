@@ -5,12 +5,13 @@ import { Camera, GeoJSONSource, Layer, Map, type MapRef, type ViewStateChangeEve
 
 import { color, palette } from '@/theme/tokens';
 
+import { maplibreStyle, mapplsStyleFor } from './basemaps';
 import { absoluteFill } from './fill';
 
-import { FenceOverlay, MarkerOverlay } from './Overlays';
+import { FenceOverlay, fenceRing, hasPolygon, MarkerOverlay } from './Overlays';
 import { MapCanvas } from './MapCanvas';
 import { loadMappls, MapplsNativeMap } from './MapplsMap.native';
-import { circlePolygon, type Viewport } from './projection';
+import type { Viewport } from './projection';
 import type { MapViewProps } from './types';
 
 /**
@@ -31,6 +32,12 @@ const IN_EXPO_GO = Constants.executionEnvironment === ExecutionEnvironment.Store
 
 export function MapView(props: MapViewProps) {
   const [mapplsFailed, setMapplsFailed] = useState(false);
+  // Mappls' style list for this key, once its map has reported it. A basemap
+  // with no Mappls style (satellite on a plan without imagery) is drawn by
+  // MapLibre, so the picker always does what it says.
+  const [mapplsStyles, setMapplsStyles] = useState<string[] | null>(null);
+  const basemap = props.basemap ?? 'streets';
+  const mapplsCanDraw = basemap === 'streets' || mapplsStyles === null || mapplsStyleFor(basemap, mapplsStyles) !== undefined;
   if (IN_EXPO_GO || props.offline) {
     return <MapCanvas {...props} />;
   }
@@ -41,11 +48,17 @@ export function MapView(props: MapViewProps) {
   );
   // Mappls when the server asked for it and this build carries its SDK; any
   // failure drops to MapLibre for the rest of the session, never to a blank map.
-  const mappls = props.provider === 'mappls' && !mapplsFailed ? loadMappls() : null;
+  const mappls = props.provider === 'mappls' && !mapplsFailed && mapplsCanDraw ? loadMappls() : null;
   if (mappls) {
     return (
       <NativeMapBoundary fallback={maplibre}>
-        <MapplsNativeMap {...props} sdk={mappls} onFail={() => setMapplsFailed(true)} />
+        <MapplsNativeMap
+          {...props}
+          sdk={mappls}
+          onFail={() => setMapplsFailed(true)}
+          styleNames={mapplsStyles}
+          onStyleNames={setMapplsStyles}
+        />
       </NativeMapBoundary>
     );
   }
@@ -60,16 +73,21 @@ function NativeMap(props: MapViewProps) {
     markers = [],
     tracks = [],
     styleUrl,
+    basemap,
     interactive = true,
     onPressMap,
     onPressFence,
     variant = 'light',
     recenterKey,
+    followMs,
     onViewportChange,
   } = props;
 
   const dark = variant === 'dark';
   const mapRef = useRef<MapRef | null>(null);
+  // MapLibre Native re-adds its declared sources and layers itself after a
+  // style change, so switching basemap is only a matter of a new mapStyle.
+  const mapStyle = useMemo(() => maplibreStyle(basemap, styleUrl) ?? blankStyle(dark), [basemap, styleUrl, dark]);
   const [box, setBox] = useState({ width: 0, height: 0 });
   const [view, setView] = useState<Viewport>({ center, zoom, width: 0, height: 0 });
 
@@ -96,8 +114,9 @@ function NativeMap(props: MapViewProps) {
           id: fence.id,
           color: fence.tone === 'amber' ? palette.amber : palette.accent,
           dashed: fence.dashed ? 1 : 0,
+          shape: hasPolygon(fence) ? 'polygon' : 'circle',
         },
-        geometry: { type: 'Polygon' as const, coordinates: [circlePolygon(fence.center, fence.radiusM)] },
+        geometry: { type: 'Polygon' as const, coordinates: [fenceRing(fence)] },
       })),
     }),
     [fences],
@@ -128,7 +147,7 @@ function NativeMap(props: MapViewProps) {
       <Map
         ref={mapRef}
         style={styles.map}
-        mapStyle={styleUrl ?? blankStyle(dark)}
+        mapStyle={mapStyle}
         // Attribution is a licence requirement for OSM-derived tiles, so that
         // ornament stays; the logo and compass do not earn their pixels here.
         logo={false}
@@ -156,14 +175,34 @@ function NativeMap(props: MapViewProps) {
         onRegionIsChanging={syncViewport}
         onRegionDidChange={syncViewport}
       >
-        <Camera center={[center.lon, center.lat]} zoom={zoom} duration={400} key={recenterKey} />
+        <Camera
+          center={[center.lon, center.lat]}
+          zoom={zoom}
+          // Follow mode moves at the followed marker's pace, linearly.
+          duration={followMs ?? 400}
+          easing={followMs !== undefined ? 'linear' : undefined}
+          key={recenterKey}
+        />
 
-        <GeoJSONSource id="lura-fences" data={fenceData}>
-          <Layer id="lura-fence-fill" type="fill" paint={{ 'fill-color': ['get', 'color'], 'fill-opacity': 0.1 }} />
+        <GeoJSONSource
+          id="lura-fences"
+          data={fenceData}
+          // Polygon taps come from the fill; circles have overlay tap targets.
+          onPress={
+            onPressFence
+              ? (event) => {
+                  const hit = event.nativeEvent.features.find((f) => f.properties?.shape === 'polygon');
+                  const id = hit?.properties?.id;
+                  if (typeof id === 'string') onPressFence(id);
+                }
+              : undefined
+          }
+        >
+          <Layer id="lura-fence-fill" type="fill" paint={{ 'fill-color': ['get', 'color'], 'fill-opacity': 0.14 }} />
           <Layer
             id="lura-fence-line"
             type="line"
-            paint={{ 'line-color': ['get', 'color'], 'line-width': 1.5, 'line-opacity': 0.55 }}
+            paint={{ 'line-color': ['get', 'color'], 'line-width': 2, 'line-opacity': 0.85 }}
           />
         </GeoJSONSource>
 
@@ -178,7 +217,7 @@ function NativeMap(props: MapViewProps) {
       </Map>
 
       <View style={styles.overlays} pointerEvents="box-none">
-        <FenceOverlay fences={fences} view={view} dark={dark} onPress={onPressFence} />
+        <FenceOverlay fences={fences} view={view} dark={dark} onPress={onPressFence} glShapes />
         <MarkerOverlay markers={markers} view={view} dark={dark} />
       </View>
     </View>

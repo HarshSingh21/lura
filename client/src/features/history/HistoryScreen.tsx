@@ -4,7 +4,10 @@ import { Linking, Platform, Pressable, ScrollView, StyleSheet, View } from 'reac
 import { downloadUrlFresh } from '@/api/client';
 import { useHistory, useOverview } from '@/api/hooks';
 import type { Segment } from '@/api/types';
+import { attribution } from '@/components/map/basemaps';
+import { BasemapPicker } from '@/components/map/BasemapPicker';
 import { MapView } from '@/components/map/MapView';
+import { useBasemap } from '@/components/map/useBasemap';
 import { Button, Card, EmptyState, styles as ui } from '@/components/ui/primitives';
 import { Mono, Txt } from '@/theme/text';
 import { color, layout, palette, radius, shadow, size, space } from '@/theme/tokens';
@@ -33,6 +36,8 @@ export function HistoryScreen() {
   const { data: overview } = useOverview();
   const [range, setRange] = useState<(typeof RANGES)[number]['key']>('-24h');
   const [deviceId, setDeviceId] = useState<string | undefined>(undefined);
+  const [basemap, setBasemap] = useBasemap();
+  const offline = overview?.user.airgap || overview?.server.airgap;
 
   const devices = overview?.devices ?? [];
   const activeDevice = deviceId ?? devices[0]?.id;
@@ -161,11 +166,19 @@ export function HistoryScreen() {
           tracks={tracks}
           markers={stopMarkers}
           styleUrl={overview?.server.mapStyleUrl}
+          basemap={basemap}
           provider={overview?.server.mapProvider}
           mapplsKey={overview?.server.mapplsWebKey}
-          offline={overview?.user.airgap || overview?.server.airgap}
+          offline={offline}
           recenterKey={track.length}
         />
+
+        {/* Airgap draws the local basemap only, so there is nothing to choose. */}
+        {!offline ? (
+          <View style={styles.basemapPicker} pointerEvents="box-none">
+            <BasemapPicker value={basemap} onChange={setBasemap} />
+          </View>
+        ) : null}
 
         <View style={styles.summaryPill} pointerEvents="none">
           <Txt variant="bodySemi">
@@ -179,6 +192,13 @@ export function HistoryScreen() {
         <View style={styles.attribution} pointerEvents="none">
           <Mono size={size.monoTiny} color={color.textSubtle}>
             Private history · stored on your infrastructure
+          </Mono>
+          <Mono size={size.monoTiny} color={color.textSubtle}>
+            {attribution(basemap, {
+              serverStyleUrl: overview?.server.mapStyleUrl,
+              provider: overview?.server.mapProvider,
+              offline: !!offline,
+            })}
           </Mono>
         </View>
       </View>
@@ -308,7 +328,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     ...shadow('float'),
   },
-  attribution: { position: 'absolute', left: 14, bottom: 10 },
+  attribution: {
+    position: 'absolute',
+    left: 10,
+    bottom: 8,
+    gap: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.78)',
+    borderRadius: radius.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  basemapPicker: { position: 'absolute', top: 16, right: 16 },
 
   rail: {
     width: layout.historyRailWidth,

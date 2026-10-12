@@ -36,7 +36,18 @@ export type PeerFix = {
  * marker move between two overview refetches.
  */
 export function peerFixes(peer: Peer, positions: Record<string, Position>): PeerFix[] {
-  return peerDevices(peer)
+  const known = peerDevices(peer);
+  const knownIds = new Set(known.map((d) => d.id));
+  // A device the peer added after this snapshot was taken (a browser that just
+  // registered itself to publish) is already on the socket, which only carries
+  // a peer's positions while they share with me — so a live frame owned by the
+  // peer is theirs to draw even before the next overview names the device.
+  const fresh: PeerDevice[] = peer.sharingWithMe
+    ? Object.values(positions)
+        .filter((p) => p.userId === peer.peerId && !knownIds.has(p.deviceId))
+        .map((p) => ({ id: p.deviceId, name: 'new device' }))
+    : [];
+  return [...known, ...fresh]
     .map((device): PeerFix | null => {
       const live = positions[device.id];
       const point = live?.point ?? device.point;

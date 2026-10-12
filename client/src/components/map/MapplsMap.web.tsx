@@ -3,10 +3,11 @@ import { StyleSheet, View } from 'react-native';
 
 import { color } from '@/theme/tokens';
 
+import { mapplsStyleFor, mapplsStyleNames } from './basemaps';
 import { absoluteFill } from './fill';
 import { FenceOverlay, MarkerOverlay, TrackOverlay } from './Overlays';
 import type { Viewport } from './projection';
-import type { MapViewProps } from './types';
+import type { BasemapId, MapViewProps } from './types';
 
 /**
  * Mappls Web Maps (v3) on the web, when the server opts into Mappls.
@@ -35,14 +36,17 @@ type MapplsMapObject = {
   addListener?: (event: string, handler: (e?: unknown) => void) => void;
   getCenter: () => { lat: number; lng: number };
   getZoom: () => number;
-  easeTo?: (options: { center?: [number, number]; zoom?: number; duration?: number }) => void;
+  easeTo?: (options: { center?: [number, number]; zoom?: number; duration?: number; easing?: (t: number) => number }) => void;
   setCenter?: (center: { lat: number; lng: number }) => void;
   setZoom?: (zoom: number) => void;
+  setStyle?: (name: string) => void;
+  getStyles?: () => unknown;
   remove?: () => void;
 };
 
 type MapplsGlobal = {
   Map: new (id: string, options: Record<string, unknown>) => MapplsMapObject;
+  getStyles?: () => unknown;
 };
 
 declare global {
@@ -112,14 +116,39 @@ function listen(map: MapplsMapObject, event: string, handler: (e?: unknown) => v
   else map.addListener?.(event, handler);
 }
 
+/**
+ * styleNamesOf asks the SDK which styles this key may use. Builds differ on
+ * where the list lives (the global or the map) and on whether it is returned
+ * or resolved, so every shape is accepted and anything unexpected is "none".
+ */
+async function styleNamesOf(mappls: MapplsGlobal, map: MapplsMapObject): Promise<string[]> {
+  for (const read of [() => mappls.getStyles?.(), () => map.getStyles?.()]) {
+    try {
+      const raw = await Promise.resolve(read());
+      const names = mapplsStyleNames(raw);
+      if (names.length > 0) return names;
+    } catch {
+      // This build does not have it here; try the next place.
+    }
+  }
+  return [];
+}
+
 /** moveTo recentres and/or zooms with an animation when the SDK supports one. */
-function moveTo(map: MapplsMapObject, center: { lat: number; lon: number } | null, zoom: number | null, duration: number) {
+function moveTo(
+  map: MapplsMapObject,
+  center: { lat: number; lon: number } | null,
+  zoom: number | null,
+  duration: number,
+  linear = false,
+) {
   try {
     if (typeof map.easeTo === 'function') {
       map.easeTo({
         ...(center ? { center: [center.lon, center.lat] as [number, number] } : {}),
         ...(zoom !== null ? { zoom } : {}),
         duration,
+        ...(linear ? { easing: (t: number) => t } : {}),
       });
       return;
     }
@@ -130,10 +159,20 @@ function moveTo(map: MapplsMapObject, center: { lat: number; lon: number } | nul
   }
 }
 
-export function MapplsWebMap(props: MapViewProps & { apiKey: string; onFail: () => void }) {
+export function MapplsWebMap(
+  props: MapViewProps & {
+    apiKey: string;
+    onFail: () => void;
+    /** Mappls has no style for this basemap under this key; the caller draws it with MapLibre. */
+    onBasemapUnsupported?: (basemap: BasemapId) => void;
+  },
+) {
   const {
     apiKey,
     onFail,
+    onBasemapUnsupported,
+    basemap = 'streets',
+    followMs,
     center,
     zoom = 14,
     fences = [],
@@ -157,12 +196,41 @@ export function MapplsWebMap(props: MapViewProps & { apiKey: string; onFail: () 
   const viewportListener = useRef(onViewportChange);
   const pressListener = useRef(onPressMap);
   const failListener = useRef(onFail);
+  const unsupportedListener = useRef(onBasemapUnsupported);
+  const basemapRef = useRef(basemap);
+  // Filled once the map has loaded: the style names this key can use.
+  const styleNames = useRef<string[] | null>(null);
+  const appliedStyle = useRef<string | null>(null);
   useEffect(() => {
     viewportListener.current = onViewportChange;
     pressListener.current = onPressMap;
     failListener.current = onFail;
+    unsupportedListener.current = onBasemapUnsupported;
+    basemapRef.current = basemap;
   });
   const [view, setView] = useState<Viewport>({ center, zoom, width: 0, height: 0 });
+
+  /**
+   * applyBasemap switches the Mappls style, or reports that there is none for
+   * this basemap so MapLibre can take over. Streets with no matching name is the
+   * SDK's own default and needs nothing.
+   */
+  const applyBasemap = (map: MapplsMapObject, wanted: BasemapId) => {
+    const names = styleNames.current;
+    if (!names) return; // not loaded yet; the load handler calls this again
+    const name = mapplsStyleFor(wanted, names);
+    if (!name) {
+      if (wanted !== 'streets') unsupportedListener.current?.(wanted);
+      return;
+    }
+    if (appliedStyle.current === name) return;
+    try {
+      map.setStyle?.(name);
+      appliedStyle.current = name;
+    } catch {
+      if (wanted !== 'streets') unsupportedListener.current?.(wanted);
+    }
+  };
 
   // ---- create the map once per key
   useEffect(() => {
@@ -220,6 +288,11 @@ export function MapplsWebMap(props: MapViewProps & { apiKey: string; onFail: () 
         listen(live, 'load', () => {
           clearTimeout(loadTimer);
           syncView();
+          void styleNamesOf(mappls, live).then((names) => {
+            if (cancelled) return;
+            styleNames.current = names;
+            applyBasemap(live, basemapRef.current);
+          });
         });
         listen(live, 'move', syncView);
         listen(live, 'resize', syncView);
@@ -255,10 +328,21 @@ export function MapplsWebMap(props: MapViewProps & { apiKey: string; onFail: () 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiKey, hostId, interactive]);
 
-  // ---- follow the centre until the user takes over
+  // ---- basemap switch
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || userMoved.current) return;
+    if (map) applyBasemap(map, basemap);
+  }, [basemap]);
+
+  // ---- follow the centre until the user takes over (or always, in follow mode)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (followMs !== undefined) {
+      moveTo(map, center, null, followMs, true);
+      return;
+    }
+    if (userMoved.current) return;
     moveTo(map, center, null, 400);
   }, [center.lat, center.lon]); // eslint-disable-line react-hooks/exhaustive-deps
 
