@@ -201,14 +201,14 @@ func (p Place) Normalized() Place {
 
 // Note is a reminder bound to a place and a trigger.
 type Note struct {
-	ID        string     `json:"id"`
-	UserID    string     `json:"userId"`
-	Text      string     `json:"text"`
-	PlaceID   string     `json:"placeId"`
-	Trigger   Trigger    `json:"trigger"`
-	Tags      []string   `json:"tags"`
-	Done      bool       `json:"done"`
-	Channel   string     `json:"channel"` // "" = user default channels
+	ID      string   `json:"id"`
+	UserID  string   `json:"userId"`
+	Text    string   `json:"text"`
+	PlaceID string   `json:"placeId"`
+	Trigger Trigger  `json:"trigger"`
+	Tags    []string `json:"tags"`
+	Done    bool     `json:"done"`
+	Channel string   `json:"channel"` // "" = user default channels
 	// WatchUserID is whose movement fires the note: "" for the owner's own
 	// devices, otherwise a connected peer who shares live with the owner.
 	WatchUserID string `json:"watchUserId"`
