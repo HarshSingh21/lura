@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -128,6 +129,13 @@ type simulator struct {
 }
 
 func (s *simulator) run(ctx context.Context, route []waypoint, loops int) error {
+	if err := s.drive(ctx, route, loops); err != nil && !errors.Is(err, errStopped) {
+		return err
+	}
+	return nil
+}
+
+func (s *simulator) drive(ctx context.Context, route []waypoint, loops int) error {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
@@ -198,12 +206,18 @@ func (s *simulator) run(ctx context.Context, route []waypoint, loops int) error 
 	return nil
 }
 
+// errStopped ends the run when the context is cancelled. run turns it back into
+// a clean exit: a Ctrl-C is a stop, not a failure.
+var errStopped = errors.New("lurasim: stopped")
+
 func wait(ctx context.Context, t *time.Ticker) error {
 	select {
 	case <-t.C:
 		return nil
 	case <-ctx.Done():
-		return nil // a Ctrl-C is a clean stop, not an error
+		// Returning nil here would leave an endless route (-loops 0) spinning
+		// through its waypoints at full CPU, posting nothing, forever.
+		return errStopped
 	}
 }
 
@@ -211,7 +225,7 @@ func wait(ctx context.Context, t *time.Ticker) error {
 // simulator that dies because the server restarted is annoying.
 func (s *simulator) post(ctx context.Context, lat, lon, speed, heading float64) error {
 	if ctx.Err() != nil {
-		return nil
+		return errStopped
 	}
 
 	jLat, jLon := jitter(lat, lon, s.jitterM)
@@ -251,7 +265,7 @@ func (s *simulator) post(ctx context.Context, lat, lon, speed, heading float64) 
 	resp, err := s.client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil
+			return errStopped
 		}
 		s.fail++
 		log.Printf("post failed: %v", err)

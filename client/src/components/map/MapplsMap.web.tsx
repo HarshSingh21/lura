@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import type { Point } from '@/api/types';
 import { color } from '@/theme/tokens';
 
 import { mapplsStyleFor, mapplsStyleNames } from './basemaps';
@@ -195,6 +196,10 @@ export function MapplsWebMap(
   const mapRef = useRef<MapplsMapObject | null>(null);
   const userMoved = useRef(false);
   const appliedZoom = useRef(zoom);
+  // Where a running camera animation is heading: easeTo replaces the one in
+  // flight, so a centre-only ease would strand a zoom halfway and vice versa
+  // (the MapLibre renderer does the same).
+  const easing = useRef<{ center?: Point; zoom?: number }>({});
   // Held in refs so a new callback does not tear down the map.
   const viewportListener = useRef(onViewportChange);
   const pressListener = useRef(onPressMap);
@@ -280,6 +285,10 @@ export function MapplsWebMap(
               width: node.clientWidth,
               height: node.clientHeight,
             };
+            // Applied by definition: the caller echoes it back as `zoom`, and
+            // treating that echo as a new target would stop every animated
+            // zoom on its first frame.
+            appliedZoom.current = next.zoom;
             setView(next);
             viewportListener.current?.(next);
           } catch {
@@ -298,12 +307,17 @@ export function MapplsWebMap(
           });
         });
         listen(live, 'move', syncView);
+        listen(live, 'moveend', () => {
+          easing.current = {};
+        });
         listen(live, 'resize', syncView);
         listen(live, 'dragstart', () => {
           userMoved.current = true;
         });
-        listen(live, 'zoomstart', () => {
-          userMoved.current = true;
+        listen(live, 'zoomstart', (event) => {
+          // Only a person zooming counts; the +/- buttons and fits are eases
+          // with no original event, and must not stop the map following.
+          if ((event as { originalEvent?: unknown } | undefined)?.originalEvent) userMoved.current = true;
         });
         listen(live, 'click', (event) => {
           const lngLat = (event as { lngLat?: { lat: number; lng: number } } | undefined)?.lngLat;
@@ -341,12 +355,15 @@ export function MapplsWebMap(
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+    const zoomTarget = easing.current.zoom ?? null;
     if (followMs !== undefined) {
-      moveTo(map, center, null, followMs, true);
+      moveTo(map, center, zoomTarget, followMs, true);
+      easing.current = { center, zoom: zoomTarget ?? undefined };
       return;
     }
     if (userMoved.current) return;
-    moveTo(map, center, null, 400);
+    moveTo(map, center, zoomTarget, 400);
+    easing.current = { center, zoom: zoomTarget ?? undefined };
   }, [center.lat, center.lon]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- zoom controls: apply an explicit zoom without disturbing the centre
@@ -354,7 +371,10 @@ export function MapplsWebMap(
     if (Math.abs(appliedZoom.current - zoom) < 0.01) return;
     appliedZoom.current = zoom;
     const map = mapRef.current;
-    if (map) moveTo(map, null, zoom, 250);
+    if (!map) return;
+    const centerTarget = easing.current.center ?? null;
+    moveTo(map, centerTarget, zoom, 250);
+    easing.current = { center: centerTarget ?? undefined, zoom };
   }, [zoom]);
 
   // ---- explicit recentre ("locate me" button) always wins
@@ -362,7 +382,9 @@ export function MapplsWebMap(
     if (recenterKey === undefined) return;
     userMoved.current = false;
     const map = mapRef.current;
-    if (map) moveTo(map, center, zoom, 500);
+    if (!map) return;
+    moveTo(map, center, zoom, 500);
+    easing.current = { center, zoom };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recenterKey]);
 

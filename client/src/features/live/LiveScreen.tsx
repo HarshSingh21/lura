@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useQueryClient } from '@tanstack/react-query';
 import Svg, { Circle, Path } from 'react-native-svg';
 
-import { keys, useCreatePlace, useOverview, useRevokeShare, useUpdatePlaceGeometry } from '@/api/hooks';
+import { useCreatePlace, useOverview, useRevokeShare, useUpdatePlaceGeometry } from '@/api/hooks';
 import type { Place, Point } from '@/api/types';
 import { attribution } from '@/components/map/basemaps';
 import { BasemapPicker } from '@/components/map/BasemapPicker';
@@ -23,7 +22,7 @@ import { Mono, Txt } from '@/theme/text';
 import { color, layout, palette, radius, shadow, size, space } from '@/theme/tokens';
 import { useLayoutMode } from '@/theme/useLayout';
 import { useStore } from '@/state/store';
-import { useTracking } from '@/hooks/useTracking';
+import { useGpsStatus } from '@/hooks/usePublishing';
 
 import { colorForUser, formatSpeed, glideMsFor, headingFor, MOVING_MPS, speedOf, type TrailPoint } from './motion';
 import { DeviceList, DeviceTracking, PeopleList, SharingBanner, UpcomingReminders, useNow, type FollowKey } from './rail';
@@ -107,7 +106,15 @@ export function LiveScreen() {
   const revokeShare = useRevokeShare();
   const updateGeometry = useUpdatePlaceGeometry();
 
+  // Two zooms, deliberately apart: `zoom` is what this screen *asks* the map
+  // for (buttons, fits, "show me"), `viewZoom` is what the map reports it is
+  // showing. Mirroring the report back into the request made every animated
+  // zoom stop on its first frame — the frame's zoom came back as a new target.
   const [zoom, setZoom] = useState(14);
+  const [viewZoom, setViewZoom] = useState(14);
+  // A request equal to the previous one would not change the prop, and the map
+  // only moves on a change (the user may have pinched away since): nudge it.
+  const requestZoom = (next: number) => setZoom((prev) => (Math.abs(prev - next) < 1e-9 ? next + 1e-6 : next));
   const [recenterKey, setRecenterKey] = useState(0);
   // The map's pixel size, reported back by whichever renderer is in use. Fitting
   // a set of markers is a question about pixels, and the zoom level alone cannot
@@ -146,27 +153,17 @@ export function LiveScreen() {
     // or holding the first-load fit.
     setFollowKey(undefined);
     setFitCenter(null);
-    setZoom((z) => Math.max(z, 16));
+    requestZoom(Math.max(viewZoom, 16));
     setRecenterKey((k) => k + 1);
   }
   useEffect(() => {
     consumedFocusSeq = focusSeen;
   }, [focusSeen]);
 
-  // This device publishes as the first device in the workspace. A real
-  // multi-device setup would pick explicitly; Phase 1 has one phone.
+  // Publishing runs in the app layout (hooks/usePublishing), so it carries on
+  // on every screen; the rail only shows it and flips the switch.
   const primaryDevice = data?.devices[0];
-  const qc = useQueryClient();
-  const gps = useTracking({
-    deviceId: primaryDevice?.id ?? '',
-    userId: data?.user.id,
-    // A signed-in browser registers a device of its own on its first fix; the
-    // overview has to be re-read for that device's marker to appear.
-    onRegistered: () => {
-      void qc.invalidateQueries({ queryKey: keys.overview });
-      void qc.invalidateQueries({ queryKey: keys.devices });
-    },
-  });
+  const gps = useGpsStatus();
   // A coarse clock for "is this ping still live": a marker stops pulsing within
   // ~15 s of its device going quiet, without re-rendering the map every second.
   const pulseNow = useNow(15_000);
@@ -186,8 +183,13 @@ export function LiveScreen() {
     [people, meId],
   );
 
-  /** The map opens on the freshest thing it knows: a live fix, then a last fix,
-   *  then the centre of the user's places, then a sensible city. */
+  /** The map opens on the freshest thing it knows about *me*: a live fix, then a
+   *  last fix, then the centre of the user's places, then a sensible city.
+   *
+   *  Only my own devices steer the camera by default. Following whoever pinged
+   *  last would bounce the view between Harsh and Nishtha on every fix, and
+   *  pin the peer to the middle of the screen so they never appear to move —
+   *  watching someone else is what follow mode is for. */
   const center = useMemo<Point>(() => {
     if (editFocus) return editFocus;
     if (selectedDeviceId) {
@@ -196,9 +198,10 @@ export function LiveScreen() {
     }
     if (focusPoint) return focusPoint;
     if (fitCenter) return fitCenter;
-    const live = Object.values(positions).sort(
-      (a, b) => new Date(b.recvTs).getTime() - new Date(a.recvTs).getTime(),
-    )[0];
+    const mine = new Set(devices.map((d) => d.id));
+    const live = Object.values(positions)
+      .filter((p) => mine.has(p.deviceId))
+      .sort((a, b) => new Date(b.recvTs).getTime() - new Date(a.recvTs).getTime())[0];
     if (live) return live.point;
 
     const withFix = devices.find((d) => d.lastPoint);
@@ -338,7 +341,7 @@ export function LiveScreen() {
     if (key) {
       selectDevice(undefined);
       // Following someone from city level is not following them.
-      setZoom((z) => Math.max(z, 15));
+      requestZoom(Math.max(viewZoom, 15));
     }
     setSheetOpen(false);
   };
@@ -358,6 +361,11 @@ export function LiveScreen() {
    */
   const markerKey = useMemo(() => allMarkers.map((m) => m.id).sort().join(','), [allMarkers]);
   const [fittedKey, setFittedKey] = useState<string | null>(null);
+  // Whether everyone has been framed together yet. That happens once — the
+  // first time there is more than one person to show, which is usually not the
+  // first load: my own marker comes first, the peer's a ping later — and again
+  // after "locate me". Every other change of the set only ever zooms out.
+  const [crowdFramed, setCrowdFramed] = useState(false);
   if (fittedKey !== markerKey && !followKey) {
     // Adjusting state during render rather than in an effect: React re-runs this
     // component before committing, so the map is never painted once at the wrong
@@ -368,15 +376,20 @@ export function LiveScreen() {
     // in the bottom-right corner and the rail outside the map entirely.
     const insets = isPhone ? { top: 90, right: 40, bottom: 130, left: 40 } : { top: 80, right: 90, bottom: 60, left: 50 };
     const points = allMarkers.map((m) => m.point);
-    if (fittedKey === null && points.length > 1 && box.width > 0 && box.height > 0) {
-      // First load with more than one person on it: frame everyone, centred on
-      // all of them rather than on whoever pinged last — "where are we both" is
+    // With no fix of my own the camera has nothing to stand on (it would sit on
+    // the fallback city while the one person I can see is off-screen), so a
+    // single peer is framed like a crowd.
+    const ownFix = markers.length > 0;
+    if (!crowdFramed && (points.length > 1 || (points.length === 1 && !ownFix)) && box.width > 0 && box.height > 0) {
+      // The first time there is more than one person on it: frame everyone,
+      // centred on all of them rather than on whoever pinged last — "where are we both" is
       // the first question the live map answers.
       const fit = fitBounds(points, box.width, box.height, Math.max(insets.top, insets.bottom, insets.left, insets.right), 16);
       if (fit) {
         setFittedKey(markerKey);
+        setCrowdFramed(true);
         setFitCenter(fit.center);
-        setZoom(Math.floor(fit.zoom * 10) / 10);
+        requestZoom(Math.floor(fit.zoom * 10) / 10);
         setRecenterKey((k) => k + 1);
       }
     } else {
@@ -385,7 +398,8 @@ export function LiveScreen() {
       // runs again when the map reports its size.
       if (fitted !== undefined) {
         setFittedKey(markerKey);
-        setZoom((current) => Math.min(current, Math.floor(fitted * 10) / 10));
+        const wanted = Math.floor(fitted * 10) / 10;
+        if (wanted < viewZoom) requestZoom(wanted);
       }
     }
   }
@@ -406,7 +420,7 @@ export function LiveScreen() {
     setFollowKey(undefined);
     setFenceEdit(editState(place.id, geometry));
     setEditFocus(place.center);
-    setZoom(zoomForRadius(place.radiusM));
+    requestZoom(zoomForRadius(place.radiusM));
     setRecenterKey((k) => k + 1);
   };
 
@@ -521,7 +535,9 @@ export function LiveScreen() {
           setFollowKey(undefined);
           selectDevice(id);
           setFocusPoint(null);
-          // Tapping a device in the rail is a request to look at it.
+          // Tapping a device in the rail is a request to look at it, at the
+          // zoom the map is at now.
+          requestZoom(viewZoom);
           setRecenterKey((k) => k + 1);
           setSheetOpen(false);
         }}
@@ -546,7 +562,7 @@ export function LiveScreen() {
           recenterKey={recenterKey}
           followMs={followMs}
           onViewportChange={(v) => {
-            setZoom(v.zoom);
+            setViewZoom(v.zoom);
             setBox((prev) => (prev.width === v.width && prev.height === v.height ? prev : { width: v.width, height: v.height }));
           }}
           onPressFence={(id) => selectPlace(id === selectedPlaceId ? undefined : id)}
@@ -673,7 +689,7 @@ export function LiveScreen() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Zoom in"
-              onPress={() => setZoom((z) => Math.min(20, z + 1))}
+              onPress={() => requestZoom(Math.min(20, viewZoom + 1))}
               style={[styles.zoomButton, styles.zoomButtonTop]}
             >
               <Icon name="plus" size={16} color={color.textBody} strokeWidth={2} />
@@ -681,7 +697,7 @@ export function LiveScreen() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Zoom out"
-              onPress={() => setZoom((z) => Math.max(2, z - 1))}
+              onPress={() => requestZoom(Math.max(2, viewZoom - 1))}
               style={styles.zoomButton}
             >
               <Icon name="minus" size={16} color={color.textBody} strokeWidth={2} />
@@ -697,7 +713,9 @@ export function LiveScreen() {
               setFitCenter(null);
               setEditFocus(null); // stop looking at the fence being edited
               setFittedKey(null); // pressing "locate me" asks for the fit again
+              setCrowdFramed(false);
               setFocusPoint(null);
+              requestZoom(viewZoom); // the fit, if there is one, overrides it
               setRecenterKey((k) => k + 1);
             }}
           />

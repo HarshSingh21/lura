@@ -2,6 +2,7 @@ import { Slot } from 'expo-router';
 
 import { Shell } from '@/components/shell/Shell';
 import { useLive } from '@/hooks/useLive';
+import { usePublishing } from '@/hooks/usePublishing';
 
 /**
  * The control-centre layout: chrome plus one live socket.
@@ -12,6 +13,8 @@ import { useLive } from '@/hooks/useLive';
  */
 export default function AppLayout() {
   useLive();
+  // This device's own location, published from whichever screen is open.
+  usePublishing();
   return (
     <Shell>
       <Slot />

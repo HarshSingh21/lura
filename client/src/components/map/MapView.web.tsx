@@ -175,6 +175,11 @@ function MapLibreWebMap(props: MapViewProps) {
   const viewportListener = useRef(onViewportChange);
   const latest = useRef({ fences, tracks, onPressFence });
   const appliedZoom = useRef(zoom);
+  // Where a running camera animation is heading. MapLibre's easeTo replaces
+  // the animation in flight, so a centre-only ease (the next fix) would strand
+  // a zoom halfway, and a zoom-only ease would strand a pan; each carries the
+  // other's target until that animation ends.
+  const easing = useRef<{ center?: LngLatLike; zoom?: number }>({});
   // Probed once per mount: the answer cannot change while the page is open.
   const [failed, setFailed] = useState(() => !hasWebGL2());
   const [view, setView] = useState<Viewport>({ center, zoom, width: 0, height: 0 });
@@ -228,6 +233,11 @@ function MapLibreWebMap(props: MapViewProps) {
         width: canvas.clientWidth,
         height: canvas.clientHeight,
       };
+      // What the map shows is, by definition, applied. The caller mirrors the
+      // zoom back as its `zoom` prop; without this, the first frame of an
+      // animated zoom would be echoed back as a new target and stop it there
+      // (the +/- buttons moved the map by a hundredth of a level).
+      appliedZoom.current = next.zoom;
       setView(next);
       viewportListener.current?.(next);
     };
@@ -243,6 +253,11 @@ function MapLibreWebMap(props: MapViewProps) {
     });
     map.on('load', syncView);
     map.on('move', syncView);
+    // Fires for a finished animation and, synchronously, for one that a new
+    // easeTo replaced — which is why targets are recorded after each call.
+    map.on('moveend', () => {
+      easing.current = {};
+    });
     map.on('resize', syncView);
     map.on('dragstart', () => {
       userMoved.current = true;
@@ -315,14 +330,19 @@ function MapLibreWebMap(props: MapViewProps) {
   // ---- follow the centre until the user takes over (or always, in follow mode)
   useEffect(() => {
     withMap(mapRef.current, (map) => {
+      const target = [center.lon, center.lat] as LngLatLike;
+      const zoomTarget = easing.current.zoom;
+      const keepZoom = zoomTarget !== undefined ? { zoom: zoomTarget } : {};
       if (followMs !== undefined) {
         // Follow mode: the camera moves at the marker's pace, linearly, so the
         // followed person stays put on screen while the city slides past.
-        map.easeTo({ center: [center.lon, center.lat] as LngLatLike, duration: followMs, easing: linear });
+        map.easeTo({ center: target, ...keepZoom, duration: followMs, easing: linear });
+        easing.current = { center: target, zoom: zoomTarget };
         return;
       }
       if (userMoved.current) return;
-      map.easeTo({ center: [center.lon, center.lat] as LngLatLike, duration: 400 });
+      map.easeTo({ center: target, ...keepZoom, duration: 400 });
+      easing.current = { center: target, zoom: zoomTarget };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [center.lat, center.lon]);
@@ -331,16 +351,22 @@ function MapLibreWebMap(props: MapViewProps) {
   useEffect(() => {
     if (Math.abs(appliedZoom.current - zoom) < 0.01) return;
     appliedZoom.current = zoom;
-    withMap(mapRef.current, (map) => map.easeTo({ zoom, duration: 250 }));
+    withMap(mapRef.current, (map) => {
+      const centerTarget = easing.current.center;
+      map.easeTo({ zoom, ...(centerTarget !== undefined ? { center: centerTarget } : {}), duration: 250 });
+      easing.current = { center: centerTarget, zoom };
+    });
   }, [zoom]);
 
   // ---- explicit recentre ("locate me" button) always wins
   useEffect(() => {
     if (recenterKey === undefined) return;
     userMoved.current = false;
-    withMap(mapRef.current, (map) =>
-      map.easeTo({ center: [center.lon, center.lat] as LngLatLike, zoom, duration: 500 }),
-    );
+    withMap(mapRef.current, (map) => {
+      const target = [center.lon, center.lat] as LngLatLike;
+      map.easeTo({ center: target, zoom, duration: 500 });
+      easing.current = { center: target, zoom };
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recenterKey]);
 

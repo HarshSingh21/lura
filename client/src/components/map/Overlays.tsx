@@ -309,6 +309,19 @@ export function MarkerOverlay({
   const trails = markers.filter((m) => (m.trail?.length ?? 0) > 1);
   return (
     <>
+      {/* The viewport every overlay is projected through, for the end-to-end
+          suite (e2e/), which has to turn coordinates into clicks. */}
+      <View
+        pointerEvents="none"
+        testID="lura-map-viewport"
+        {...webData({
+          lat: view.center.lat,
+          lon: view.center.lon,
+          zoom: view.zoom,
+          width: view.width,
+          height: view.height,
+        })}
+      />
       {trails.length > 0 ? <TrailLayer markers={trails} view={view} dark={!!dark} /> : null}
       {markers.map((marker) => {
         const { x, y } = project(marker.point, view);
@@ -419,7 +432,12 @@ function LiveMarker({ marker, view, tint }: { marker: MapMarker; view: Viewport;
   const rippleOpacity = ripple.interpolate({ inputRange: [0, 0.15, 1], outputRange: [0, 0.65, 0] });
 
   return (
-    <Animated.View pointerEvents="none" style={[styles.anchor, { transform: [{ translateX }, { translateY }] }]}>
+    <Animated.View
+      pointerEvents="none"
+      testID={`lura-marker-${marker.id}`}
+      {...webData({ lat: point.lat, lon: point.lon, label: marker.label ?? '' })}
+      style={[styles.anchor, { transform: [{ translateX }, { translateY }] }]}
+    >
       {showAccuracy ? (
         <View
           style={[
@@ -529,6 +547,15 @@ function TrailLayer({ markers, view, dark }: { markers: MapMarker[]; view: Viewp
       </Svg>
     </View>
   );
+}
+
+/**
+ * webData exposes values as `data-*` attributes on web, where React Native Web
+ * maps `dataSet` onto the DOM node; React Native's types do not know the prop,
+ * and native has nowhere to put it.
+ */
+function webData(data: Record<string, string | number>): object {
+  return Platform.OS === 'web' ? { dataSet: data } : {};
 }
 
 /** withOpacity accepts the hex tokens and returns an rgba string. */

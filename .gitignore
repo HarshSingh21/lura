@@ -27,3 +27,4 @@ client/mappls/
 *.olf
 *.a.conf
 *.i.conf
+/.claude/worktrees/

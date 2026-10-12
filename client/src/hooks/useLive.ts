@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { connectLive } from '@/api/live';
 import { keys } from '@/api/hooks';
-import type { Position } from '@/api/types';
+import type { Overview, Position } from '@/api/types';
 import { useTrails } from '@/features/live/trails';
 import { useStore } from '@/state/store';
 
@@ -31,6 +31,20 @@ export function useLive(enabled = true) {
     const applyPosition = (p: Position) => {
       useStore.getState().applyPosition(p);
       pushTrail(p);
+    };
+    // A fix from one of my own devices that the snapshot does not list (a phone
+    // added on another screen, a browser that just registered itself) has no
+    // marker until the overview names it; re-read it rather than wait for the
+    // next poll. Throttled, so a burst of fixes costs one request.
+    let lastRefetch = 0;
+    const learnDevice = (p: Position) => {
+      const overview = qc.getQueryData<Overview>(keys.overview);
+      if (!overview || p.userId !== overview.user.id) return;
+      if (overview.devices.some((d) => d.id === p.deviceId)) return;
+      const now = Date.now();
+      if (now - lastRefetch < 5_000) return;
+      lastRefetch = now;
+      void qc.invalidateQueries({ queryKey: keys.overview });
     };
     // A different server or credential is a different stream: its trails start empty.
     clearTrails();
@@ -68,6 +82,7 @@ export function useLive(enabled = true) {
 
           case 'position':
             applyPosition(frame.data);
+            learnDevice(frame.data);
             break;
 
           case 'geo':
