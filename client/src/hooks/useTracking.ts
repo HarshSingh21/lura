@@ -162,7 +162,18 @@ export function useTracking(opts: TrackingOptions): TrackingStatus {
 
     const handle = async (fix: RawFix, altitudeM?: number) => {
       if (cancelled) return;
-      const decision = gate.offer(fix, Date.now());
+      await send(gate.offer(fix, Date.now()), fix, altitudeM);
+    };
+
+    // Standing still: the platform stops reporting, the gate keeps the beat.
+    const beat = setInterval(() => {
+      if (cancelled) return;
+      const decision = gate.heartbeat(Date.now());
+      if (decision.send) void send(decision, decision.fix);
+    }, 5_000);
+
+    const send = async (decision: ReturnType<FixGate['offer']>, fix: RawFix, altitudeM?: number) => {
+      if (cancelled) return;
       if (!decision.send) {
         // The accuracy readout tracks every fix, so a held "inaccurate" fix is
         // visible as such rather than looking like a frozen GPS.
@@ -188,6 +199,7 @@ export function useTracking(opts: TrackingOptions): TrackingStatus {
     if (Platform.OS === 'web') {
       const geo = typeof navigator !== 'undefined' ? navigator.geolocation : undefined;
       if (!geo) {
+        clearInterval(beat);
         denied();
         return;
       }
@@ -236,6 +248,7 @@ export function useTracking(opts: TrackingOptions): TrackingStatus {
           .catch(() => undefined);
         return () => {
           cancelled = true;
+          clearInterval(beat);
           stop?.();
           release?.();
         };
@@ -244,6 +257,7 @@ export function useTracking(opts: TrackingOptions): TrackingStatus {
       stop = () => geo.clearWatch(watchId);
       return () => {
         cancelled = true;
+        clearInterval(beat);
         stop?.();
       };
     }
@@ -283,6 +297,7 @@ export function useTracking(opts: TrackingOptions): TrackingStatus {
 
     return () => {
       cancelled = true;
+      clearInterval(beat);
       subscription?.remove();
     };
   }, [enabled, opts.deviceId, opts.userId, userKey, pushToast, setTracking]);
