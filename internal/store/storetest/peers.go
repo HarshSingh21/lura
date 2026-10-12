@@ -86,14 +86,15 @@ func testPolygonEdges(t *testing.T, st store.Store) {
 	mustUser(t, st, "u1")
 	mustPolygon(t, st, "u1", "p_l", "Grocery", lShape())
 
-	// A 20 km wide box at 60°N: here the great circle between the two southern
-	// corners bows ~14 m north of the drawn edge.
+	// An 8 km wide fence at 60°N, within the API's 5 km bounding radius: the
+	// great circle between its two southern corners bows ~2 m north of the edge
+	// the map draws.
 	wide := []domain.Point{
-		{Lat: 60.00, Lon: 10.00}, {Lat: 60.00, Lon: 10.36}, {Lat: 60.05, Lon: 10.36}, {Lat: 60.05, Lon: 10.00},
+		{Lat: 60.00, Lon: 10.00}, {Lat: 60.00, Lon: 10.144}, {Lat: 60.02, Lon: 10.144}, {Lat: 60.02, Lon: 10.00},
 	}
 	if _, err := st.CreatePlace(ctx, domain.Place{
 		ID: "p_wide", UserID: "u1", Name: "Fjord", Shape: domain.ShapePolygon, Polygon: wide,
-		Center: domain.Point{Lat: 60.025, Lon: 10.18}, RadiusM: 11000,
+		Center: domain.Point{Lat: 60.01, Lon: 10.072}, RadiusM: 4300,
 		Triggers: []domain.Trigger{domain.TriggerArrive},
 	}); err != nil {
 		t.Fatalf("CreatePlace(wide): %v", err)
@@ -113,9 +114,9 @@ func testPolygonEdges(t *testing.T, st store.Store) {
 		{"on the concave corner", domain.Point{Lat: 12.9605, Lon: 77.6385}, "p_l"},
 		{"just past the south edge", domain.Point{Lat: 12.95999, Lon: 77.6385}, ""},
 		{"just inside the notch", domain.Point{Lat: 12.96051, Lon: 77.63851}, ""},
-		{"2 m inside the wide box's south edge", domain.Point{Lat: 60.000018, Lon: 10.18}, "p_wide"},
-		{"on the wide box's south edge", domain.Point{Lat: 60.00, Lon: 10.18}, "p_wide"},
-		{"2 m south of the wide box", domain.Point{Lat: 59.999982, Lon: 10.18}, ""},
+		{"1 m inside the wide fence's south edge", domain.Point{Lat: 60.000009, Lon: 10.072}, "p_wide"},
+		{"on the wide fence's south edge", domain.Point{Lat: 60.00, Lon: 10.072}, "p_wide"},
+		{"1 m south of the wide fence", domain.Point{Lat: 59.999991, Lon: 10.072}, ""},
 	}
 	for _, c := range cases {
 		inside, err := st.PlacesContaining(ctx, "u1", c.pt)

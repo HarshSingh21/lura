@@ -28,8 +28,10 @@ her location crosses the fence, both browsers show a toast with a sound.
   geometry on the next fix (no stale inside-state for a moved fence: a device that
   is no longer inside after the move gets a normal `leave`).
 - Containment: circle = haversine ≤ radius; polygon = point-in-polygon (memory
-  store, ray casting on lat/lon is fine at city scale) / `ST_Covers` on a
-  `geography(Polygon,4326)` column (Postgres, migration `0003_polygons_peers.sql`).
+  store, ray casting on lat/lon is fine at city scale) / `ST_Covers` on
+  `boundary::geometry` (Postgres: the ring is stored in a `geography(Polygon,4326)`
+  column from `0003_polygons_peers.sql`, but judged planar in lon/lat like the map
+  draws it — `0004_planar_polygons.sql`). On-edge counts as inside.
 
 ## 2. Notes for and about other people
 

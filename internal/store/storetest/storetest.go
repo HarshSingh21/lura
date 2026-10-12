@@ -44,6 +44,7 @@ func Run(t *testing.T, newStore Factory) {
 		{"PolygonPlaces", testPolygonPlaces},
 		{"PolygonContaining", testPolygonContaining},
 		{"PolygonExactVertices", testPolygonExactVertices},
+		{"PolygonEdges", testPolygonEdges},
 		{"CircleMoves", testCircleMoves},
 		{"PeerWatchCleanup", testPeerWatchCleanup},
 		{"PeerGeofence", testPeerGeofence},

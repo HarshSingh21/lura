@@ -51,8 +51,10 @@ func TestUpgradeFromConnections(t *testing.T) {
 		}
 	}
 
-	if err := st.Migrate(ctx); err != nil {
-		t.Fatalf("migrate to current: %v", err)
+	// 0003 alone first: it is the migration that adds the columns these rows
+	// lack, and it must stand on its own for a deployment that stops there.
+	if err := st.migrateThrough(ctx, "0003_polygons_peers.sql"); err != nil {
+		t.Fatalf("migrate through 0003: %v", err)
 	}
 
 	places, err := st.ListPlaces(ctx, "u1")
@@ -107,6 +109,30 @@ func TestUpgradeFromConnections(t *testing.T) {
 	home.WatchUserIDs = []string{"u2"}
 	if _, err := st.UpdatePlace(ctx, home); err != nil {
 		t.Fatalf("reshape upgraded place: %v", err)
+	}
+
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate to current: %v", err)
+	}
+	if got, err := st.GetPlace(ctx, "u1", home.ID); err != nil || got.Shape != domain.ShapePolygon || len(got.Polygon) != 3 {
+		t.Errorf("reshaped place after the rest of the migrations = %+v, %v", got, err)
+	}
+	inside, err = st.PlacesContaining(ctx, "u1", domain.Point{Lat: 12.961, Lon: 77.6385}) // on its south edge
+	if err != nil || len(inside) != 1 || inside[0].ID != home.ID {
+		t.Errorf("containing on the reshaped place's edge = %v, %v; want [%s]", inside, err, home.ID)
+	}
+
+	// Polygons are judged against the planar expression index from 0004; the
+	// geography one 0003 created is gone.
+	var indexes []string
+	if err := st.pool.QueryRow(ctx, `
+		SELECT coalesce(array_agg(indexname ORDER BY indexname), '{}') FROM pg_indexes
+		WHERE schemaname = current_schema() AND tablename = 'places' AND indexname LIKE 'places_boundary%'`).
+		Scan(&indexes); err != nil {
+		t.Fatalf("read indexes: %v", err)
+	}
+	if len(indexes) != 1 || indexes[0] != "places_boundary_geom_gix" {
+		t.Errorf("boundary indexes = %v, want [places_boundary_geom_gix]", indexes)
 	}
 
 	conns, err := st.ListConnections(ctx, "u1")

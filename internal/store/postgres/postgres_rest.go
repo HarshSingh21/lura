@@ -224,9 +224,18 @@ func (s *Store) DeletePlace(ctx context.Context, userID, id string) error {
 	return err
 }
 
-// PlacesContaining is the geofence hot path: ST_DWithin over the GIST index for
-// circles, ST_Covers over the boundary index for polygons — the query the
-// engine runs for every incoming fix.
+// PlacesContaining is the geofence hot path, run for every incoming fix:
+// ST_DWithin on geography (metres) for circles, ST_Covers for polygons.
+//
+// The polygon test is planar — ST_Covers on boundary::geometry, not on the
+// geography column. Geography edges are great-circle arcs, while the map and
+// the in-memory ray cast draw an edge as a straight line in lon/lat; on
+// geography a fix exactly on a fence's equator-side edge reads as outside, and
+// a wide fence at high latitude is off by metres (migration 0004).
+//
+// The plan is driven by places_user_idx: the query is always one user's fences,
+// which is a short list, and a per-row radius_m means ST_DWithin cannot use
+// places_center_gix anyway.
 func (s *Store) PlacesContaining(ctx context.Context, userID string, pt domain.Point) ([]domain.Place, error) {
 	start := time.Now()
 	rows, err := s.pool.Query(ctx, `
@@ -236,7 +245,7 @@ func (s *Store) PlacesContaining(ctx context.Context, userID string, pt domain.P
 		  AND ((shape = 'circle'
 		        AND ST_DWithin(center, ST_SetSRID(ST_MakePoint($2,$3),4326)::geography, radius_m))
 		    OR (shape = 'polygon'
-		        AND ST_Covers(boundary, ST_SetSRID(ST_MakePoint($2,$3),4326)::geography)))
+		        AND ST_Covers(boundary::geometry, ST_SetSRID(ST_MakePoint($2,$3),4326))))
 		ORDER BY id`, userID, pt.Lon, pt.Lat)
 	if err != nil {
 		observe("PlacesContaining", start, err)

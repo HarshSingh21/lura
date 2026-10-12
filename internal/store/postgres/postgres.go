@@ -3,10 +3,10 @@
 //
 // Two principles run through this package:
 //
-//   - Spatial work happens in SQL. ST_DWithin over a GIST index answers "which
-//     places contain this point" far better than fetching every place and
-//     measuring in Go, and it is the same predicate the Phase 2 Tile38 path has
-//     to agree with.
+//   - Spatial work happens in SQL. ST_DWithin (circles) and planar ST_Covers
+//     (polygons) answer "which places contain this point" without fetching every
+//     place and measuring in Go, and they are the predicates the Phase 2 Tile38
+//     path has to agree with.
 //   - Guards are expressed as SQL, not as read-modify-write. The monotonic
 //     last_point update and the idempotent position insert are single statements,
 //     so they stay correct with many writers and with at-least-once redelivery
