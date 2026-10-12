@@ -118,7 +118,14 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
 
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
-  if (!opts.anonymous) headers.Authorization = `Bearer ${opts.bearerToken ?? bearer()}`;
+  if (!opts.anonymous) {
+    // Renew first when the token is inside its expiry margin. The session's
+    // refresh timer does not run while the machine sleeps, so after a wake the
+    // token in hand can already be dead; checking per request costs nothing
+    // while it is fresh.
+    const token = opts.bearerToken ?? (await freshSessionToken()) ?? config.token;
+    headers.Authorization = `Bearer ${token}`;
+  }
 
   // A hung request must not hang the UI: every call gets a deadline, and the
   // caller's own signal still wins.
