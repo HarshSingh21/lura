@@ -291,7 +291,7 @@ export function PlaceForm({
                 <Pressable
                   key={trigger}
                   accessibilityRole="checkbox"
-                  accessibilityState={{ checked: selected }}
+                  aria-checked={selected}
                   onPress={() =>
                     field.onChange(
                       selected ? field.value.filter((t) => t !== trigger) : [...field.value, trigger],

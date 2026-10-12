@@ -256,6 +256,27 @@ async function edgeHasFenceColour(person, ring) {
   );
 }
 
+/** wholePx rounds a page point to the pixel a real pointer would land on. */
+function wholePx(p) {
+  return { x: Math.round(p.x), y: Math.round(p.y) };
+}
+
+/** sameView is true when the camera has not moved (to a hundredth of a pixel at this zoom). */
+function sameView(a, b) {
+  return a.zoom === b.zoom && haversineM(a.center, b.center) < 0.05;
+}
+
+/** revealPlace zooms Harsh's map out until a fence's label is on screen. */
+async function revealPlace(name) {
+  const label = harsh.page.getByRole('button', { name: `Place ${name}` });
+  for (let i = 0; i < 4; i += 1) {
+    await harsh.stableViewport();
+    if (await label.count()) return;
+    await harsh.page.getByRole('button', { name: 'Zoom out' }).click();
+  }
+  await harsh.stableViewport();
+}
+
 /** seedStep4 builds what step 4 draws, over the API, with the same facts. */
 async function seedStep4() {
   const ring = (c, dLat, dLon) => [
@@ -604,7 +625,7 @@ try {
       { x: g.x + half, y: g.y - half },
       { x: g.x + half * 1.05, y: g.y + half * 0.85 },
       { x: g.x - half * 0.9, y: g.y + half },
-    ];
+    ].map(wholePx);
     for (const p of corners) {
       await page.mouse.click(p.x, p.y);
       await sleep(250);
@@ -636,7 +657,7 @@ try {
     await page.getByRole('button', { name: 'Draw' }).click();
     await page.getByRole('menuitem', { name: 'Circle' }).click();
     v = await harsh.stableViewport();
-    const pc = await harsh.px(PHARMACY, v);
+    const pc = wholePx(await harsh.px(PHARMACY, v));
     const radiusPx = Math.round(70 / metresPerPixel(PHARMACY.lat, v.zoom));
     await harsh.drag(pc, { x: pc.x + radiusPx, y: pc.y });
     await page.getByText(/^Circle of /).waitFor({ timeout: 5000 });
@@ -671,12 +692,15 @@ try {
     const park = await placeNamed(harsh, 'Park');
     check(grocery?.shape === 'polygon' && grocery.polygon.length === 4, `Grocery: ${JSON.stringify(grocery)}`);
     const vertexErr = Math.max(...grocery.polygon.map((p, i) => haversineM(p, expected[i])));
-    check(vertexErr < 2, `Grocery's corners are up to ${vertexErr.toFixed(1)} m from where they were clicked`);
+    // A click lands on a whole pixel, so "to the metre" means within a pixel.
+    const pxM = metresPerPixel(GROCERY.lat, facts.drawZoom);
+    check(vertexErr < Math.max(2, pxM), `Grocery's corners are up to ${vertexErr.toFixed(1)} m from where they were clicked (1 px = ${pxM.toFixed(1)} m)`);
     check(['arrive', 'leave', 'passby'].every((t) => grocery.triggers.includes(t)), `Grocery triggers: ${grocery.triggers}`);
     check(grocery.watchUserIds.length === 1 && grocery.watchUserIds[0] === nishtha.id, `Grocery watches ${grocery.watchUserIds}`);
     check(pointInPolygon(GROCERY, grocery.polygon), 'the store is not inside its own fence');
     check(pharmacy?.shape === 'circle' && pharmacy.polygon.length === 0, `Pharmacy: ${JSON.stringify(pharmacy)}`);
-    check(haversineM(pharmacy.center, circleCenter) < 2, 'Pharmacy centre is off');
+    const centreErr = haversineM(pharmacy.center, circleCenter);
+    check(centreErr < Math.max(2, pxM), `Pharmacy centre is ${centreErr.toFixed(1)} m off`);
     check(Math.abs(pharmacy.radiusM - circleRadius) <= Math.max(3, circleRadius * 0.05), `Pharmacy radius ${pharmacy.radiusM} vs drawn ${circleRadius.toFixed(0)}`);
     check(park?.shape === 'polygon' && park.polygon.length >= 3 && park.polygon.length <= 60, `Park: ${park?.polygon.length} vertices`);
     check(pointInPolygon(PARK, park.polygon), 'the park is not inside its freehand outline');
@@ -723,37 +747,69 @@ try {
     await page.getByRole('button', { name: 'Edit shape' }).click();
     await page.getByText('Drag the circle to move it · drag the edge handle to resize').waitFor();
     let v = await harsh.stableViewport();
-    const from = await harsh.px(facts.pharmacy.center, v);
+    // The editor moves the shape by the pointer's travel, so the expectation is
+    // the exact centre plus that travel; the pointer itself lands on whole pixels.
+    const exactFrom = await harsh.px(facts.pharmacy.center, v);
+    const from = wholePx(exactFrom);
     const delta = { x: 70, y: 45 };
     const moveTo = { x: from.x + delta.x, y: from.y + delta.y };
-    const expectCenter = await harsh.ground(moveTo.x, moveTo.y, v);
+    const expectCenter = await harsh.ground(exactFrom.x + delta.x, exactFrom.y + delta.y, v);
     let patched = page.waitForResponse((r) => r.url().includes(`/api/v1/places/${facts.pharmacy.id}`) && r.request().method() === 'PATCH');
     await harsh.drag(from, moveTo);
     check((await patched).ok(), 'moving the circle failed to save');
+    // Grabbing the fence must move the fence, not the map under it.
+    let after = await harsh.stableViewport();
+    check(sameView(v, after), `the map panned while the circle was dragged: ${JSON.stringify({ before: v.center, after: after.center })}`);
 
-    v = await harsh.stableViewport();
+    v = after;
     const centerPx = await harsh.px(expectCenter, v);
-    const edge = { x: centerPx.x + facts.pharmacy.radiusM / metresPerPixel(expectCenter.lat, v.zoom), y: centerPx.y };
-    const edgeTo = { x: edge.x + 40, y: edge.y };
-    const expectRadius = haversineM(expectCenter, await harsh.ground(edgeTo.x, edgeTo.y, v));
+    const exactEdge = { x: centerPx.x + facts.pharmacy.radiusM / metresPerPixel(expectCenter.lat, v.zoom), y: centerPx.y };
+    const edge = wholePx(exactEdge);
+    const expectRadius = haversineM(expectCenter, await harsh.ground(exactEdge.x + 40, exactEdge.y, v));
     patched = page.waitForResponse((r) => r.url().includes(`/api/v1/places/${facts.pharmacy.id}`) && r.request().method() === 'PATCH');
-    await harsh.drag(edge, edgeTo);
+    // Halfway through the drag the radius label already says the new size.
+    const m = page.mouse;
+    await m.move(edge.x, edge.y);
+    await m.down();
+    await sleep(60);
+    for (let i = 1; i <= 6; i += 1) {
+      await m.move(edge.x + (20 * i) / 6, edge.y);
+      await sleep(16);
+    }
+    const midRadius = haversineM(expectCenter, await harsh.ground(exactEdge.x + 20, exactEdge.y, v));
+    const midLabel = await waitFor('the live radius label mid-drag', async () => {
+      const text = await page.getByTestId('fence-metre-label').first().innerText().catch(() => '');
+      const n = Number(/(\d+)\s*m/.exec(text)?.[1]);
+      return Math.abs(n - midRadius) <= 2 ? text : null;
+    }, { timeout: 3000, every: 50 });
+    const resizingShot = await harsh.shot(OUT, '05-circle-resizing');
+    for (let i = 1; i <= 6; i += 1) {
+      await m.move(edge.x + 20 + (20 * i) / 6, edge.y);
+      await sleep(16);
+    }
+    await m.up();
     check((await patched).ok(), 'resizing the circle failed to save');
+    after = await harsh.stableViewport();
+    check(sameView(v, after), 'the map panned while the edge handle was dragged');
     const editShot = await harsh.shot(OUT, '05-circle-edited');
     await page.getByRole('button', { name: 'Done', exact: true }).click();
 
-    // ---- polygon: drag the north-east corner out
-    await harsh.stableViewport();
+    // ---- polygon: drag the north-east corner out. Editing the circle zoomed in
+    // on it, so first zoom out until the grocery is back on screen, as a person would.
+    await revealPlace('Grocery');
     await page.getByRole('button', { name: 'Place Grocery' }).first().click();
     await page.getByRole('button', { name: 'Edit shape' }).click();
     await page.getByText(/4 corners · up to/).waitFor();
     v = await harsh.stableViewport();
-    const corner = await harsh.px(facts.grocery.polygon[1], v);
+    const exactCorner = await harsh.px(facts.grocery.polygon[1], v);
+    const corner = wholePx(exactCorner);
     const cornerTo = { x: corner.x + 30, y: corner.y - 25 };
-    const expectCorner = await harsh.ground(cornerTo.x, cornerTo.y, v);
+    const expectCorner = await harsh.ground(exactCorner.x + 30, exactCorner.y - 25, v);
     patched = page.waitForResponse((r) => r.url().includes(`/api/v1/places/${facts.grocery.id}`) && r.request().method() === 'PATCH');
     await harsh.drag(corner, cornerTo, { hold: 30 });
     check((await patched).ok(), 'reshaping the polygon failed to save');
+    after = await harsh.stableViewport();
+    check(sameView(v, after), 'the map panned while a corner was dragged');
     const reshapeShot = await harsh.shot(OUT, '05-polygon-reshaped');
     await page.getByRole('button', { name: 'Done', exact: true }).click();
 
@@ -777,12 +833,33 @@ try {
     await waitFor('the Pharmacy badge to show the new radius after reload', async () =>
       (await page.innerText('body')).includes(`${pharmacy.radiusM}m`),
     );
+    // The reshaped outline is what the map draws again, not only what the API
+    // says: a click just beyond where the old corner was, inside the new one,
+    // lands on the Grocery fence and selects it.
+    const oldCorner = facts.grocery.polygon[1];
+    const probe = {
+      lat: oldCorner.lat + (grocery.polygon[1].lat - oldCorner.lat) * 0.6,
+      lon: oldCorner.lon + (grocery.polygon[1].lon - oldCorner.lon) * 0.6,
+    };
+    check(pointInPolygon(probe, grocery.polygon) && !pointInPolygon(probe, facts.grocery.polygon), 'probe point is not in the reshaped area');
+    await revealPlace('Grocery');
+    const redrawn = await waitFor('a click in the reshaped corner to select Grocery', async () => {
+      const at = wholePx(await harsh.px(probe));
+      await page.mouse.click(at.x, at.y);
+      await sleep(400);
+      const card = await page.getByRole('button', { name: 'Deselect place' }).count();
+      const text = await page.innerText('body');
+      return card && /Grocery[\s\S]{0,40}polygon · 4 corners/.test(text) ? at : null;
+    }, { timeout: 20000, every: 800 });
+    await page.getByRole('button', { name: 'Deselect place' }).click();
     facts.grocery = grocery;
     facts.pharmacy = pharmacy;
     return {
       circle: { movedM: Math.round(moved), centreErrM: Math.round(centerErr * 100) / 100, radiusM: pharmacy.radiusM, expectedRadiusM: Math.round(expectRadius) },
       polygon: { cornerErrM: Math.round(cornerErr * 100) / 100 },
-      shots: [editShot, reshapeShot, await harsh.shot(OUT, '05-after-reload')],
+      liveRadiusLabel: midLabel,
+      reshapedCornerClick: redrawn,
+      shots: [resizingShot, editShot, reshapeShot, await harsh.shot(OUT, '05-after-reload')],
     };
   });
 
