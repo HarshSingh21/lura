@@ -22,13 +22,19 @@ export function useLive(enabled = true) {
   useEffect(() => {
     if (!enabled) return;
 
-    const { applyPosition, applyGeoEvent, applyReminder, applyAcl, setStatus, pushToast } = useStore.getState();
+    const { applyPosition, applyGeoEvent, applyReminder, applyAcl, setStatus, pushToast, setViewer } =
+      useStore.getState();
 
     const conn = connectLive({
       path: '/ws',
       onStatus: setStatus,
       onFrame: (frame) => {
         switch (frame.type) {
+          case 'hello':
+            // Who "me" is, so a crossing can be told apart from a peer's.
+            setViewer(frame.data.viewerId);
+            break;
+
           case 'snapshot':
             // The snapshot exists so the map paints before the first live fix;
             // devices carry their last known point.
@@ -55,6 +61,8 @@ export function useLive(enabled = true) {
             break;
 
           case 'geo':
+            // Toast, chime and notification-centre entry happen in the store,
+            // deduped against the notify frame for the same crossing.
             applyGeoEvent(frame.data);
             // A geofence event can complete notes and change place counters.
             void qc.invalidateQueries({ queryKey: keys.overview });

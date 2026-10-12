@@ -45,6 +45,7 @@
     "web": "expo start --web",
     "build:web": "expo export --platform web --output-dir dist && node scripts/copy-maplibre-worker.mjs",
     "typecheck": "tsc --noEmit",
+    "test:unit": "node --no-warnings=MODULE_TYPELESS_PACKAGE_JSON --test \"src/**/*.test.mjs\"",
     "lint": "expo lint",
     "postinstall": "node scripts/copy-maplibre-worker.mjs || true"
   },
