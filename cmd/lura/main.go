@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/HarshSingh21/locnot/internal/activity"
 	"github.com/HarshSingh21/locnot/internal/ai"
 	"github.com/HarshSingh21/locnot/internal/auth"
 	"github.com/HarshSingh21/locnot/internal/bus"
@@ -252,6 +253,7 @@ func run() error {
 		Shares:   shares,
 		Connect:  people,
 		History:  hist,
+		Activity: activity.New(st, hist),
 		AI:       suggester,
 		Auth:     controlPlaneAuth,
 		Devices:  &auth.DeviceAuth{Devices: st, APIToken: cfg.APIToken, UserID: seed.DemoUserID},
