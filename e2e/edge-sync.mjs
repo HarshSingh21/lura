@@ -585,7 +585,16 @@ try {
         `speed labels differ: Harsh "${hm.label}", Nishtha "${nm.label}"`);
       check(hm.heading === nm.heading && hm.heading === '52', `heading differs: Harsh ${hm.heading}, Nishtha ${nm.heading}`);
       check(speedLabel(hRow.text) === speedLabel(nRow.text), `rail speed differs: "${hRow.text}" vs "${nRow.text}"`);
-      const seen = new Date(server.lastSeen).getTime();
+      // The app ages a fix from when it was taken (fixTs: the device's own
+      // time, whole seconds for OwnTracks' tst, corrected for its clock), the
+      // server's lastSeen is when it arrived: judge the rows by the fixTs the
+      // socket carried for that same fix.
+      const takenAt = (dev, point, lastSeen) => {
+        const f = harsh.obs.frames.filter((x) => x.type === 'position' && x.data.deviceId === dev).at(-1);
+        const t = f?.data.fixTs ? new Date(f.data.fixTs).getTime() : NaN;
+        return Number.isFinite(t) && near(f.data.point, point) ? t : new Date(lastSeen).getTime();
+      };
+      const seen = takenAt(facts.nDev.id, server.lastPoint, server.lastSeen);
       for (const [who, row] of [['Harsh', hRow], ['Nishtha', nRow]]) {
         const want = (row.at - seen) / 1000;
         check(ageMatches(row.text, want), `${who}'s "last ping" says "${row.text}", the server's last fix is ${want.toFixed(1)} s old`);
@@ -598,7 +607,8 @@ try {
         `Harsh: server ${JSON.stringify(serverH.lastPoint)}, Nishtha sees ${JSON.stringify(hm2)}, he sees ${JSON.stringify(hOwnRow)}`);
       check(speedLabel(hm2.label) === speedLabel(hOwnRow.label) && hm2.heading === hOwnRow.heading,
         `Harsh's speed/heading differ: Nishtha "${hm2.label}" ${hm2.heading}, Harsh "${hOwnRow.label}" ${hOwnRow.heading}`);
-      const seenH = new Date(serverH.lastSeen).getTime();
+      // A browser publishes a fix up to its gate's interval after taking it.
+      const seenH = takenAt(facts.hDev.id, serverH.lastPoint, serverH.lastSeen);
       for (const [who, row] of [['Harsh (own)', hOwnLine], ['Nishtha (peer)', nPeerLine]]) {
         const want = (row.at - seenH) / 1000;
         check(ageMatches(row.text, want), `${who} row for Harsh says "${row.text}", his last fix is ${want.toFixed(1)} s old`);
