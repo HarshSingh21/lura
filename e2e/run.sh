@@ -3,6 +3,8 @@
 #
 #   e2e/run.sh                 # MapLibre on localhost, then Mappls on lura.com if a key is set
 #   E2E_PHASES=maplibre e2e/run.sh
+#   E2E_PORT=8091 e2e/run.sh       # its own server, so several runs can go at once
+#   E2E_STEPS=6,8 E2E_SEED=1 e2e/run.sh   # only those steps; step 4's fences come from the API
 #   E2E_KEEP_RUNNING=1 e2e/run.sh   # leave Lura on :8080 serving the build afterwards
 #
 # Requirements: Docker with the `lura-keycloak` container running (see
@@ -17,7 +19,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${E2E_OUT:-$(mktemp -d -t lura-e2e)}"
-PORT=8080
+PORT="${E2E_PORT:-8080}"
 KC_CONTAINER="${KC_CONTAINER:-lura-keycloak}"
 KC_URL="${KC_URL:-http://localhost:8085}"
 PHASES="${E2E_PHASES:-maplibre mappls}"
@@ -82,6 +84,7 @@ stop_port() {
 # run; everything else is the product default.
 server_env() {
   local provider="$1"
+  echo "LURA_HTTP_ADDR=:$PORT"
   echo "LURA_OIDC_ISSUER=$KC_URL/realms/lura"
   echo "LURA_OIDC_AUDIENCE=lura-api"
   echo "LURA_WEB_DIR=$ROOT/client/dist"
@@ -130,7 +133,7 @@ for phase in $PHASES; do
   log "phase $phase: $base"
   mkdir -p "$OUT/$phase"
   start_server "$phase" "$OUT/$phase/server.log"
-  if ! E2E_BASE="$base" E2E_PROVIDER="$phase" E2E_OUT="$OUT/$phase" E2E_LURASIM="$OUT/lurasim" \
+  if ! E2E_BASE="$base" E2E_API="http://localhost:$PORT" E2E_PORT="$PORT" E2E_PROVIDER="$phase" E2E_OUT="$OUT/$phase" E2E_LURASIM="$OUT/lurasim" \
     node "$ROOT/e2e/scenario.mjs"; then
     status=1
   fi

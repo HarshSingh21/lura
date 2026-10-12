@@ -52,7 +52,7 @@ const browser = await chromium.launch({
   executablePath: CHROME,
   headless: process.env.E2E_HEADED !== '1',
   args: [
-    '--host-resolver-rules=MAP lura.com 127.0.0.1:8080',
+    `--host-resolver-rules=MAP lura.com 127.0.0.1:${process.env.E2E_PORT ?? 8080}`,
     '--autoplay-policy=no-user-gesture-required',
     '--use-angle=swiftshader',
     '--enable-unsafe-swiftshader',
@@ -79,7 +79,20 @@ function stats(values) {
   return { n: s.length, min: round(s[0]), p50: round(q(0.5)), p95: round(q(0.95)), max: round(s[s.length - 1]) };
 }
 
+// E2E_STEPS=4,5 runs only those steps (1–3 always run: they sign in, connect
+// and start the devices every later step needs). E2E_SEED=1 creates step 4's
+// fences and note through the API instead of drawing them, so steps 6–8 can be
+// exercised without depending on the editor.
+const ONLY = (process.env.E2E_STEPS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+const SEED = process.env.E2E_SEED === '1';
+
 async function step(id, title, fn) {
+  if (ONLY.length && !['1', '2', '3'].includes(id) && !ONLY.includes(id) && !(id === '4' && SEED)) {
+    results.push({ id, title, pass: true, skipped: true, ms: 0 });
+    process.stdout.write(`\n[${id}] ${title}\n  SKIPPED (E2E_STEPS)\n`);
+    return;
+  }
+  if (id === '4' && SEED && !ONLY.includes('4')) fn = seedStep4;
   const started = Date.now();
   process.stdout.write(`\n[${id}] ${title}\n`);
   try {
@@ -238,6 +251,24 @@ async function edgeHasFenceColour(person, ring) {
     },
     { b64: png.toString('base64'), pts },
   );
+}
+
+/** seedStep4 builds what step 4 draws, over the API, with the same facts. */
+async function seedStep4() {
+  const ring = (c, dLat, dLon) => [
+    { lat: c.lat - dLat, lon: c.lon - dLon }, { lat: c.lat - dLat, lon: c.lon + dLon },
+    { lat: c.lat + dLat, lon: c.lon + dLon }, { lat: c.lat + dLat, lon: c.lon - dLon },
+  ];
+  const mk = (body) => harsh.api('POST', '/api/v1/places', body);
+  const g = await mk({ name: 'Grocery', shape: 'polygon', polygon: ring(GROCERY, 0.0012, 0.0012), triggers: ['arrive', 'leave', 'passby'], watchUserIds: [nishtha.id] });
+  const ph = await mk({ name: 'Pharmacy', shape: 'circle', center: PHARMACY, radiusM: 120, triggers: ['arrive'] });
+  await mk({ name: 'Park', shape: 'polygon', polygon: ring(PARK, 0.001, 0.0015), triggers: ['arrive'] });
+  const n = await harsh.api('POST', '/api/v1/notes', { text: 'buy milk', placeId: (g.place ?? g).id, trigger: 'arrive', watchUserId: nishtha.id, notifyUserIds: [harsh.id, nishtha.id] });
+  facts.grocery = g.place ?? g;
+  facts.pharmacy = ph.place ?? ph;
+  facts.note = n.note ?? n;
+  check(facts.grocery?.id && facts.pharmacy?.id && facts.note?.id, `seeding failed: ${JSON.stringify({ g, ph, n })}`);
+  return { seeded: true, grocery: facts.grocery.id, note: facts.note.id };
 }
 
 // ======================================================================
@@ -825,6 +856,7 @@ try {
     base: BASE,
     at: new Date().toISOString(),
     pass: results.length === 9 && results.every((r) => r.pass),
+    partial: ONLY.length > 0 || SEED,
     results,
     errors: Object.fromEntries(people.map((p) => [p.name, { errors: p.errors, badResponses: p.badResponses }])),
   };
