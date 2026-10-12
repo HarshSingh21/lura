@@ -88,6 +88,24 @@ export function decodeIdToken(idToken: string | undefined): Profile | undefined 
   }
 }
 
+/**
+ * tokenLifetimeMs is how long the realm issues this access token for (exp − iat),
+ * or NaN when it cannot be read. The session renews ahead of expiry by a share
+ * of this, which is what keeps a realm with short tokens from refresh-looping.
+ */
+export function tokenLifetimeMs(accessToken: string | undefined): number {
+  const payload = accessToken?.split('.')[1];
+  if (!payload) return Number.NaN;
+  try {
+    const claims = JSON.parse(bytesToUtf8(base64UrlToBytes(payload))) as Claims;
+    const exp = claims.exp;
+    const iat = claims.iat;
+    return typeof exp === 'number' && typeof iat === 'number' && exp > iat ? (exp - iat) * 1000 : Number.NaN;
+  } catch {
+    return Number.NaN;
+  }
+}
+
 /** initialsFor is the two-letter avatar fallback used by the top bar. */
 export function initialsFor(profile: Profile | undefined): string {
   const source = profile?.name ?? profile?.preferredUsername ?? profile?.email;
