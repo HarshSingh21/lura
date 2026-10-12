@@ -6,6 +6,7 @@
 #   E2E_PORT=8091 e2e/run.sh       # its own server, so several runs can go at once
 #   E2E_STEPS=6,8 E2E_SEED=1 e2e/run.sh   # only those steps; step 4's fences come from the API
 #   E2E_KEEP_RUNNING=1 e2e/run.sh   # leave Lura on :$E2E_PORT (default 8080) serving the build afterwards
+#   E2E_SUITE=edge-sync E2E_PORT=8096 e2e/run.sh   # the edge-case suite (e2e/edge.sh)
 #
 # Requirements: Docker with the `lura-keycloak` container running (see
 # deploy/keycloak/README.md), Go, Node 20+, Google Chrome. For the Mappls phase,
@@ -23,6 +24,16 @@ PORT="${E2E_PORT:-8080}"
 KC_CONTAINER="${KC_CONTAINER:-lura-keycloak}"
 KC_URL="${KC_URL:-http://localhost:8085}"
 PHASES="${E2E_PHASES:-maplibre mappls}"
+SUITE="${E2E_SUITE:-scenario}"
+case "$SUITE" in
+  scenario) ;;
+  edge-sync) PHASES="maplibre" ;; # the edge cases are about sync, not basemaps
+  *) echo "e2e: unknown E2E_SUITE=$SUITE (scenario | edge-sync)"; exit 2 ;;
+esac
+# The web build the server serves. The edge suite builds its own, against its
+# own Keycloak client, so it never overwrites client/dist under another run.
+WEB_DIR="$ROOT/client/dist"
+[ "$SUITE" = "edge-sync" ] && WEB_DIR="${E2E_WEB_DIR:-$OUT/web}"
 mkdir -p "$OUT"
 echo "e2e: output in $OUT"
 
@@ -51,19 +62,20 @@ ensure_keycloak() {
     "${kc[@]}" set-password -r lura --username "$user" --new-password "$pass" >/dev/null
     "${kc[@]}" add-roles -r lura --uusername "$user" --rolename user >/dev/null 2>&1 || true
   done
-  ensure_redirects
+  ensure_redirects lura-app
+  if [ "$SUITE" = "edge-sync" ]; then ensure_edge_client; fi
 }
 
-# ensure_redirects lets the lura-app client sign in and out on this run's port,
-# on both names the phases use, by adding (never replacing) its redirect URIs,
+# ensure_redirects lets a client (lura-app, or the edge suite's lura-app-edge)
+# sign in and out on this run's port, on both names the phases use, by adding (never replacing) its redirect URIs,
 # web origins and post-logout URIs. A realm imported for :8080 has no others, so
 # without this any other E2E_PORT fails at Keycloak's "Invalid redirect_uri".
 ensure_redirects() {
-  local kc=(docker exec "$KC_CONTAINER" /opt/keycloak/bin/kcadm.sh) id current wanted
-  id="$("${kc[@]}" get clients -r lura -q clientId=lura-app --fields id 2>/dev/null |
+  local client="$1" kc=(docker exec "$KC_CONTAINER" /opt/keycloak/bin/kcadm.sh) id current wanted
+  id="$("${kc[@]}" get clients -r lura -q "clientId=$client" --fields id 2>/dev/null |
     node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const c=JSON.parse(s);process.stdout.write(c[0]?c[0].id:"")})')"
   if [ -z "$id" ]; then
-    echo "e2e: the lura realm has no lura-app client" >&2
+    echo "e2e: the lura realm has no $client client" >&2
     exit 1
   fi
   # Whole client: kcadm's --fields drops attribute keys that contain dots.
@@ -94,13 +106,35 @@ ensure_redirects() {
   if [ -n "$wanted" ]; then
     # stdin reaches kcadm only with docker exec -i.
     docker exec -i "$KC_CONTAINER" /opt/keycloak/bin/kcadm.sh update "clients/$id" -r lura -f - <<<"$wanted" >/dev/null
-    echo "keycloak: lura-app now accepts :$PORT on localhost and lura.com"
+    echo "keycloak: $client now accepts :$PORT on localhost and lura.com"
   fi
+}
+
+# ensure_edge_client creates lura-app-edge: lura-app's twin with 60 s access
+# tokens, so the token-expiry case can watch the app outlive several token
+# lifetimes without touching the realm or lura-app. Defined in
+# e2e/keycloak-edge-client.json; idempotent, and safe to delete from Keycloak at
+# any time (the next edge run recreates it). Its redirects follow the run's port
+# like lura-app's do.
+ensure_edge_client() {
+  local kc=(docker exec "$KC_CONTAINER" /opt/keycloak/bin/kcadm.sh)
+  if [ "$("${kc[@]}" get clients -r lura -q clientId=lura-app-edge --fields id 2>/dev/null | grep -c '"id"')" = "0" ]; then
+    docker exec -i "$KC_CONTAINER" /opt/keycloak/bin/kcadm.sh create clients -r lura -f - \
+      <"$ROOT/e2e/keycloak-edge-client.json" >/dev/null
+    echo "keycloak: created client lura-app-edge"
+  fi
+  ensure_redirects lura-app-edge
 }
 
 # ---------------------------------------------------------------- build
 build() {
-  if [ "${E2E_SKIP_BUILD:-0}" != "1" ]; then
+  if [ "$SUITE" = "edge-sync" ] && { [ "${E2E_SKIP_BUILD:-0}" != "1" ] || [ ! -f "$WEB_DIR/index.html" ]; }; then
+    log "build: web client for lura-app-edge → $WEB_DIR"
+    (cd "$ROOT/client" && node scripts/copy-maplibre-worker.mjs >/dev/null &&
+      EXPO_PUBLIC_KEYCLOAK_CLIENT_ID=lura-app-edge npx expo export --platform web --output-dir "$WEB_DIR" \
+        >"$OUT/build-web.log" 2>&1) || { tail -40 "$OUT/build-web.log"; exit 1; }
+    grep -rlq lura-app-edge "$WEB_DIR/_expo" || { echo "e2e: the web build does not use lura-app-edge"; exit 1; }
+  elif [ "${E2E_SKIP_BUILD:-0}" != "1" ]; then
     log "build: web client"
     (cd "$ROOT/client" && npm run build:web >"$OUT/build-web.log" 2>&1) || { tail -40 "$OUT/build-web.log"; exit 1; }
   fi
@@ -132,10 +166,14 @@ server_env() {
   echo "LURA_HTTP_ADDR=:$PORT"
   echo "LURA_OIDC_ISSUER=$KC_URL/realms/lura"
   echo "LURA_OIDC_AUDIENCE=lura-api"
-  echo "LURA_WEB_DIR=$ROOT/client/dist"
+  echo "LURA_WEB_DIR=$WEB_DIR"
   echo "LURA_ALLOWED_ORIGINS=http://localhost:$PORT,http://lura.com:$PORT"
   echo "LURA_COOLOFF=${E2E_COOLOFF:-15s}"
   echo "LURA_LOG_LEVEL=debug"
+  if [ "$SUITE" = "edge-sync" ]; then
+    # Short, so the stale-fix case can post a fix older than it.
+    echo "LURA_FRESH_WINDOW=${E2E_FRESH_WINDOW:-2m}"
+  fi
   if [ "$provider" = "mappls" ]; then
     echo "LURA_MAP_PROVIDER=mappls"
     echo "LURA_MAPPLS_WEB_KEY=${LURA_MAPPLS_WEB_KEY:-}"
@@ -179,7 +217,7 @@ for phase in $PHASES; do
   mkdir -p "$OUT/$phase"
   start_server "$phase" "$OUT/$phase/server.log"
   if ! E2E_BASE="$base" E2E_API="http://localhost:$PORT" E2E_PORT="$PORT" E2E_PROVIDER="$phase" E2E_OUT="$OUT/$phase" E2E_LURASIM="$OUT/lurasim" \
-    node "$ROOT/e2e/scenario.mjs"; then
+    node "$ROOT/e2e/$SUITE.mjs"; then
     status=1
   fi
   stop_server

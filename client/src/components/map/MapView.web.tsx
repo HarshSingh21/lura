@@ -3,7 +3,7 @@
 // requires. Without it the GL canvas is mis-sized and the controls are unstyled.
 import 'maplibre-gl/dist/maplibre-gl.css';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import {
   setWorkerUrl,
@@ -198,6 +198,28 @@ function MapLibreWebMap(props: MapViewProps) {
   // Probed once per mount: the answer cannot change while the page is open.
   const [failed, setFailed] = useState(() => !hasWebGL2());
   const [view, setView] = useState<Viewport>({ center, zoom, width: 0, height: 0 });
+  // Bumped when the GL map comes into existence, so the effects that drive it
+  // run against it even if their own inputs have not changed since.
+  const [mapEpoch, setMapEpoch] = useState(0);
+  // The camera the map is created with: the newest props, not the first.
+  const camera = useRef({ center, zoom });
+
+  // Until the map exists, the overlays are projected through the camera the
+  // map will be created with, sized from the host element — so markers and
+  // fences paint on the first frame instead of after the basemap.
+  useLayoutEffect(() => {
+    if (mapRef.current) return;
+    const node = hostRef.current as unknown as HTMLDivElement | null;
+    const width = node?.clientWidth ?? 0;
+    const height = node?.clientHeight ?? 0;
+    if (width <= 0 || height <= 0) return;
+    setView((prev) =>
+      prev.width === width && prev.height === height && prev.zoom === zoom &&
+      prev.center.lat === center.lat && prev.center.lon === center.lon
+        ? prev
+        : { center, zoom, width, height },
+    );
+  }, [center, zoom, mapEpoch]);
 
   // The chosen basemap resolved to a style. Memoised so an inline raster style
   // keeps its identity between renders and is only applied when it changes.
@@ -207,115 +229,161 @@ function MapLibreWebMap(props: MapViewProps) {
 
   useEffect(() => {
     viewportListener.current = onViewportChange;
+    camera.current = { center, zoom };
     latest.current = { fences, tracks, onPressFence, darkGround };
     styleRef.current = style;
   });
 
-  // ---- create the map once
+  // ---- create the map once — a frame after the first paint
+  //
+  // Creating a WebGL map is the heaviest thing this screen does (seconds of
+  // main thread on a slow machine or a software renderer). Doing it in the
+  // first commit held back everything drawn on top of it, so after a reload
+  // the people on the map appeared only once the basemap was built. The
+  // overlays are painted first, from the host's own size (below), and the map
+  // is created right after; `mapEpoch` re-runs the effects that talk to it.
   useEffect(() => {
     if (offline || failed) return;
     const node = hostRef.current as unknown as HTMLDivElement | null;
     if (!node) return;
 
-    let map: MapLibreMap;
-    try {
-      map = new MapLibreMap({
-        container: node,
-        style: styleRef.current,
-        center: [center.lon, center.lat],
-        zoom,
-        attributionControl: false,
-        interactive,
-        // The map is a backdrop, not a game: a short fade keeps label swaps calm
-        // without paying for extra frames.
-        fadeDuration: 120,
-      });
-    } catch {
-      // Deferred a microtask so the fallback renders as a fresh update rather
-      // than a cascade inside this effect.
-      void Promise.resolve().then(() => setFailed(true));
-      return;
-    }
-    mapRef.current = map;
-    appliedStyle.current = styleRef.current;
-
-    const syncView = () => {
-      const c = map.getCenter();
-      const canvas = map.getCanvas();
-      const next = {
-        center: { lat: c.lat, lon: c.lng },
-        zoom: map.getZoom(),
-        width: canvas.clientWidth,
-        height: canvas.clientHeight,
-      };
-      // What the map shows is, by definition, applied. The caller mirrors the
-      // zoom back as its `zoom` prop; without this, the first frame of an
-      // animated zoom would be echoed back as a new target and stop it there
-      // (the +/- buttons moved the map by a hundredth of a level).
-      appliedZoom.current = next.zoom;
-      setView(next);
-      viewportListener.current?.(next);
-    };
-
-    // `style.load` fires for the first style and again after every setStyle,
-    // which wipes custom sources and layers — so this is where Lura's fence and
-    // track layers are (re-)added, filled with the newest data.
-    map.on('style.load', () => {
-      withMap(map, (m) => {
-        installLayers(m, dark, latest.current.darkGround);
-        updateSources(m, latest.current.fences, latest.current.tracks);
-      });
+    let gone = false;
+    let teardown: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const frame = requestAnimationFrame(() => {
+      timer = setTimeout(() => {
+        if (!gone) teardown = create(node);
+      }, 0);
     });
-    map.on('load', syncView);
-    map.on('move', syncView);
-    // Fires for a finished animation and, synchronously, for one that a new
-    // easeTo replaced — which is why targets are recorded after each call.
-    map.on('moveend', () => {
-      easing.current = {};
-    });
-    map.on('resize', syncView);
-    map.on('dragstart', () => {
-      userMoved.current = true;
-    });
-    map.on('zoomstart', (event) => {
-      // Only a person zooming counts; an easeTo carrying a zoom is not them.
-      if ((event as { originalEvent?: unknown }).originalEvent) userMoved.current = true;
-    });
-    // Polygon fences are tapped through their GL fill (see FenceOverlay):
-    // circles have screen-space tap targets above the canvas already.
-    map.on('click', (event: MapMouseEvent) => {
-      const press = latest.current.onPressFence;
-      if (!press) return;
-      withMap(map, (m) => {
-        if (!m.getLayer(FENCE_FILL)) return;
-        const hit = m
-          .queryRenderedFeatures(event.point, { layers: [FENCE_FILL] })
-          .find((f) => f.properties?.shape === 'polygon');
-        const id = hit?.properties?.id;
-        if (typeof id === 'string') press(id);
-      });
-    });
-    map.on('error', (event) => {
-      // A missing tile is survivable; a missing GPU or an unloadable style is not.
-      const ev = event as { error?: { message?: string; name?: string }; sourceId?: unknown; tile?: unknown };
-      const message = `${ev.error?.name ?? ''} ${ev.error?.message ?? ''}`;
-      if (fatalMapError(message, ev)) {
-        mapRef.current = null; // stop every imperative call below from touching it
-        setFailed(true);
-      }
-    });
-
     return () => {
-      mapRef.current = null;
-      try {
-        map.remove();
-      } catch {
-        // A map that failed to initialise throws from remove() too; there is
-        // nothing left to clean up and nothing useful to report.
-      }
+      gone = true;
+      cancelAnimationFrame(frame);
+      if (timer !== undefined) clearTimeout(timer);
+      teardown?.();
     };
+
+    function create(node: HTMLDivElement): (() => void) | undefined {
+      let map: MapLibreMap;
+      try {
+        map = new MapLibreMap({
+          container: node,
+          style: styleRef.current,
+          center: [camera.current.center.lon, camera.current.center.lat],
+          zoom: camera.current.zoom,
+          attributionControl: false,
+          interactive,
+          // The map is a backdrop, not a game: a short fade keeps label swaps calm
+          // without paying for extra frames.
+          fadeDuration: 120,
+        });
+      } catch {
+        // Deferred a microtask so the fallback renders as a fresh update rather
+        // than a cascade inside this effect.
+        void Promise.resolve().then(() => setFailed(true));
+        return undefined;
+      }
+      mapRef.current = map;
+      appliedStyle.current = styleRef.current;
+
+      const syncView = () => {
+        const c = map.getCenter();
+        const canvas = map.getCanvas();
+        // The canvas is sized by MapLibre once it has laid out; until then the
+        // host element already has the size it will get.
+        const next = {
+          center: { lat: c.lat, lon: c.lng },
+          zoom: map.getZoom(),
+          width: canvas.clientWidth || node.clientWidth,
+          height: canvas.clientHeight || node.clientHeight,
+        };
+        // What the map shows is, by definition, applied. The caller mirrors the
+        // zoom back as its `zoom` prop; without this, the first frame of an
+        // animated zoom would be echoed back as a new target and stop it there
+        // (the +/- buttons moved the map by a hundredth of a level).
+        appliedZoom.current = next.zoom;
+        setView(next);
+        viewportListener.current?.(next);
+      };
+
+      // `style.load` fires for the first style and again after every setStyle,
+      // which wipes custom sources and layers — so this is where Lura's fence and
+      // track layers are (re-)added, filled with the newest data.
+      map.on('style.load', () => {
+        withMap(map, (m) => {
+          installLayers(m, dark, latest.current.darkGround);
+          updateSources(m, latest.current.fences, latest.current.tracks);
+        });
+      });
+      map.on('load', syncView);
+      map.on('move', syncView);
+      // The camera and the canvas size are known as soon as the map exists; the
+      // style and its first tiles come from the network. Waiting for 'load' to
+      // report the viewport left every marker and fence (drawn by Lura's own
+      // overlay, not by the style) culled at width 0 until the basemap arrived —
+      // seconds on a slow link, after every reload.
+      const firstFrame = requestAnimationFrame(() => {
+        if (mapRef.current === map) syncView();
+      });
+      // And again whenever the host gets its (final) size, which on a cold load
+      // can be after that first frame.
+      const sized = typeof ResizeObserver === 'function'
+        ? new ResizeObserver(() => {
+            if (mapRef.current === map && node.clientWidth > 0) syncView();
+          })
+        : null;
+      sized?.observe(node);
+      // Fires for a finished animation and, synchronously, for one that a new
+      // easeTo replaced — which is why targets are recorded after each call.
+      map.on('moveend', () => {
+        easing.current = {};
+      });
+      map.on('resize', syncView);
+      map.on('dragstart', () => {
+        userMoved.current = true;
+      });
+      map.on('zoomstart', (event) => {
+        // Only a person zooming counts; an easeTo carrying a zoom is not them.
+        if ((event as { originalEvent?: unknown }).originalEvent) userMoved.current = true;
+      });
+      // Polygon fences are tapped through their GL fill (see FenceOverlay):
+      // circles have screen-space tap targets above the canvas already.
+      map.on('click', (event: MapMouseEvent) => {
+        const press = latest.current.onPressFence;
+        if (!press) return;
+        withMap(map, (m) => {
+          if (!m.getLayer(FENCE_FILL)) return;
+          const hit = m
+            .queryRenderedFeatures(event.point, { layers: [FENCE_FILL] })
+            .find((f) => f.properties?.shape === 'polygon');
+          const id = hit?.properties?.id;
+          if (typeof id === 'string') press(id);
+        });
+      });
+      map.on('error', (event) => {
+        // A missing tile is survivable; a missing GPU or an unloadable style is not.
+        const ev = event as { error?: { message?: string; name?: string }; sourceId?: unknown; tile?: unknown };
+        const message = `${ev.error?.name ?? ''} ${ev.error?.message ?? ''}`;
+        if (fatalMapError(message, ev)) {
+          mapRef.current = null; // stop every imperative call below from touching it
+          setFailed(true);
+        }
+      });
+
+      setMapEpoch((n) => n + 1);
+
+      return () => {
+        cancelAnimationFrame(firstFrame);
+        sized?.disconnect();
+        mapRef.current = null;
+        try {
+          map.remove();
+        } catch {
+          // A map that failed to initialise throws from remove() too; there is
+          // nothing left to clean up and nothing useful to report.
+        }
+      };
+    }
     // The map is created once; prop changes are applied by the effects below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offline, failed, dark, interactive]);
 
   // ---- basemap switch: swap the style, keep the camera and Lura's layers
@@ -340,7 +408,7 @@ function MapLibreWebMap(props: MapViewProps) {
     return () => {
       map.off('click', handler);
     };
-  }, [onPressMap]);
+  }, [onPressMap, mapEpoch]);
 
   // ---- follow the centre until the user takes over (or always, in follow mode)
   useEffect(() => {
@@ -390,7 +458,7 @@ function MapLibreWebMap(props: MapViewProps) {
     // Before the style has loaded (first load, or mid-swap) the style.load
     // handler applies the newest data itself.
     withMap(mapRef.current, (map) => updateSources(map, fences, tracks));
-  }, [fences, tracks]);
+  }, [fences, tracks, mapEpoch]);
 
   if (offline || failed) {
     return <MapCanvas {...props} />;

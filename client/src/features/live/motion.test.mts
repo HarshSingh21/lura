@@ -7,7 +7,10 @@ import {
   bearingDeg,
   colorForUser,
   distanceM,
+  fixTimeMs,
   formatAge,
+  isStale,
+  STALE_AFTER_MS,
   glideMsFor,
   headingFor,
   JUMP_M,
@@ -133,4 +136,23 @@ test('lerpPoint clamps to the segment', () => {
   assert.deepEqual(lerpPoint(BLR, b, 0), BLR);
   assert.deepEqual(lerpPoint(BLR, b, 2), b);
   assert.ok(Math.abs(distanceM(BLR, lerpPoint(BLR, b, 0.5)) - 50) < 0.1);
+});
+
+test('a fix is dated by the server-corrected fixTs, never by the raw device clock', () => {
+  const recvTs = '2026-10-12T12:10:00Z';
+  // A laptop ten minutes slow, sending live: the server says it is now.
+  assert.equal(fixTimeMs({ recvTs, fixTs: recvTs }), Date.parse(recvTs));
+  // A queued fix: there five minutes ago.
+  assert.equal(fixTimeMs({ recvTs, fixTs: '2026-10-12T12:05:00Z' }), Date.parse('2026-10-12T12:05:00Z'));
+  // An older server (no fixTs), or a fixTs from the future: the arrival.
+  assert.equal(fixTimeMs({ recvTs }), Date.parse(recvTs));
+  assert.equal(fixTimeMs({ recvTs, fixTs: '2026-10-12T12:20:00Z' }), Date.parse(recvTs));
+});
+
+test('a device goes stale two minutes after its last fix, not before', () => {
+  const t = Date.parse('2026-10-12T12:00:00Z');
+  assert.equal(isStale(t, t + STALE_AFTER_MS - 1), false);
+  assert.equal(isStale(t, t + STALE_AFTER_MS), true);
+  assert.equal(isStale(undefined, t), false);
+  assert.equal(isStale(Number.NaN, t), false);
 });

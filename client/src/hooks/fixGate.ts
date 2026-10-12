@@ -142,6 +142,22 @@ export class FixGate {
     this.lastSentAt = now;
     return { send: true, fix: out, moving };
   }
+
+  /**
+   * heartbeat re-sends the last position when nothing has gone out for
+   * `stillIntervalMs`. A browser's watchPosition only fires when the position
+   * changes, so a person standing still with publishing on would otherwise
+   * fall silent and look like a phone that died. The heartbeat says "still
+   * here, not moving": speed 0, no heading, stamped now.
+   */
+  heartbeat(now: number): GateDecision {
+    const sent = this.lastSent;
+    if (!sent || now - this.lastSentAt < this.opts.stillIntervalMs) return { send: false, reason: 'throttled' };
+    const out: SentFix = { ...sent, ts: Math.max(now, sent.ts + 1), speedMps: 0, headingDeg: undefined };
+    this.lastSent = out;
+    this.lastSentAt = now;
+    return { send: true, fix: out, moving: false };
+  }
 }
 
 /**

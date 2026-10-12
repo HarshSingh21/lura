@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/HarshSingh21/locnot/internal/bus"
@@ -39,6 +40,14 @@ type Service struct {
 	b     bus.Bus
 	log   *slog.Logger
 	now   func() time.Time
+
+	// transitions serialises invite, accept and remove. Each reads one row and
+	// then writes both, so two of them interleaving — Harsh and Nishtha
+	// inviting each other in the same instant — would each see "no invitation
+	// from the other" and leave two crossed pending rows nobody can accept.
+	// They are rare, human-speed operations; one lock per process is plenty
+	// (a multi-replica deployment needs the same rule as a row lock).
+	transitions sync.Mutex
 }
 
 // New returns a connections service.
@@ -101,9 +110,11 @@ func (s *Service) List(ctx context.Context, userID string) ([]Peer, error) {
 				return nil, err
 			}
 			for _, d := range devices {
-				if d.LastPoint == nil {
-					continue // a device with no fix is noise on someone else's map
-				}
+				// A device with no fix yet is listed too (no point): a viewer
+				// told only about devices with a stored fix would take a phone
+				// whose first fix is still on its way to the store for a
+				// device that no longer exists. Clients draw only what has a
+				// point.
 				peer.Devices = append(peer.Devices, PeerDevice{
 					ID: d.ID, Name: d.Name, Point: d.LastPoint, SpeedMPS: d.SpeedMPS, LastSeen: d.LastSeen,
 				})
@@ -139,11 +150,21 @@ func (s *Service) Invite(ctx context.Context, userID, email string) (domain.Conn
 		return domain.Connection{}, fmt.Errorf("cannot connect to yourself: %w", domain.ErrInvalid)
 	}
 
-	// If they already invited me, treat this as accepting rather than creating a
-	// crossed pair of pending invitations.
-	if existing, err := s.store.GetConnection(ctx, userID, peer.ID); err == nil &&
-		existing.Status == domain.ConnectionPendingIn {
-		return s.Accept(ctx, userID, peer.ID)
+	s.transitions.Lock()
+	defer s.transitions.Unlock()
+
+	if existing, err := s.store.GetConnection(ctx, userID, peer.ID); err == nil {
+		switch existing.Status {
+		case domain.ConnectionPendingIn:
+			// They already invited me: this is accepting, not a crossed pair
+			// of pending invitations.
+			return s.accept(ctx, userID, peer.ID)
+		case domain.ConnectionAccepted:
+			// Re-inviting must never downgrade a live connection to pending.
+			return domain.Connection{}, conflict("You are already connected to " + displayName(peer) + ".")
+		case domain.ConnectionPendingOut:
+			return domain.Connection{}, conflict("You already invited " + displayName(peer) + "; they have not answered yet.")
+		}
 	}
 
 	mine, err := s.store.UpsertConnection(ctx, domain.Connection{
@@ -175,6 +196,12 @@ func (s *Service) Invite(ctx context.Context, userID, email string) (domain.Conn
 
 // Accept turns a received invitation into a live, two-way connection.
 func (s *Service) Accept(ctx context.Context, userID, peerID string) (domain.Connection, error) {
+	s.transitions.Lock()
+	defer s.transitions.Unlock()
+	return s.accept(ctx, userID, peerID)
+}
+
+func (s *Service) accept(ctx context.Context, userID, peerID string) (domain.Connection, error) {
 	ctx, span := obs.Start(ctx, "connect.accept")
 	defer span.End()
 
@@ -246,6 +273,8 @@ func (s *Service) SetSharing(ctx context.Context, userID, peerID string, sharing
 // Both rows go: leaving the peer's row behind would mean a connection that one
 // person can still see in their list and that no longer works.
 func (s *Service) Remove(ctx context.Context, userID, peerID string) error {
+	s.transitions.Lock()
+	defer s.transitions.Unlock()
 	mine, _ := s.store.GetConnection(ctx, userID, peerID)
 	theirs, _ := s.store.GetConnection(ctx, peerID, userID)
 	if err := s.store.DeleteConnection(ctx, userID, peerID); err != nil {
@@ -383,6 +412,24 @@ func (s *Service) record(ctx context.Context, action domain.ConnectionAction, ac
 	}
 }
 
+// DevicesChanged tells everyone who can see this user — and the user's own
+// other sessions — that the user's device list changed (a phone deleted), so
+// their maps re-read it instead of keeping the removed device's last fix.
+func (s *Service) DevicesChanged(ctx context.Context, userID string) {
+	viewers := []string{userID}
+	if conns, err := s.Watchers(ctx, userID); err == nil {
+		for _, c := range conns {
+			viewers = append(viewers, c.PeerID)
+		}
+	}
+	payload := map[string]any{"action": "devices", "userId": userID}
+	for _, viewer := range viewers {
+		if err := bus.PublishJSON(s.b, bus.ACLSubject(viewer), payload); err != nil {
+			s.log.Warn("connect: publish devices change failed", "viewer", viewer, "error", err)
+		}
+	}
+}
+
 // notify tells both sides to re-evaluate their subscriptions.
 func (s *Service) notify(userID, peerID, action string) {
 	payload := map[string]any{"action": action, "peerId": peerID, "userId": userID}
@@ -392,6 +439,12 @@ func (s *Service) notify(userID, peerID, action string) {
 		}
 	}
 }
+
+// conflict is a 409 whose message is a sentence for the person who caused it.
+type conflict string
+
+func (c conflict) Error() string { return string(c) }
+func (c conflict) Unwrap() error { return domain.ErrConflict }
 
 func displayName(u domain.User) string {
 	if u.DisplayName != "" {

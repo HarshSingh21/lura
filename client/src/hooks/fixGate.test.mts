@@ -111,3 +111,25 @@ test('the payload carries OwnTracks acc, cog and vel plus exact speed', () => {
   assert.equal(bare.cog, undefined);
   assert.equal(bare.batt, undefined);
 });
+
+test('standing still, the gate keeps a heartbeat going without a new platform fix', () => {
+  const gate = new FixGate();
+  assert.equal(gate.offer(fix({ at: 0, point: BLR, speedMps: 4 }), T0).send, true);
+  // Nothing from the platform: no beat before the still interval…
+  assert.equal(gate.heartbeat(T0 + 29_000).send, false);
+  // …then one, at the same place, standing, stamped now.
+  const beat = gate.heartbeat(T0 + 30_000);
+  assert.equal(beat.send, true);
+  if (!beat.send) return;
+  assert.deepEqual(beat.fix.point, BLR);
+  assert.equal(beat.fix.speedMps, 0);
+  assert.equal(beat.fix.headingDeg, undefined);
+  assert.equal(beat.fix.ts, T0 + 30_000);
+  // And the next one a full interval later, not on every tick.
+  assert.equal(gate.heartbeat(T0 + 35_000).send, false);
+  assert.equal(gate.heartbeat(T0 + 60_000).send, true);
+});
+
+test('no heartbeat before the first real fix', () => {
+  assert.equal(new FixGate().heartbeat(T0 + 60_000).send, false);
+});

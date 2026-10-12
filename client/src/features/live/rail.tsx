@@ -9,7 +9,7 @@ import type { TrackingStatus } from '@/hooks/useTracking';
 import { Mono, SectionLabel, Txt } from '@/theme/text';
 import { color, palette, radius, size, space } from '@/theme/tokens';
 
-import { formatAge, formatSpeed, MOVING_MPS, speedOf, type TrailPoint } from './motion';
+import { fixTimeMs, formatAge, formatSpeed, isStale, MOVING_MPS, speedOf, type TrailPoint } from './motion';
 import { firstName, reminderHold } from './reminders';
 
 /**
@@ -64,6 +64,8 @@ function FollowButton({ on, name, onPress }: { on: boolean; name: string; onPres
  */
 function pingLine({ speed, lastSeenMs, battery, now }: { speed: number; lastSeenMs?: number; battery?: number; now: number }): string {
   const parts: string[] = [];
+  // Gone quiet: a speed from minutes ago is not news, how long ago is.
+  if (lastSeenMs !== undefined && isStale(lastSeenMs, now)) return `Last seen ${formatAge(now - lastSeenMs)}`;
   parts.push(speed > MOVING_MPS ? `Moving · ${formatSpeed(speed)}` : 'Still');
   if (lastSeenMs !== undefined && Number.isFinite(lastSeenMs)) parts.push(formatAge(now - lastSeenMs));
   if (battery !== undefined && battery > 0) parts.push(`${Math.round(battery)}% battery`);
@@ -226,7 +228,7 @@ export function PeopleList({
                     <Txt variant="bodySemi" numberOfLines={1}>
                       {name}
                     </Txt>
-                    <Txt variant="micro" color={color.textSubtle} numberOfLines={2}>
+                    <Txt variant="micro" color={color.textSubtle} numberOfLines={2} testID={`lura-rail-peer-${peer.peerId}`}>
                       {fix
                         ? pingLine({
                             speed: trail && trail.length > 0 ? speedOf(trail) : fix.speedMps,
@@ -277,7 +279,9 @@ export function PeopleList({
 
 /** describePeer writes the inbound half of a peer row when there is no fix to describe. */
 function describePeer(peer: Peer): string {
-  if (!peer.sharingWithMe) return 'Not sharing with you';
+  // Accepted but their switch is off: they paused. Say it in those words, so a
+  // missing marker is never mistaken for a lost signal.
+  if (!peer.sharingWithMe) return 'Paused sharing with you';
   return 'Sharing · no fix yet';
 }
 
@@ -326,8 +330,7 @@ export function DeviceList({
             const trail = trails[device.id];
             const speed = trail && trail.length > 0 ? speedOf(trail) : (live?.speedMps ?? device.speedMps ?? 0);
             const moving = speed > MOVING_MPS;
-            const lastSeen = live?.recvTs ?? device.lastSeen;
-            const lastSeenMs = lastSeen ? new Date(lastSeen).getTime() : undefined;
+            const lastSeenMs = live ? fixTimeMs(live) : device.lastSeen ? new Date(device.lastSeen).getTime() : undefined;
             const key: FollowKey = `device:${device.id}`;
             const following = followKey === key;
             const hasFix = !!(live?.point ?? device.lastPoint);
@@ -352,7 +355,7 @@ export function DeviceList({
                     <Txt variant="bodySemi" numberOfLines={1}>
                       {device.name}
                     </Txt>
-                    <Txt variant="micro" color={color.textSubtle} numberOfLines={2}>
+                    <Txt variant="micro" color={color.textSubtle} numberOfLines={2} testID={`lura-rail-device-${device.id}`}>
                       {describeDevice({ moving, speed, inside, lastSeenMs, now })}
                     </Txt>
                   </View>
@@ -390,6 +393,7 @@ function describeDevice({
   lastSeenMs?: number;
   now: number;
 }): string {
+  if (lastSeenMs !== undefined && isStale(lastSeenMs, now)) return `Last seen ${formatAge(now - lastSeenMs)}${inside ? ` · ${inside}` : ''}`;
   const age = lastSeenMs !== undefined && Number.isFinite(lastSeenMs) ? ` · ${formatAge(now - lastSeenMs)}` : '';
   if (moving) return `Moving · ${formatSpeed(speed)}${age}`;
   if (inside) return `Idle · ${inside}${age}`;

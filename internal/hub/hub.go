@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -103,7 +104,30 @@ type Hub struct {
 
 	// outboxSize bounds each connection's queue before drop-to-latest kicks in.
 	outboxSize int
+
+	// recent keeps the last few geo events and reminders per subject, so a
+	// client that was offline when its fence fired can be told on reconnect
+	// (Replay). Positions are not kept: the snapshot already says where
+	// everyone is now, and an old position is not news.
+	recentMu  sync.Mutex
+	recent    map[string][]recentFrame
+	recentSub []bus.Subscription
 }
+
+// recentFrame is one reliable frame as it was published.
+type recentFrame struct {
+	ts      time.Time
+	kind    string
+	subject string
+	data    []byte
+}
+
+// Replay limits: enough to cover a phone in a lift or a laptop lid closed over
+// lunch, not a history API (that is /api/v1/events).
+const (
+	ReplayWindow     = 15 * time.Minute
+	replayPerSubject = 50
+)
 
 // Option configures a Hub.
 type Option func(*Hub)
@@ -137,7 +161,62 @@ func New(b bus.Bus, log *slog.Logger, opts ...Option) (*Hub, error) {
 		return nil, err
 	}
 	h.aclSub = sub
+
+	h.recent = map[string][]recentFrame{}
+	for _, pattern := range []string{bus.GeoAll(), bus.NotifyAll()} {
+		rs, err := b.Subscribe(pattern, h.remember)
+		if err != nil {
+			sub.Unsubscribe()
+			for _, x := range h.recentSub {
+				x.Unsubscribe()
+			}
+			return nil, err
+		}
+		h.recentSub = append(h.recentSub, rs)
+	}
 	return h, nil
+}
+
+// remember files a geo event or reminder for Replay.
+func (h *Hub) remember(m bus.Msg) {
+	now := time.Now().UTC()
+	f := recentFrame{ts: now, kind: frameTypeFor(m.Subject), subject: m.Subject, data: append([]byte(nil), m.Data...)}
+	h.recentMu.Lock()
+	defer h.recentMu.Unlock()
+	list := append(h.recent[m.Subject], f)
+	// Drop what has aged out or overflowed; the list is in arrival order.
+	cut := 0
+	for cut < len(list) && (now.Sub(list[cut].ts) > ReplayWindow || len(list)-cut > replayPerSubject) {
+		cut++
+	}
+	h.recent[m.Subject] = list[cut:]
+}
+
+// Replay sends a reconnecting client the geo events and reminders published
+// on its subjects after `since` (the time of the last frame it saw), in the
+// order they happened, stamped with their original time. The client dedupes
+// by event id, so overlap with frames it already has is harmless; what
+// matters is that a crossing that fired while it was offline is not lost.
+func (h *Hub) Replay(c *Client, since time.Time) int {
+	if since.IsZero() {
+		return 0
+	}
+	subjects := c.Subjects()
+	var out []recentFrame
+	h.recentMu.Lock()
+	for _, subject := range subjects {
+		for _, f := range h.recent[subject] {
+			if f.ts.After(since) && time.Since(f.ts) <= ReplayWindow {
+				out = append(out, f)
+			}
+		}
+	}
+	h.recentMu.Unlock()
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ts.Before(out[j].ts) })
+	for _, f := range out {
+		c.enqueueAt(f.kind, f.subject, f.data, false, f.ts)
+	}
+	return len(out)
 }
 
 // Connect registers a new connection and performs its first subscribe.
@@ -212,6 +291,9 @@ func (h *Hub) Close() {
 	}
 	if h.aclSub != nil {
 		h.aclSub.Unsubscribe()
+	}
+	for _, x := range h.recentSub {
+		x.Unsubscribe()
 	}
 }
 
@@ -292,7 +374,13 @@ func (c *Client) resubscribe(ctx context.Context) error {
 // live=false is used for geo events, reminders and ACL changes, which are
 // dropped only as a last resort and counted when they are.
 func (c *Client) enqueue(kind, subject string, data []byte, live bool) {
-	frame := Frame{Type: kind, Subject: subject, TS: time.Now().UTC(), Data: data}
+	c.enqueueAt(kind, subject, data, live, time.Now().UTC())
+}
+
+// enqueueAt is enqueue with the frame's time given: a replayed frame keeps the
+// time it was first published.
+func (c *Client) enqueueAt(kind, subject string, data []byte, live bool, ts time.Time) {
+	frame := Frame{Type: kind, Subject: subject, TS: ts, Data: data}
 	buf, err := json.Marshal(frame)
 	if err != nil {
 		return

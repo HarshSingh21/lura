@@ -12,6 +12,7 @@ import {
   fromReminder,
   ingest,
   markAllRead as markItemsRead,
+  mergeStored,
   setReminderStatus,
   type NotificationItem,
 } from '@/features/notify/model';
@@ -113,6 +114,12 @@ export type Store = LiveState &
   connection: ConnectionState;
 
   applyPosition: (p: Position) => void;
+  /**
+   * forgetDevices drops the live positions of devices the server no longer
+   * lists (deleted, or no longer shared with me) whose last fix predates
+   * `before` — so a removed phone does not haunt the map as a "new device".
+   */
+  forgetDevices: (known: ReadonlySet<string>, before: number) => void;
   applyGeoEvent: (e: GeoEvent) => void;
   applyReminder: (r: Reminder | ReminderRecord) => void;
   setViewer: (viewerId: string) => void;
@@ -180,6 +187,32 @@ function persistConnection(next: ConnectionState) {
   }
 }
 
+/**
+ * The notification centre survives a reload of the page, per signed-in person:
+ * otherwise reloading mid-walk silently marks every crossing read by forgetting
+ * it. Each entry keeps `announced`, so nothing toasts or chimes twice.
+ */
+const NOTIFY_KEY = 'lura.notifications.';
+
+function loadNotifications(viewerId: string): NotificationItem[] {
+  if (Platform.OS !== 'web' || typeof localStorage === 'undefined') return [];
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(NOTIFY_KEY + viewerId) ?? '[]');
+    return Array.isArray(parsed) ? (parsed as NotificationItem[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveNotifications(viewerId: string | undefined, items: NotificationItem[]) {
+  if (!viewerId || Platform.OS !== 'web' || typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(NOTIFY_KEY + viewerId, JSON.stringify(items));
+  } catch {
+    // Full or refused storage costs the history, not the live toast.
+  }
+}
+
 const initialConnection = loadConnection();
 setConfig(initialConnection);
 
@@ -212,6 +245,18 @@ export const useStore = create<Store>((set, get) => ({
       return { positions: { ...state.positions, [p.deviceId]: p } };
     }),
 
+  forgetDevices: (known, before) =>
+    set((state) => {
+      const gone = Object.keys(state.positions).filter((id) => {
+        const p = state.positions[id];
+        return !known.has(id) && p !== undefined && new Date(p.recvTs).getTime() < before;
+      });
+      if (gone.length === 0) return state;
+      const positions = { ...state.positions };
+      for (const id of gone) delete positions[id];
+      return { positions };
+    }),
+
   // Every crossing and every reminder goes through notify(), which dedupes the
   // two frames one crossing can produce into one entry, one toast and one sound.
   applyGeoEvent: (e) => {
@@ -229,13 +274,15 @@ export const useStore = create<Store>((set, get) => ({
     get().notify(fromReminder(r, viewerId));
   },
 
-  // Another account's reminders must not linger after switching users.
+  // Another account's reminders and notifications must not linger after
+  // switching users; this viewer's own saved centre comes back after a reload.
   setViewer: (viewerId) =>
-    set((state) =>
-      state.viewerId && state.viewerId !== viewerId
-        ? { viewerId, reminders: EMPTY_REMINDERS, notifications: [] }
-        : { viewerId },
-    ),
+    set((state) => {
+      if (state.viewerId === viewerId) return { viewerId };
+      const switching = !!state.viewerId;
+      const notifications = mergeStored(switching ? [] : state.notifications, loadNotifications(viewerId));
+      return switching ? { viewerId, reminders: EMPTY_REMINDERS, notifications } : { viewerId, notifications };
+    }),
 
   applyAcl: (action, reason) => set({ aclNotice: { action, reason, at: Date.now() } }),
 
@@ -291,10 +338,15 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   markNotificationRead: (id) =>
-    set((state) => ({
-      notifications: state.notifications.map((n) => (n.id === id && !n.read ? { ...n, read: true } : n)),
-    })),
-  markAllNotificationsRead: () => set((state) => ({ notifications: markItemsRead(state.notifications) })),
+    set((state) => {
+      const notifications = state.notifications.map((n) => (n.id === id && !n.read ? { ...n, read: true } : n));
+      return { notifications };
+    }),
+  markAllNotificationsRead: () =>
+    set((state) => {
+      const notifications = markItemsRead(state.notifications);
+      return { notifications };
+    }),
   clearNotifications: () => set({ notifications: [] }),
   setMuted: (muted) => {
     saveMuted(muted);
@@ -398,6 +450,15 @@ export const useStore = create<Store>((set, get) => ({
   setTracking: (trackingEnabled) => set({ trackingEnabled }),
   setSearch: (search) => set({ search }),
 }));
+
+// One writer for the saved centre: every change to the list — a new item, a
+// read, an acknowledgement, a clear — lands in this viewer's storage, so no
+// action can forget to save it.
+useStore.subscribe((state, prev) => {
+  if (state.notifications !== prev.notifications) {
+    saveNotifications(state.viewerId, state.notifications);
+  }
+});
 
 /** Selectors, so components subscribe to the narrowest slice they need. */
 export const selectPositions = (s: Store) => s.positions;

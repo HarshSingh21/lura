@@ -155,6 +155,12 @@ export type Position = {
   headingDeg: number;
   battery: number;
   seq: number;
+  /**
+   * When the device was at `point`, on the server's clock: its own timestamp
+   * corrected for how far its clock is off. Older than `recvTs` for a fix a
+   * phone queued offline. Absent from older servers and from snapshots.
+   */
+  fixTs?: string;
 };
 
 export type GeoEvent = {
@@ -379,6 +385,8 @@ export type Overview = {
   shares: Share[];
   events: TriggerEvent[];
   pendingDwells: PendingDwell[];
+  /** Server time the snapshot was read at (older servers omit it). */
+  asOf?: string;
 };
 
 export type Segment = {
@@ -432,9 +440,26 @@ export type PublicShareView = {
 };
 
 /** The WebSocket envelope from internal/hub. */
+/** SnapshotPeer is one connected person in the socket's first frame. */
+export type SnapshotPeer = {
+  userId: string;
+  devices: { id: string; name: string; point?: Point; speedMps?: number; lastSeen?: string }[] | null;
+};
+
 export type Frame =
   | { type: 'hello'; ts: string; data: { clientId: string; viewerId: string; subjects: string[] } }
-  | { type: 'snapshot'; ts: string; data: { devices?: Device[]; places?: Place[]; server?: ServerInfo; share?: PublicShareView } }
+  | {
+      type: 'snapshot';
+      ts: string;
+      data: {
+        devices?: Device[];
+        /** Connected people sharing with the viewer, with each device's last known point. */
+        peers?: SnapshotPeer[];
+        places?: Place[];
+        server?: ServerInfo;
+        share?: PublicShareView;
+      };
+    }
   | { type: 'position'; ts: string; subject?: string; data: Position }
   | { type: 'geo'; ts: string; subject?: string; data: GeoEvent }
   | { type: 'notify'; ts: string; subject?: string; data: Reminder }

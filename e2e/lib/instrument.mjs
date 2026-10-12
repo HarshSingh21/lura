@@ -58,7 +58,7 @@ export const INSTRUMENT = `(() => {
   const noteMarker = (el, t, added) => {
     const id = el.getAttribute('data-testid');
     if (!id || !id.startsWith(MARKER)) return;
-    rec.markers.push({ t, id: id.slice(MARKER.length), lat: +el.dataset.lat, lon: +el.dataset.lon, added });
+    rec.markers.push({ t, wall: performance.timeOrigin + t, id: id.slice(MARKER.length), lat: +el.dataset.lat, lon: +el.dataset.lon, added });
   };
   const noteToast = (el, t) => {
     const label = el.getAttribute && el.getAttribute('aria-label');

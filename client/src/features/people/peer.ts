@@ -1,4 +1,5 @@
 import type { Point, Position } from '@/api/types';
+import { fixTimeMs } from '@/features/live/motion';
 
 import type { Peer, PeerDevice } from './types';
 
@@ -58,7 +59,7 @@ export function peerFixes(peer: Peer, positions: Record<string, Position>): Peer
         deviceName: device.name,
         point,
         speedMps,
-        lastSeen: live?.recvTs ?? device.lastSeen,
+        lastSeen: live ? new Date(fixTimeMs(live)).toISOString() : device.lastSeen,
         moving: speedMps > 1,
       };
     })

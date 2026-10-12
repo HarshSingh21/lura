@@ -4,7 +4,8 @@ import * as SecureStore from 'expo-secure-store';
 import { create } from 'zustand';
 
 import { keycloak, loadDiscovery } from './config';
-import { decodeIdToken, type Profile } from './jwt';
+import { decodeIdToken, tokenLifetimeMs, type Profile } from './jwt';
+import { isExpiring, refreshDelayMs } from './refresh';
 
 /**
  * The signed-in session (HLD §14: Zustand for local state).
@@ -67,10 +68,6 @@ const KEYS = {
   expiresAt: 'lura.session.expires',
 } as const;
 
-/** Renew this long before expiry, so a slow network still beats the deadline. */
-const REFRESH_MARGIN_MS = 60_000;
-/** Floor on the renewal timer, so a short-lived token cannot spin the refresh loop. */
-const MIN_REFRESH_DELAY_MS = 5_000;
 /** A refresh that failed on the network (not on the token) is retried this often. */
 const RETRY_DELAY_MS = 30_000;
 
@@ -187,7 +184,8 @@ export const useSession = create<SessionState>((set, get) => ({
       error: undefined,
     });
     persist(tokens);
-    scheduleRefresh(Math.max(MIN_REFRESH_DELAY_MS, tokens.expiresAt - Date.now() - REFRESH_MARGIN_MS));
+    // Renewed ahead of expiry by a share of the token's own lifetime (refresh.ts).
+    scheduleRefresh(refreshDelayMs(tokens.expiresAt, tokenLifetimeMs(tokens.accessToken), Date.now()));
   },
 
   signOut: () => {
@@ -283,7 +281,7 @@ export const useSession = create<SessionState>((set, get) => ({
       expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
     };
 
-    const stale = !tokens.accessToken || tokens.expiresAt - Date.now() < REFRESH_MARGIN_MS;
+    const stale = !tokens.accessToken || isExpiring(tokens.expiresAt, tokenLifetimeMs(tokens.accessToken), Date.now());
     if (stale) {
       if (!tokens.refreshToken) {
         set({ status: 'signed-out' });
@@ -340,7 +338,7 @@ export function getSessionStatus(): AuthStatus {
  */
 export async function ensureFreshAccessToken(): Promise<string | undefined> {
   const { accessToken, expiresAt, refreshToken } = useSession.getState();
-  const expiring = expiresAt === undefined || expiresAt - Date.now() < REFRESH_MARGIN_MS;
+  const expiring = isExpiring(expiresAt, tokenLifetimeMs(accessToken), Date.now());
   if (accessToken && !expiring) return accessToken;
   if (!refreshToken) return accessToken;
   await useSession.getState().refresh();

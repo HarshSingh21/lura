@@ -1,8 +1,10 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { Platform } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { create } from 'zustand';
 
 import { keys, useOverview } from '@/api/hooks';
+import { useStore } from '@/state/store';
 
 import { useTracking, type TrackingStatus } from './useTracking';
 
@@ -24,6 +26,7 @@ export const useGpsStatus = create<TrackingStatus>(() => ({}));
 export function usePublishing(): void {
   const { data } = useOverview();
   const qc = useQueryClient();
+  useRememberTracking(data?.user.id);
   const status = useTracking({
     // This device publishes as the first device in the workspace. A real
     // multi-device setup would pick explicitly; Phase 1 has one phone.
@@ -39,4 +42,31 @@ export function usePublishing(): void {
   useEffect(() => {
     useGpsStatus.setState(status, true);
   }, [status]);
+}
+
+/**
+ * useRememberTracking keeps the publish switch across reloads, per person.
+ *
+ * A reload is not "stop sharing": without this the people watching would see
+ * this browser freeze mid-walk until someone noticed and turned it back on. The
+ * choice is stored under the signed-in user, so whoever signs in next on the
+ * same browser starts with their own choice, not the previous person's.
+ */
+function useRememberTracking(userId: string | undefined) {
+  const enabled = useStore((s) => s.trackingEnabled);
+  const restoredFor = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!userId || Platform.OS !== 'web' || typeof localStorage === 'undefined') return;
+    const key = `lura.tracking.${userId}`;
+    try {
+      if (restoredFor.current !== userId) {
+        restoredFor.current = userId;
+        useStore.getState().setTracking(localStorage.getItem(key) === '1');
+        return;
+      }
+      localStorage.setItem(key, enabled ? '1' : '0');
+    } catch {
+      // Storage refused (private mode): the switch still works for this page.
+    }
+  }, [userId, enabled]);
 }

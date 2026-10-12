@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/HarshSingh21/locnot/internal/bus"
@@ -31,6 +32,20 @@ import (
 
 // ErrRateLimited is returned when a device exceeds its fix budget.
 var ErrRateLimited = errors.New("rate limited")
+
+// Outcome says what Accept did with a valid fix.
+type Outcome int
+
+const (
+	// Fresh is the newest fix for its device: history, live map and geofences.
+	Fresh Outcome = iota
+	// Late is older, by the device's clock, than a fix already accepted for the
+	// device. It goes to history only (Position.Late).
+	Late
+	// Duplicate is a byte-for-byte resend of the device's newest fix (same
+	// device time, point and sequence). Nothing is published; the ack repeats.
+	Duplicate
+)
 
 // Payload is an OwnTracks `_type:location` message, extended with two optional
 // Lura fields.
@@ -85,6 +100,67 @@ type Service struct {
 	log     *slog.Logger
 	limiter *ratelimit.Limiter
 	now     func() time.Time
+
+	// newest is the newest fix accepted per device (*deviceOrder), by device
+	// clock. It is what tells a phone's queued fix — sent after a newer one
+	// over a flaky network — from news. In memory on purpose: after a restart
+	// the first fix simply wins, which is what a fresh map would show anyway.
+	newest sync.Map
+}
+
+// deviceOrder serialises one device's fixes: the decision "is this newer?"
+// and the publish that follows it happen under one lock, so two concurrent
+// requests from the same phone cannot reach the bus in the wrong order.
+type deviceOrder struct {
+	mu    sync.Mutex
+	ts    time.Time
+	point domain.Point
+	seq   int64
+	seen  bool
+
+	// clock is how far the device's clock runs behind the server's.
+	clock clockSkew
+}
+
+// clockSkew estimates a device's clock offset (receive time − device time)
+// from its recent fixes. A fix sent the moment it was taken has the smallest
+// offset — transit only — so the minimum over a sliding window is the clock
+// difference; a queued fix shows up as an offset well above it. The window
+// lets the estimate follow a clock that was corrected (NTP, a laptop waking
+// from sleep with a lagging timer) within skewWindow.
+type clockSkew struct {
+	samples []skewSample
+}
+
+type skewSample struct {
+	recv   time.Time
+	offset time.Duration
+}
+
+const (
+	skewWindow  = 10 * time.Minute
+	skewSamples = 64
+)
+
+// observe records a fix and returns the device's current offset estimate.
+func (c *clockSkew) observe(recv time.Time, offset time.Duration) time.Duration {
+	keep := c.samples[:0]
+	for _, s := range c.samples {
+		if recv.Sub(s.recv) <= skewWindow {
+			keep = append(keep, s)
+		}
+	}
+	c.samples = append(keep, skewSample{recv: recv, offset: offset})
+	if len(c.samples) > skewSamples {
+		c.samples = c.samples[len(c.samples)-skewSamples:]
+	}
+	low := c.samples[0].offset
+	for _, s := range c.samples[1:] {
+		if s.offset < low {
+			low = s.offset
+		}
+	}
+	return low
 }
 
 // New returns an ingest service.
@@ -135,6 +211,36 @@ func (s *Service) Accept(ctx context.Context, dev domain.Device, p Payload) (dom
 
 	pos := s.toPosition(dev, p, start)
 
+	v, _ := s.newest.LoadOrStore(dev.ID, &deviceOrder{})
+	order := v.(*deviceOrder)
+	order.mu.Lock()
+	defer order.mu.Unlock()
+	// When the device was there, on the server's clock. The first fix a
+	// device ever sends can only be taken at its word (there is nothing yet
+	// to tell a slow clock from a queued fix), which is why the estimate is
+	// learnt from live traffic before it is needed.
+	if p.TST > 0 {
+		offset := pos.RecvTS.Sub(pos.DeviceTS)
+		skew := order.clock.observe(pos.RecvTS, offset)
+		pos.FixTS = pos.DeviceTS.Add(skew)
+		if pos.FixTS.After(pos.RecvTS) {
+			pos.FixTS = pos.RecvTS
+		}
+	}
+	switch classify(order, p, pos) {
+	case Duplicate:
+		metrics.IngestRejected.Inc(metrics.AttrOutcome.String("duplicate"))
+		span.SetAttributes(attribute.Bool("lura.duplicate", true))
+		return pos, nil
+	case Late:
+		pos.Late = true
+		span.SetAttributes(attribute.Bool("lura.late", true))
+	default:
+		if p.TST > 0 {
+			order.ts, order.point, order.seq, order.seen = pos.DeviceTS, pos.Point, pos.Seq, true
+		}
+	}
+
 	// Durable path: the position writer and the geofence engine consume this,
 	// partitioned by device so one device's fixes stay ordered (HLD §5.4).
 	if err := bus.PublishDurableJSON(s.bus, bus.PosSubject(dev.UserID, dev.ID), pos); err != nil {
@@ -144,6 +250,12 @@ func (s *Service) Accept(ctx context.Context, dev domain.Device, p Payload) (dom
 	}
 
 	// Live path: at-most-once fan-out to whichever Gateway subscribers exist.
+	// A late fix is not news: drawing it would step the marker backwards.
+	if pos.Late {
+		metrics.IngestAccepted.Inc()
+		metrics.IngestAckSeconds.ObserveSince(start)
+		return pos, nil
+	}
 	if err := bus.PublishJSON(s.bus, bus.PosSubject(dev.UserID, dev.ID), pos); err != nil {
 		// Not fatal: history and reminders are already guaranteed by the durable
 		// publish above, and the next fix will repaint the live map.
@@ -156,6 +268,26 @@ func (s *Service) Accept(ctx context.Context, dev domain.Device, p Payload) (dom
 	return pos, nil
 }
 
+// classify orders a fix against the newest one accepted for its device.
+//
+// Only a fix that carries its own time (OwnTracks tst) can be ordered: one
+// without is stamped with the receive time and is always the newest. Two fixes
+// in the same second are both news unless they are the same fix — tst has
+// one-second resolution, and a phone moving at 30 m/s covers a fence in it.
+func classify(order *deviceOrder, p Payload, pos domain.Position) Outcome {
+	if p.TST <= 0 || !order.seen {
+		return Fresh
+	}
+	switch {
+	case pos.DeviceTS.Before(order.ts):
+		return Late
+	case pos.DeviceTS.Equal(order.ts) && pos.Point == order.point && pos.Seq == order.seq:
+		return Duplicate
+	default:
+		return Fresh
+	}
+}
+
 // RetryAfter reports how long a rate-limited device should wait.
 func (s *Service) RetryAfter(deviceID string) time.Duration { return s.limiter.Retry(deviceID) }
 
@@ -164,6 +296,7 @@ func (s *Service) toPosition(dev domain.Device, p Payload, recv time.Time) domai
 		DeviceID: dev.ID,
 		UserID:   dev.UserID,
 		RecvTS:   recv.UTC(),
+		FixTS:    recv.UTC(),
 		Point:    domain.Point{Lat: p.Lat, Lon: p.Lon},
 		Seq:      p.Seq,
 	}

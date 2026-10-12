@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/HarshSingh21/locnot/internal/bus"
+	"github.com/HarshSingh21/locnot/internal/connect"
 	"github.com/HarshSingh21/locnot/internal/hub"
 	"github.com/HarshSingh21/locnot/internal/share"
 	"github.com/coder/websocket"
@@ -78,7 +79,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	defer s.deps.Hub.Disconnect(client)
 
 	s.sendSnapshot(ctx, uid, client)
-	s.log.InfoContext(ctx, "ws connected", "client", client.ID, "user", uid, "subjects", client.Subjects())
+	// A reconnecting client says when it last heard from us; whatever fired on
+	// its subjects since (a crossing while the phone was in a lift) follows the
+	// snapshot, so it is not silently lost.
+	replayed := 0
+	if since, ok := parseSince(r.URL.Query().Get("since")); ok {
+		replayed = s.deps.Hub.Replay(client, since)
+	}
+	s.log.InfoContext(ctx, "ws connected", "client", client.ID, "user", uid, "subjects", client.Subjects(), "replayed", replayed)
 
 	s.pump(ctx, cancel, conn, client)
 	s.log.InfoContext(ctx, "ws disconnected", "client", client.ID, "user", uid)
@@ -137,6 +145,33 @@ func (s *Server) acceptWS(w http.ResponseWriter, r *http.Request) (*websocket.Co
 	return conn, nil
 }
 
+// parseSince reads the ?since= a reconnecting client sends: the RFC 3339 time
+// of the last frame it received. Anything unparseable means "no replay".
+func parseSince(v string) (time.Time, bool) {
+	if v == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, v)
+	if err != nil {
+		return time.Time{}, false
+	}
+	// Never further back than the hub keeps, nor from the future.
+	if floor := time.Now().Add(-hub.ReplayWindow); t.Before(floor) {
+		t = floor
+	}
+	if t.After(time.Now()) {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// snapshotPeer is a connected person who is sharing with the viewer, with the
+// last known point of each of their devices.
+type snapshotPeer struct {
+	UserID  string               `json:"userId"`
+	Devices []connect.PeerDevice `json:"devices"`
+}
+
 // sendSnapshot gives a freshly connected client everything it needs to paint the
 // map before the first live fix arrives — otherwise the map is empty for up to
 // one ping interval (~20 s), which reads as "broken".
@@ -159,8 +194,25 @@ func (s *Server) sendSnapshot(ctx context.Context, uid string, client *hub.Clien
 	for _, d := range devices {
 		views = append(views, deviceView{Device: d, InsidePlaces: inside[d.ID]})
 	}
+	// The people sharing with me belong in the first paint too: on a reconnect
+	// the map otherwise keeps a peer wherever they were when the socket dropped
+	// until their next fix, which for someone standing still is a heartbeat
+	// (30 s) away — a stale position drawn as a live one.
+	peers := []snapshotPeer{}
+	if s.deps.Connect != nil {
+		list, err := s.deps.Connect.List(ctx, uid)
+		if err != nil {
+			s.log.WarnContext(ctx, "ws: snapshot people failed", "error", err)
+		}
+		for _, p := range list {
+			if p.SharingWithMe && len(p.Devices) > 0 {
+				peers = append(peers, snapshotPeer{UserID: p.PeerID, Devices: p.Devices})
+			}
+		}
+	}
 	s.deps.Hub.Send(client, "snapshot", map[string]any{
 		"devices": views,
+		"peers":   peers,
 		"places":  places,
 		"server":  s.serverInfo(),
 	})
