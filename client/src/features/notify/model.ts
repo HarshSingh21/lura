@@ -249,7 +249,11 @@ export function ingest(
   items: NotificationItem[],
   next: NotificationItem,
 ): { items: NotificationItem[]; announce: boolean; item: NotificationItem } {
-  const index = items.findIndex((i) => i.id === next.id);
+  // By crossing, or by stored reminder: a row read from the server and a live
+  // frame are the same reminder even if they name its crossing differently.
+  const index = items.findIndex(
+    (i) => i.id === next.id || (next.reminderId !== undefined && i.reminderId === next.reminderId),
+  );
   const prev = index >= 0 ? items[index] : undefined;
   const base = prev ? mergeItem(prev, next) : next;
   const announce = !base.announced && !prev?.announced && deservesAnnouncement(base);

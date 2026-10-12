@@ -290,3 +290,10 @@ test('notification entries carry the reminder status and survive replays', () =>
   assert.equal(chimeFor(ack), 'dwell');
   assert.equal(ingest(items, ack).items.length, 2);
 });
+
+test('a stored row and a live frame are one entry even when they name the crossing differently', () => {
+  const live = ingest([], fromReminder(frame({ event: { ...EVENT, id: 'geo_live' }, eventId: 'geo_live' }), HARSH, T0));
+  const row = ingest(live.items, fromReminder(record({ eventId: 'evt_other' }), HARSH, T0));
+  assert.equal(row.items.length, 1);
+  assert.equal(row.announce, false, 'already announced');
+});

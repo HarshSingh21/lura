@@ -273,3 +273,45 @@ test('inDay drops what the server returned on the boundary of the next day', () 
     ['in'],
   );
 });
+
+test('the note text names a reminder, and a crossing named by another id still folds', () => {
+  // As the server sends it: the title is the crossing, the body the note; the
+  // feed's crossing carries the trigger-log id, the reminder the geo event id.
+  const items: ActivityItem[] = [
+    geo({ id: 'g', ts: ist(12, 4), eventId: 'evt_log_1', trigger: 'arrive', placeName: 'Whole Foods' }),
+    {
+      type: 'reminder',
+      id: 'r',
+      ts: ist(12, 4),
+      reminder: reminder({
+        eventId: 'geo_live_1',
+        trigger: 'arrive',
+        title: 'Arrived at Whole Foods',
+        body: 'buy milk',
+        createdAt: ist(12, 4),
+        ackedAt: ist(12, 6),
+      }),
+    },
+    {
+      type: 'ack',
+      id: 'a',
+      ts: ist(12, 6),
+      reminderId: 'rem_1',
+      title: 'Arrived at Whole Foods',
+      body: 'buy milk',
+      placeName: 'Whole Foods',
+      noteIds: ['nte_1'],
+      ackedBy: NISHTHA,
+      ackedByName: 'Nishtha',
+      byMe: false,
+    },
+    // A different fence at the same moment does not fold.
+    geo({ id: 'g2', ts: ist(12, 4), eventId: 'evt_log_2', placeId: 'plc_gym', placeName: 'Gym', trigger: 'arrive' }),
+  ];
+  const rows = buildTimeline(items, ctx).flatMap((s) => s.rows.map((r) => r.title));
+  assert.deepEqual(rows, [
+    'Arrived at Whole Foods — reminder buy milk',
+    'Arrived at Gym',
+    'Nishtha acknowledged buy milk',
+  ]);
+});

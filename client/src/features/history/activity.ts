@@ -211,6 +211,17 @@ function reminderStatus(r: Pick<ReminderRecord, 'status' | 'ackedAt'>, tz: strin
   return 'pending';
 }
 
+/**
+ * noteLabel is what a reminder is *about*. The server titles a note's reminder
+ * with the crossing ("Arrived at Whole Foods") and carries the note's own text
+ * in the body ("buy milk"); the timeline already says where, so the note wins.
+ */
+function noteLabel(r: { kind?: string; title?: string; body?: string }): string {
+  const body = r.body?.trim();
+  if (r.kind !== 'watch' && body) return body;
+  return r.title?.trim() || 'note';
+}
+
 function join(...parts: (string | undefined | false)[]): string | undefined {
   const s = parts.filter((p): p is string => !!p && p.trim() !== '').join(' · ');
   return s || undefined;
@@ -264,7 +275,7 @@ export function describe(item: ActivityItem, ctx: DescribeContext): ActivityRow 
       return {
         ...base,
         icon: 'bell',
-        title: `${watch ? r.title || 'Watched crossing' : `Reminder: ${r.title || 'note'}`} — ${reminderStatus(r, ctx.tz)}`,
+        title: `${watch ? r.title || 'Watched crossing' : `Reminder: ${noteLabel(r)}`} — ${reminderStatus(r, ctx.tz)}`,
         detail: join(r.placeName, r.fromName && `from ${r.fromName}`),
         personId: peer ? r.subjectUserId : undefined,
         status: r.status,
@@ -275,7 +286,9 @@ export function describe(item: ActivityItem, ctx: DescribeContext): ActivityRow 
       return {
         ...base,
         icon: 'check',
-        title: item.byMe ? `Acknowledged ${item.title}` : `${item.ackedByName || 'Someone'} acknowledged ${item.title}`,
+        title: item.byMe
+          ? `Acknowledged ${noteLabel(item)}`
+          : `${item.ackedByName || 'Someone'} acknowledged ${noteLabel(item)}`,
         detail: join(item.placeName),
         personId: item.byMe ? undefined : item.ackedBy,
         focus: item.placeName ? { placeName: item.placeName } : undefined,
@@ -339,16 +352,15 @@ export function buildTimeline(items: ActivityItem[], ctx: DescribeContext): Acti
   const seen = new Set<string>();
   const unique = items.filter((i) => (seen.has(`${i.type}:${i.id}`) ? false : (seen.add(`${i.type}:${i.id}`), true)));
 
-  const geoByEvent = new Map<string, Extract<ActivityItem, { type: 'geo' }>>();
-  for (const i of unique) if (i.type === 'geo' && i.eventId) geoByEvent.set(i.eventId, i);
-
+  const geos = unique.filter((i): i is Extract<ActivityItem, { type: 'geo' }> => i.type === 'geo');
   const folded = new Map<string, ReminderRecord[]>();
   const rest: ActivityItem[] = [];
   for (const i of unique) {
-    if (i.type === 'reminder' && i.reminder.eventId && geoByEvent.has(i.reminder.eventId)) {
-      const list = folded.get(i.reminder.eventId) ?? [];
+    const geo = i.type === 'reminder' ? crossingOf(i, geos) : undefined;
+    if (i.type === 'reminder' && geo) {
+      const list = folded.get(geo.id) ?? [];
       list.push(i.reminder);
-      folded.set(i.reminder.eventId, list);
+      folded.set(geo.id, list);
       continue;
     }
     rest.push(i);
@@ -357,12 +369,12 @@ export function buildTimeline(items: ActivityItem[], ctx: DescribeContext): Acti
   const rows = rest.map((i) => {
     const row = describe(i, ctx);
     if (i.type !== 'geo') return row;
-    const reminders = folded.get(i.eventId);
+    const reminders = folded.get(i.id);
     if (!reminders?.length) return row;
     const pending = reminders.some((r) => r.status === 'pending');
     return {
       ...row,
-      title: `${row.title} — reminder ${reminders.map((r) => r.title).join(', ')}`,
+      title: `${row.title} — reminder ${reminders.map((r) => noteLabel(r)).join(', ')}`,
       detail: join(row.detail, ...reminders.map((r) => reminderStatus(r, ctx.tz))),
       status: pending ? ('pending' as const) : ('acknowledged' as const),
     };
@@ -377,6 +389,32 @@ export function buildTimeline(items: ActivityItem[], ctx: DescribeContext): Acti
     sections[index < 0 ? SECTIONS.length - 1 : index]!.rows.push(row);
   }
   return sections.filter((s) => s.rows.length > 0);
+}
+
+/** Within this of each other, a reminder and a crossing at the same fence are one moment. */
+const SAME_MOMENT_MS = 5_000;
+
+/**
+ * crossingOf finds the crossing a reminder came from: by event id, or — when
+ * the feed names the crossing by a different id than the reminder does — by the
+ * same fence, trigger and notes at the same moment.
+ */
+function crossingOf(
+  item: Extract<ActivityItem, { type: 'reminder' }>,
+  geos: Extract<ActivityItem, { type: 'geo' }>[],
+): Extract<ActivityItem, { type: 'geo' }> | undefined {
+  const r = item.reminder;
+  if (r.kind === 'ack') return undefined;
+  const byId = r.eventId ? geos.find((g) => g.eventId === r.eventId) : undefined;
+  if (byId) return byId;
+  const at = stamp(r.createdAt || item.ts);
+  return geos.find(
+    (g) =>
+      g.placeId === r.placeId &&
+      g.trigger === r.trigger &&
+      Math.abs(stamp(g.ts) - at) <= SAME_MOMENT_MS &&
+      (r.noteIds.length === 0 || r.noteIds.some((n) => g.noteIds.includes(n))),
+  );
 }
 
 /** inDay keeps only entries inside the window (the server's bounds are inclusive at both ends). */
