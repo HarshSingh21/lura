@@ -197,6 +197,17 @@ async function mark() {
  * chimes and badge.
  */
 async function observe(t, placeIds) {
+  // Pending reminders stack: the newest card is shown, the rest fold behind it
+  // ("+2 more"), so two that arrive together are one card on screen. Unfold
+  // the stack for a moment so the spy sees every card, then fold it back.
+  for (const p of [harsh, nishtha]) {
+    const more = p.page.getByRole('button', { name: /^Show \d+ more pending reminders$/ });
+    if (await more.count()) {
+      await more.first().click().catch(() => {});
+      await sleep(500);
+      await p.page.getByRole('button', { name: 'Fold pending reminders' }).first().click().catch(() => {});
+    }
+  }
   const [recH, recN] = [await harsh.record(), await nishtha.record()];
   const ids = new Set(placeIds);
   const after = (list, t0) => list.filter((x) => x.t >= t0);
@@ -346,6 +357,12 @@ try {
   // ---------------------------------------------------------------- 0
   await scenario('0', 'Setup: both sign in, connect over the API, Nishtha gets a phone', async () => {
     await Promise.all(people.map((p) => p.open(browser, BASE)));
+    // Reminders waiting for an acknowledgement ring again every minute until
+    // acknowledged (release spec §6; the scenario and the alerts checks cover
+    // that). This suite counts the chimes each crossing makes, so the repeats
+    // of earlier scenarios' cards are pushed out of its window.
+    await Promise.all(people.map((p) => p.ctx.addInitScript(() => { window.__luraRemindEveryMs = 24 * 3600 * 1000; })));
+    await Promise.all(people.map((p) => p.page.evaluate(() => { window.__luraRemindEveryMs = 24 * 3600 * 1000; })));
     await Promise.all(people.map((p) => p.signIn()));
     for (const p of people) {
       const { user } = await p.api('GET', '/api/v1/me');
