@@ -342,10 +342,17 @@ try {
   /**
    * Below this the page is too starved of frames to tell a glide from a jump.
    * A jump of one fix's distance is caught while a two-frame window is shorter
-   * than half the 1 s fix interval (the bound is twice the glide's speed over
-   * the window), i.e. above 4 fps; 6 leaves a margin.
+   * than a third of the 1 s fix interval (the bound is three times the glide's
+   * mean speed over the window), i.e. above 6 fps; 8 leaves a margin.
    */
-  const MIN_JUDGE_FPS = 6;
+  const MIN_JUDGE_FPS = 8;
+  /**
+   * How much faster than its mean a glide may legitimately move over a window:
+   * each leg runs one fix's distance (jittered ±3 m) in the previous fix gap,
+   * so legs differ — at 23 fps one leg moved 6.7 px in 156 ms against a
+   * twice-the-mean bound of 6.5.
+   */
+  const GLIDE_SPEED_SLACK = 3;
   /**
    * sampleOnMap records, every animation frame, where a marker is on screen and
    * the viewport it was drawn through, and returns its track in map space (the
@@ -424,7 +431,7 @@ try {
     const pxPerMs = travelled / durationMs;
     const perFix = travelled / Math.max(1, fixesDuring);
     const moving = steps.filter((s) => s.d > 0.05);
-    const jumps = steps.slice(1).filter((s) => s.d >= Math.max(2, perFix * 0.25, 2 * pxPerMs * s.w));
+    const jumps = steps.slice(1).filter((s) => s.d >= Math.max(2, perFix * 0.25, GLIDE_SPEED_SLACK * pxPerMs * s.w));
     const round1 = (v) => Math.round(v * 10) / 10;
     return {
       frames: samples.length,
