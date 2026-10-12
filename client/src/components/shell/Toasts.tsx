@@ -193,7 +193,9 @@ const styles = StyleSheet.create({
   },
   stackDesktop: { right: space.lg, width: layout.railWidth - space.lg * 2 },
   stackWide: { right: space.xxl, width: 380 },
-  stackPhone: { top: undefined, left: space.lg, right: CONTROLS_LANE, bottom: 84 },
+  // 'auto', not undefined: an undefined style is dropped when styles merge, and
+  // the stack then kept the wide layout's top and covered the map's Draw button.
+  stackPhone: { top: 'auto', left: space.lg, right: CONTROLS_LANE, bottom: 84 },
   toast: {
     flexDirection: 'row',
     alignItems: 'flex-start',
