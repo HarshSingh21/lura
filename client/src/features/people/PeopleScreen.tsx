@@ -71,7 +71,7 @@ export function PeopleScreen() {
           count={canSeeMe.length}
           empty="No one can see you right now"
           names={joinNames(canSeeMe)}
-          note="Your live position is going to these people."
+          note="Your live position is not going to anyone."
         />
         <SummaryTile
           title="WHOM I CAN SEE"
@@ -79,7 +79,7 @@ export function PeopleScreen() {
           count={iCanSee.length}
           empty="No one is sharing with you"
           names={joinNames(iCanSee)}
-          note="They are sending you their live position."
+          note="No one is sending you their live position."
         />
       </View>
 

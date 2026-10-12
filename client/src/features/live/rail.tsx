@@ -10,6 +10,7 @@ import { Mono, SectionLabel, Txt } from '@/theme/text';
 import { color, palette, radius, size, space } from '@/theme/tokens';
 
 import { formatAge, formatSpeed, MOVING_MPS, speedOf, type TrailPoint } from './motion';
+import { firstName, reminderHold } from './reminders';
 
 /**
  * The live rail: what is sharing, who can see me, what is moving, what is about
@@ -393,10 +394,15 @@ function describeDevice({
   return 'No fix yet';
 }
 
-export function UpcomingReminders({ notes, places }: { notes: Note[]; places: Place[] }) {
+export function UpcomingReminders({ notes, places, people = [] }: { notes: Note[]; places: Place[]; people?: Peer[] }) {
   // "Upcoming" is an open note bound to a place: it is armed and waiting for the
-  // geofence to fire. A note with no place cannot fire, so it is not upcoming.
-  const upcoming = notes.filter((note) => !note.done && note.placeId).slice(0, 6);
+  // geofence to fire. A note with no place cannot fire, so it is not upcoming;
+  // one on hold is listed after the armed ones, and says why.
+  const upcoming = notes
+    .filter((note) => !note.done && note.placeId)
+    .map((note) => ({ note, hold: reminderHold(note, people) }))
+    .sort((a, b) => Number(!!a.hold) - Number(!!b.hold))
+    .slice(0, 6);
 
   return (
     <View>
@@ -405,10 +411,11 @@ export function UpcomingReminders({ notes, places }: { notes: Note[]; places: Pl
         {upcoming.length === 0 ? (
           <EmptyState title="Nothing armed" body="Write a note and Lura will bind it to a place." />
         ) : (
-          upcoming.map((note) => {
+          upcoming.map(({ note, hold }) => {
             const place = places.find((p) => p.id === note.placeId);
+            const watched = note.watchUserId ? people.find((p) => p.peerId === note.watchUserId) : undefined;
             return (
-              <Card key={note.id} style={styles.reminderCard}>
+              <Card key={note.id} style={[styles.reminderCard, hold ? styles.reminderHeld : null]}>
                 <View style={styles.reminderHead}>
                   <TriggerBadge trigger={note.trigger} />
                   {note.tags[0] ? (
@@ -417,12 +424,21 @@ export function UpcomingReminders({ notes, places }: { notes: Note[]; places: Pl
                     </Mono>
                   ) : null}
                 </View>
-                <Txt variant="bodyMedium" numberOfLines={2}>
+                <Txt variant="bodyMedium" numberOfLines={2} color={hold ? color.textMuted : undefined}>
                   {note.text}
                 </Txt>
                 <Txt variant="tiny" color={color.textSubtle}>
-                  at {place?.name ?? 'unbound place'}
+                  {watched && !hold ? `when ${firstName(watched.peerName)} reaches ` : 'at '}
+                  {place?.name ?? 'unbound place'}
                 </Txt>
+                {hold ? (
+                  <View style={styles.reminderHold}>
+                    <Dot size={6} color={color.neutralDot} />
+                    <Txt variant="tiny" color={color.textFaint} style={styles.reminderHoldText}>
+                      {hold}
+                    </Txt>
+                  </View>
+                ) : null}
               </Card>
             );
           })
@@ -581,6 +597,9 @@ const styles = StyleSheet.create({
 
   reminderCard: { padding: 12, gap: 4 },
   reminderHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 },
+  reminderHeld: { backgroundColor: color.surfaceMuted, borderStyle: 'dashed' },
+  reminderHoldText: { flex: 1 },
+  reminderHold: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
 
   trackingCard: { gap: 6 },
   gpsRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
