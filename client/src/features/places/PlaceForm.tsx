@@ -102,8 +102,8 @@ export function PlaceForm({
     () => ({
       name: initial?.name ?? '',
       tags: (initial?.tags ?? []).join(', '),
-      lat: String(drawnCircle?.center.lat ?? initial?.center.lat ?? seedPoint?.lat ?? ''),
-      lon: String(drawnCircle?.center.lon ?? initial?.center.lon ?? seedPoint?.lon ?? ''),
+      lat: drawnCircle ? drawnCircle.center.lat.toFixed(6) : String(initial?.center.lat ?? seedPoint?.lat ?? ''),
+      lon: drawnCircle ? drawnCircle.center.lon.toFixed(6) : String(initial?.center.lon ?? seedPoint?.lon ?? ''),
       radiusM: String(drawnCircle?.radiusM ?? initial?.radiusM ?? 120),
       triggers: initial?.triggers ?? ['arrive'],
       dwellMins: String(initial?.dwellMins ?? 45),

@@ -6,6 +6,7 @@ import { useCreatePlace, useDeletePlace, useOverview, useUpdatePlace } from '@/a
 import type { Place } from '@/api/types';
 import { MapCanvas } from '@/components/map/MapCanvas';
 import { formatMetres } from '@/components/map/geometry';
+import { fitBounds } from '@/components/map/projection';
 import { Button, Card, Chip, EmptyState, Sheet, TriggerBadge, styles as ui } from '@/components/ui/primitives';
 import { Mono, Txt } from '@/theme/text';
 import { color, palette, radius, size, space } from '@/theme/tokens';
@@ -120,14 +121,17 @@ function PlaceCard({ place, onPress, onEditOnMap }: { place: Place; onPress: () 
   const passby = place.triggers.includes('passby');
   const polygon = place.shape === 'polygon' && place.polygon.length >= 3 ? place.polygon : null;
   const tone = passby ? 'amber' : 'accent';
+  // A polygon is framed by its corners: its bounding radius overstates how
+  // much map a long thin shape needs. The box is the preview's typical size.
+  const framed = polygon ? fitBounds(polygon, 320, 96, 10, 17) : null;
 
   return (
     <Card padded={false} style={styles.card} onPress={onPress}>
       <View style={styles.preview}>
         <MapCanvas
-          center={place.center}
+          center={framed?.center ?? place.center}
           // A zoom that frames the fence: bigger fences pull the camera back.
-          zoom={place.radiusM > 400 ? 13 : place.radiusM > 150 ? 14.5 : 15.5}
+          zoom={framed?.zoom ?? (place.radiusM > 400 ? 13 : place.radiusM > 150 ? 14.5 : 15.5)}
           fences={
             polygon
               ? []

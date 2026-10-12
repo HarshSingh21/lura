@@ -8,6 +8,7 @@ import {
   type GestureResponderHandlers,
   type PanResponderGestureState,
   type PointerEvent,
+  type ViewStyle,
 } from 'react-native';
 import Svg, { Circle, Line, Path } from 'react-native-svg';
 
@@ -602,11 +603,6 @@ function EditLayer({
           )}
           <GripGlyph at={centroid} stroke={stroke} />
         </Svg>
-        <MetreLabel
-          at={{ x: centroid.x, y: centroid.y + HANDLE / 2 }}
-          text={`${polygon.length} corners · ${formatMetres(boundingRadiusM(polygon))}`}
-          below
-        />
       </View>
       <BodySpans spans={spans} handlers={body} />
       <Target at={targetCentroid} handlers={body} label="Move fence" />
@@ -683,10 +679,17 @@ function EditLayer({
         ) : null,
       )}
       <Toolbar>
-        <Txt variant="small" color={color.textBody} style={styles.toolbarText}>
-          Drag the shape to move it · drag a corner to reshape · tap + to add a corner · long-press
-          {Platform.OS === 'web' ? ' or right-click' : ''} a corner to remove it
-        </Txt>
+        {/* The size lives here rather than on the map, where any spot is
+            somebody's corner or "+" handle. */}
+        <View style={styles.toolbarText}>
+          <Mono size={size.monoSm} medium color={invalid ? palette.dangerInk : color.textStrong}>
+            {polygon.length} corners · up to {formatMetres(boundingRadiusM(polygon))} from the centre
+          </Mono>
+          <Txt variant="small" color={color.textBody}>
+            Drag the shape to move it · drag a corner to reshape · tap + to add a corner · long-press
+            {Platform.OS === 'web' ? ' or right-click' : ''} a corner to remove it
+          </Txt>
+        </View>
       </Toolbar>
       {hint ? <Hint text={hint} /> : null}
     </View>
@@ -827,8 +830,15 @@ function withAlpha(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+/**
+ * A drag that starts on the editor must not also select the page's text, which
+ * is what a browser does with a mouse-down-and-move by default. `userSelect` is
+ * typed for text only in React Native, but React Native Web honours it on views.
+ */
+const noSelect = (Platform.OS === 'web' ? { userSelect: 'none' } : {}) as ViewStyle;
+
 const styles = StyleSheet.create({
-  layer: absoluteFill,
+  layer: { ...absoluteFill, ...noSelect },
   surface: absoluteFill,
   drawCursor: { cursor: 'pointer' },
   span: { position: 'absolute', cursor: 'pointer' },
@@ -879,7 +889,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     ...shadow('card'),
   },
-  toolbarText: { flexShrink: 1 },
+  toolbarText: { flexShrink: 1, gap: 3 },
   toolbarActions: { flexDirection: 'row', gap: 8 },
 
   hintWrap: { position: 'absolute', left: 12, right: 12, top: 72, alignItems: 'center' },
