@@ -18,6 +18,8 @@ export type MapFence = {
   id: string;
   center: Point;
   radiusM: number;
+  /** When set (3+ vertices) the fence is drawn as this polygon instead of the circle. */
+  polygon?: Point[];
   name?: string;
   /** Small label shown next to the name, e.g. "120m" or "pass-by". */
   badge?: string;
@@ -35,7 +37,36 @@ export type MapMarker = {
   pulse?: boolean;
   /** Small hollow dot used for waypoints on a history track. */
   small?: boolean;
+  /** Degrees clockwise from north; draws a heading cone when set. */
+  headingDeg?: number;
+  /** GPS accuracy radius in metres; drawn as a translucent circle when set. */
+  accuracyM?: number;
+  /** Per-person colour (hex). Overrides tone. */
+  color?: string;
+  /** Glide from the previous point to this one over ~this many ms (live pings). 0 = jump. */
+  animateMs?: number;
+  /** Changing this value plays a one-shot "arrived" ripple on the marker. */
+  rippleKey?: string | number;
 };
+
+/** Basemaps the user can choose between. Each renderer maps these to its own styles. */
+export type BasemapId = 'streets' | 'satellite' | 'hybrid' | 'light' | 'dark' | 'terrain';
+
+/**
+ * FenceEditState drives the renderer-agnostic geofence editor overlay
+ * (client/src/components/map/FenceEditor.tsx). The editor reports geometry
+ * changes; the caller decides when to persist (PATCH /api/v1/places/{id}).
+ */
+export type FenceEditState =
+  | { mode: 'draw-circle' }
+  | { mode: 'draw-polygon'; vertices: Point[] }
+  | { mode: 'draw-freehand' }
+  | { mode: 'edit'; fenceId: string; shape: 'circle'; center: Point; radiusM: number }
+  | { mode: 'edit'; fenceId: string; shape: 'polygon'; polygon: Point[] };
+
+export type FenceGeometry =
+  | { shape: 'circle'; center: Point; radiusM: number }
+  | { shape: 'polygon'; polygon: Point[] };
 
 export type MapTrack = {
   id: string;
@@ -69,6 +100,12 @@ export type MapViewProps = {
   /** Tapping the map while drawing a place returns the tapped coordinate. */
   onPressMap?: (point: Point) => void;
   onPressFence?: (id: string) => void;
+  /** Selected basemap; renderers fall back to 'streets' for anything they cannot draw. */
+  basemap?: BasemapId;
+  /** When set, the FenceEditor overlay is active and map panning yields to it where needed. */
+  fenceEdit?: FenceEditState;
+  /** Live geometry while drawing/moving/resizing. `done` is true on gesture end / polygon close. */
+  onFenceGeometry?: (geometry: FenceGeometry, done: boolean) => void;
   /** Dark styling for the share preview panel. */
   variant?: 'light' | 'dark';
   /** Recentres when this value changes (used by the "locate me" control). */

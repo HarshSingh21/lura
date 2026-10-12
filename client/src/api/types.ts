@@ -46,14 +46,22 @@ export type Place = {
   userId: string;
   name: string;
   tags: string[];
+  /** 'circle' uses center + radiusM; 'polygon' uses polygon (center/radiusM are then the server-computed centroid and bounding radius). */
+  shape: PlaceShape;
   center: Point;
   radiusM: number;
+  /** Polygon ring, 3–200 vertices, not closed (first vertex is not repeated). Empty for circles. */
+  polygon: Point[];
+  /** Connected people whose crossings of this fence notify the place owner (each must share live with the owner). */
+  watchUserIds: string[];
   triggers: Trigger[];
   dwellMins: number;
   createdAt: string;
   updatedAt: string;
   stats?: PlaceStats;
 };
+
+export type PlaceShape = 'circle' | 'polygon';
 
 export type Note = {
   id: string;
@@ -64,6 +72,10 @@ export type Note = {
   tags: string[];
   done: boolean;
   channel: string;
+  /** Whose movement fires this note: '' = the note's owner, otherwise a connected peer who shares live with the owner. */
+  watchUserId: string;
+  /** Who receives the reminder. Each id is the owner or an accepted connection. Empty means [owner]. */
+  notifyUserIds: string[];
   createdAt: string;
   updatedAt: string;
   firedAt?: string;
@@ -152,6 +164,10 @@ export type GeoEvent = {
   ts: string;
   point: Point;
   speedMps: number;
+  /** User whose device crossed the fence (differs from userId, the place owner, for a peer crossing). */
+  subjectUserId: string;
+  /** Display name of subjectUserId, so a toast can say "Nishtha arrived at Grocery". */
+  subjectName: string;
 };
 
 export type Reminder = {
@@ -168,6 +184,11 @@ export type Reminder = {
   clickUrl?: string;
   ts: string;
   event: GeoEvent;
+  /** 'note' = a note fired; 'watch' = a watched person crossed a fence, no note involved. */
+  kind: 'note' | 'watch';
+  /** Owner of the note/place when it is not the recipient (e.g. Harsh's note delivered to Nishtha). */
+  fromUserId?: string;
+  fromName?: string;
 };
 
 /** MapProvider is the basemap a deployment draws: the open default, or Mappls. */
