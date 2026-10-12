@@ -165,8 +165,10 @@ type deviceState struct {
 	UserID   string
 	LastEval time.Time
 	Inside   map[string]*fenceState
-	// LastPoint is the previous evaluated fix, for the crossing rule.
+	// LastPoint is the previous evaluated fix, and LastTaken when the device
+	// was there (takenAt), for the crossing rule.
 	LastPoint *domain.Point
+	LastTaken time.Time
 }
 
 // Engine is the geofence evaluator.
@@ -275,10 +277,7 @@ func (e *Engine) Evaluate(ctx context.Context, pos domain.Position) error {
 		span.SetAttributes(attribute.Bool("lura.out_of_order", true))
 		return nil
 	}
-	age := start.Sub(pos.RecvTS)
-	if !pos.FixTS.IsZero() && pos.FixTS.Before(pos.RecvTS) {
-		age = start.Sub(pos.FixTS)
-	}
+	age := start.Sub(takenAt(pos))
 	if age > e.cfg.FreshWindow {
 		metrics.GeoDroppedStale.Inc(metrics.AttrDevice.String(pos.DeviceID))
 		span.SetAttributes(attribute.Bool("lura.dropped_stale", true))
@@ -297,8 +296,9 @@ func (e *Engine) Evaluate(ctx context.Context, pos domain.Position) error {
 		span.SetAttributes(attribute.Bool("lura.out_of_order", true))
 		return nil
 	}
-	prevEval, prevPoint := st.LastEval, st.LastPoint
+	prevTaken, prevPoint := st.LastTaken, st.LastPoint
 	st.LastEval = pos.RecvTS
+	st.LastTaken = takenAt(pos)
 	here := pos.Point
 	st.LastPoint = &here
 	wasInside := make(map[string]bool, len(st.Inside))
@@ -371,7 +371,7 @@ func (e *Engine) Evaluate(ctx context.Context, pos domain.Position) error {
 	// Crossings: a fence the path went through between two fixes, neither of
 	// them inside it.
 	if prevPoint != nil {
-		e.crossings(ctx, pos, prevEval, *prevPoint, wasInside, insideByID, peers)
+		e.crossings(ctx, pos, prevTaken, *prevPoint, wasInside, insideByID, peers)
 	}
 
 	span.SetAttributes(
@@ -546,6 +546,17 @@ func (e *Engine) forgetFence(ctx context.Context, st *deviceState, placeID strin
 	e.log.DebugContext(ctx, "geofence: peer fence forgotten", "device", pos.DeviceID, "place", placeID)
 }
 
+// takenAt is when the device was where the fix says: FixTS (its own time,
+// corrected for its clock by ingest) when that is earlier than the arrival,
+// else the arrival. Never later than RecvTS, so a clock running fast cannot
+// make a fix younger than it is.
+func takenAt(pos domain.Position) time.Time {
+	if !pos.FixTS.IsZero() && pos.FixTS.Before(pos.RecvTS) {
+		return pos.FixTS
+	}
+	return pos.RecvTS
+}
+
 // placeFor reads the current geometry of a fence the device is inside.
 // found=false means the place no longer exists (deleted while inside).
 func (e *Engine) placeFor(ctx context.Context, fs *fenceState, placeID string, pos domain.Position) (domain.Place, bool, error) {
@@ -612,7 +623,10 @@ func (e *Engine) handleExit(ctx context.Context, st *deviceState, placeID string
 // was moving at pass-by speed, and the implied speed is physically plausible.
 func (e *Engine) crossings(ctx context.Context, pos domain.Position, prevAt time.Time, prev domain.Point,
 	wasInside map[string]bool, insideNow map[string]domain.Place, peers peerScope) {
-	dt := pos.RecvTS.Sub(prevAt)
+	// The time between the two fixes is the device's, not the server's: fixes a
+	// phone queued and uploads in one burst arrive milliseconds apart, and by
+	// arrival time every step of the burst would look like a teleport.
+	dt := takenAt(pos).Sub(prevAt)
 	if dt <= 0 || dt > e.cfg.CrossMaxGap {
 		return
 	}

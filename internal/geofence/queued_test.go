@@ -59,3 +59,30 @@ func TestLateFixIsNotEvaluated(t *testing.T) {
 		t.Fatalf("a late fix fired %v", got)
 	}
 }
+
+// Fixes a phone queued and uploads in one burst arrive milliseconds apart; the
+// crossing rule must time the step between them by when they were taken, or a
+// pass-by between two queued fixes reads as a 3 km/s teleport and is dropped.
+func TestCrossingInAQueuedBurstIsTimedByTheDevice(t *testing.T) {
+	h := newHarness(t, baseConfig())
+	h.place("p1", "Grocery", 40, domain.TriggerPassby)
+
+	now := h.clock.Now()
+	burst := []struct {
+		pt    domain.Point
+		taken time.Time
+		recv  time.Time
+	}{
+		{at(270, 80), now.Add(-20 * time.Second), now},                           // 160 m apart,
+		{at(90, 80), now.Add(-10 * time.Second), now.Add(50 * time.Millisecond)}, // 10 s apart on the device
+	}
+	for _, f := range burst {
+		if err := h.engine.Evaluate(context.Background(), domain.Position{
+			DeviceID: testDevice, UserID: testUser,
+			RecvTS: f.recv, DeviceTS: f.taken, FixTS: f.taken, Point: f.pt, SpeedMPS: 15,
+		}); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+	}
+	want(t, h.triggers(), domain.TriggerPassby)
+}
