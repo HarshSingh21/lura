@@ -73,18 +73,23 @@ type StopItem struct {
 // GeoItem is a crossing of one of the viewer's fences — by their own device or
 // a connected person's on a fence they watch.
 type GeoItem struct {
-	Type          string         `json:"type"`
-	ID            string         `json:"id"`
-	TS            time.Time      `json:"ts"`
-	EventID       string         `json:"eventId"`
-	PlaceID       string         `json:"placeId"`
-	PlaceName     string         `json:"placeName"`
-	Trigger       domain.Trigger `json:"trigger"`
-	DeviceID      string         `json:"deviceId"`
-	SubjectUserID string         `json:"subjectUserId"`
-	SubjectName   string         `json:"subjectName"`
-	NoteIDs       []string       `json:"noteIds"`
-	Delivered     []string       `json:"delivered"`
+	Type string    `json:"type"`
+	ID   string    `json:"id"`
+	TS   time.Time `json:"ts"`
+	// EventID names the crossing the way the WS geo frame and its reminders
+	// do (the GeoEvent id, geo_…), so a reminder joins its crossing by id.
+	// Rows recorded before that id was kept fall back to TriggerEventID.
+	EventID string `json:"eventId"`
+	// TriggerEventID is the stored trigger-history row (evt_…).
+	TriggerEventID string         `json:"triggerEventId"`
+	PlaceID        string         `json:"placeId"`
+	PlaceName      string         `json:"placeName"`
+	Trigger        domain.Trigger `json:"trigger"`
+	DeviceID       string         `json:"deviceId"`
+	SubjectUserID  string         `json:"subjectUserId"`
+	SubjectName    string         `json:"subjectName"`
+	NoteIDs        []string       `json:"noteIds"`
+	Delivered      []string       `json:"delivered"`
 }
 
 // ReminderItem is a reminder the viewer received, with its current ack state.
@@ -245,8 +250,13 @@ func (s *Service) Feed(ctx context.Context, userID string, q Query) (Result, err
 			subject = e.UserID
 		}
 		id := "geo:" + e.ID
+		crossing := e.GeoEventID
+		if crossing == "" {
+			crossing = e.ID
+		}
 		add(e.TS, id, GeoItem{
-			Type: TypeGeo, ID: id, TS: e.TS.UTC(), EventID: e.ID, PlaceID: e.PlaceID, PlaceName: e.PlaceName,
+			Type: TypeGeo, ID: id, TS: e.TS.UTC(), EventID: crossing, TriggerEventID: e.ID,
+			PlaceID: e.PlaceID, PlaceName: e.PlaceName,
 			Trigger: e.Trigger, DeviceID: e.DeviceID, SubjectUserID: subject, SubjectName: e.SubjectName,
 			NoteIDs: nonNilStrings(e.NoteIDs), Delivered: nonNilStrings(e.Delivered),
 		})

@@ -42,10 +42,13 @@ CREATE INDEX IF NOT EXISTS reminders_owner_pending_notes_idx
 CREATE UNIQUE INDEX IF NOT EXISTS reminders_user_event_uidx
     ON reminders (user_id, event_id) WHERE event_id <> '';
 
--- Whose device crossed, so the feed can say "Nishtha passed Grocery".
+-- Whose device crossed, so the feed can say "Nishtha passed Grocery", and
+-- which crossing (the GeoEvent id, geo_…) it was, so the feed's crossing and
+-- the reminders it produced name it by the same id.
 ALTER TABLE trigger_events
     ADD COLUMN IF NOT EXISTS subject_user_id text NOT NULL DEFAULT '',
-    ADD COLUMN IF NOT EXISTS subject_name    text NOT NULL DEFAULT '';
+    ADD COLUMN IF NOT EXISTS subject_name    text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS geo_event_id    text NOT NULL DEFAULT '';
 
 -- One row per side of each relationship change: invited, accepted, paused,
 -- resumed, removed. peer_id has no foreign key on purpose — "removed" must

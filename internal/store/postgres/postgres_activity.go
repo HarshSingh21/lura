@@ -22,7 +22,7 @@ const defaultActivityLimit = 500
 // ---------------------------------------------------------------- trigger events
 
 const triggerEventCols = `id, user_id, coalesce(place_id,''), place_name, device_id, trigger, ts,
-	note_ids, delivered, note, subject_user_id, subject_name`
+	note_ids, delivered, note, subject_user_id, subject_name, geo_event_id`
 
 func (s *Store) queryTriggerEvents(ctx context.Context, op, sql string, args ...any) ([]domain.TriggerEvent, error) {
 	start := time.Now()
@@ -41,7 +41,7 @@ func (s *Store) queryTriggerEvents(ctx context.Context, op, sql string, args ...
 		)
 		if err := rows.Scan(&e.ID, &e.UserID, &e.PlaceID, &e.PlaceName, &e.DeviceID,
 			&trigger, &e.TS, &e.NoteIDs, &e.Delivered, &e.Note,
-			&e.SubjectUserID, &e.SubjectName); err != nil {
+			&e.SubjectUserID, &e.SubjectName, &e.GeoEventID); err != nil {
 			observe(op, start, err)
 			return nil, mapError("scan trigger event", err)
 		}

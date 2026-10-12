@@ -680,11 +680,11 @@ func (s *Store) InsertTriggerEvent(ctx context.Context, e domain.TriggerEvent) (
 	e.Delivered = arr(e.Delivered)
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO trigger_events (id, user_id, place_id, place_name, device_id, trigger, ts, note_ids, delivered, note,
-			subject_user_id, subject_name)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+			subject_user_id, subject_name, geo_event_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 		e.ID, e.UserID, nullable(e.PlaceID), e.PlaceName, e.DeviceID,
 		string(e.Trigger), e.TS.UTC(), e.NoteIDs, e.Delivered, e.Note,
-		e.SubjectUserID, e.SubjectName)
+		e.SubjectUserID, e.SubjectName, e.GeoEventID)
 	err = mapError("insert trigger event", err)
 	observe("InsertTriggerEvent", start, err)
 	return e, err

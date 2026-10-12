@@ -294,7 +294,14 @@ export type ActivityItem =
       type: 'geo';
       id: string;
       ts: string;
+      /**
+       * The crossing's GeoEvent id (geo_…) — the id the WS geo frame and its
+       * reminders carry as eventId. Rows recorded before 0.2.0 carry their
+       * trigger-event id here instead.
+       */
       eventId: string;
+      /** The stored trigger-history row (evt_…). */
+      triggerEventId?: string;
       placeId: string;
       placeName: string;
       trigger: Trigger;

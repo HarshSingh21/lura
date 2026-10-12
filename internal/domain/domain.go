@@ -360,6 +360,12 @@ type TriggerEvent struct {
 	// connected peer on a fence the owner watches them on.
 	SubjectUserID string `json:"subjectUserId,omitempty"`
 	SubjectName   string `json:"subjectName,omitempty"`
+
+	// GeoEventID is the crossing this was recorded for — the GeoEvent id
+	// (geo_…) that the WS geo frame and every reminder for it carry as
+	// eventId — so a reminder can be joined to its crossing by id. Empty on
+	// rows recorded before it was kept.
+	GeoEventID string `json:"geoEventId,omitempty"`
 }
 
 // ReminderStatus is whether a delivered reminder still demands attention.

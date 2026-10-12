@@ -193,6 +193,7 @@ func (w *Worker) Handle(ctx context.Context, ev domain.GeoEvent) error {
 
 		SubjectUserID: subject,
 		SubjectName:   ev.SubjectName,
+		GeoEventID:    ev.ID,
 	}
 
 	seenChannel := map[string]bool{}

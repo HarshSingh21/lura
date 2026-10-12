@@ -86,6 +86,10 @@ func TestEveryRecipientGetsAStoredRecordBeforePublish(t *testing.T) {
 	if len(events) != 1 || events[0].SubjectUserID != nishtha || events[0].SubjectName != "Nishtha" {
 		t.Errorf("trigger event subject = %+v", events)
 	}
+	// ...and which crossing it was, by the id its reminders carry.
+	if len(events) == 1 && events[0].GeoEventID != check.seen[0].EventID {
+		t.Errorf("trigger event crossing id = %q, reminders' eventId = %q", events[0].GeoEventID, check.seen[0].EventID)
+	}
 
 	// A redelivered event does not duplicate anyone's record.
 	f.handle(t, nishtha, domain.TriggerPassby)

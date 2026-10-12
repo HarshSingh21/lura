@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -185,7 +186,7 @@ func testTriggerEventsBetween(t *testing.T, st store.Store) {
 			UserID: "u1", PlaceID: "p1", PlaceName: "Home", DeviceID: "d1",
 			Trigger: domain.TriggerArrive, TS: base.Add(time.Duration(i) * 10 * time.Minute),
 			NoteIDs: []string{}, Delivered: []string{},
-			SubjectUserID: "u2", SubjectName: "Peer",
+			SubjectUserID: "u2", SubjectName: "Peer", GeoEventID: fmt.Sprintf("geo_%d", i),
 		}); err != nil {
 			t.Fatalf("InsertTriggerEvent: %v", err)
 		}
@@ -199,6 +200,9 @@ func testTriggerEventsBetween(t *testing.T, st store.Store) {
 	}
 	if got[0].SubjectUserID != "u2" || got[0].SubjectName != "Peer" {
 		t.Errorf("subject lost: %+v", got[0])
+	}
+	if got[0].GeoEventID != "geo_2" || got[1].GeoEventID != "geo_1" {
+		t.Errorf("crossing ids = %q, %q, want geo_2, geo_1", got[0].GeoEventID, got[1].GeoEventID)
 	}
 	limited, _ := st.TriggerEventsBetween(ctx, "u1", store.RangeQuery{Limit: 3})
 	if len(limited) != 3 {

@@ -3,6 +3,7 @@ package activity_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,7 +86,9 @@ func TestFeedMergesEverySourceNewestFirst(t *testing.T) {
 	// My crossing of Grocery, and Nishtha's (I watch her on it).
 	for _, e := range []domain.TriggerEvent{
 		{UserID: me, PlaceID: "p_grocery", PlaceName: "Grocery", DeviceID: "dev_harsh", Trigger: domain.TriggerPassby,
-			TS: t0.Add(13 * time.Minute), NoteIDs: []string{"n1"}, Delivered: []string{"inapp"}, SubjectUserID: me, SubjectName: "Harsh"},
+			TS: t0.Add(13 * time.Minute), NoteIDs: []string{"n1"}, Delivered: []string{"inapp"}, SubjectUserID: me, SubjectName: "Harsh",
+			GeoEventID: "geo_a"},
+		// Recorded before the crossing's id was kept: no GeoEventID.
 		{UserID: me, PlaceID: "p_grocery", PlaceName: "Grocery", DeviceID: "dev_nishtha", Trigger: domain.TriggerPassby,
 			TS: t0.Add(40 * time.Minute), SubjectUserID: peer, SubjectName: "Nishtha"},
 		// Nishtha's own fence event: hers, not mine.
@@ -196,6 +199,40 @@ func TestFeedMergesEverySourceNewestFirst(t *testing.T) {
 				t.Errorf("trip = %v", it)
 			}
 		}
+	}
+
+	// The crossing and the reminder it produced name it by the same id, so the
+	// client can join them; a row without a kept crossing id falls back to its
+	// own trigger-event id.
+	var reminderEvent string
+	for _, it := range decoded.Items {
+		if it["type"] == "reminder" {
+			reminderEvent, _ = it["reminder"].(map[string]any)["eventId"].(string)
+		}
+	}
+	joined := 0
+	for _, it := range decoded.Items {
+		if it["type"] != "geo" {
+			continue
+		}
+		evt, _ := it["triggerEventId"].(string)
+		if !strings.HasPrefix(evt, "evt_") {
+			t.Errorf("geo triggerEventId = %v, want the stored row's evt_ id", it["triggerEventId"])
+		}
+		switch it["deviceId"] {
+		case "dev_harsh":
+			if it["eventId"] != reminderEvent || reminderEvent != "geo_a" {
+				t.Errorf("my crossing's eventId = %v, reminder's = %q: want both geo_a", it["eventId"], reminderEvent)
+			}
+			joined++
+		case "dev_nishtha":
+			if it["eventId"] != evt {
+				t.Errorf("pre-release crossing eventId = %v, want its trigger-event id %q", it["eventId"], evt)
+			}
+		}
+	}
+	if joined != 1 {
+		t.Errorf("found %d of my crossings to join, want 1", joined)
 	}
 
 	// Limit keeps the newest.

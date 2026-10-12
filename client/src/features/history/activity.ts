@@ -395,9 +395,10 @@ export function buildTimeline(items: ActivityItem[], ctx: DescribeContext): Acti
 const SAME_MOMENT_MS = 5_000;
 
 /**
- * crossingOf finds the crossing a reminder came from: by event id, or — when
- * the feed names the crossing by a different id than the reminder does — by the
- * same fence, trigger and notes at the same moment.
+ * crossingOf finds the crossing a reminder came from: by event id (both carry
+ * the GeoEvent id), or — for a crossing recorded before the server kept that id,
+ * which the feed names by its trigger-event id — by the same fence, trigger and
+ * notes at the same moment.
  */
 function crossingOf(
   item: Extract<ActivityItem, { type: 'reminder' }>,

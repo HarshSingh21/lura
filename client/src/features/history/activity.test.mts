@@ -32,7 +32,7 @@ function reminder(over: Partial<ReminderRecord> = {}): ReminderRecord {
     body: '',
     subjectUserId: HARSH,
     subjectName: 'Harsh',
-    eventId: 'evt_1',
+    eventId: 'geo_1',
     createdAt: ist(8, 51),
     status: 'acknowledged',
     ackedAt: ist(8, 52),
@@ -46,7 +46,8 @@ function geo(over: Partial<Extract<ActivityItem, { type: 'geo' }>> = {}): Activi
     type: 'geo',
     id: 'geo_1',
     ts: ist(8, 51),
-    eventId: 'evt_1',
+    eventId: 'geo_1',
+    triggerEventId: 'evt_1',
     placeId: 'plc_grocery',
     placeName: 'Grocery',
     trigger: 'passby',
@@ -274,9 +275,24 @@ test('inDay drops what the server returned on the boundary of the next day', () 
   );
 });
 
+test('a reminder joins its crossing by id, even beside a twin at the same fence and moment', () => {
+  // Two people pass Grocery in the same second; the reminder came from the
+  // second crossing, and the shared eventId (the GeoEvent id) says so.
+  const items: ActivityItem[] = [
+    geo({ id: 'geo:evt_a', eventId: 'geo_a', triggerEventId: 'evt_a', deviceId: 'dev_h' }),
+    geo({ id: 'geo:evt_b', eventId: 'geo_b', triggerEventId: 'evt_b', deviceId: 'dev_x' }),
+    { type: 'reminder', id: 'r', ts: ist(8, 51), reminder: reminder({ eventId: 'geo_b', title: 'buy milk' }) },
+  ];
+  const rows = buildTimeline(items, ctx).flatMap((s) => s.rows);
+  assert.equal(rows.length, 2);
+  assert.match(rows.find((r) => r.id === 'geo:evt_b')!.title, /reminder buy milk/);
+  assert.doesNotMatch(rows.find((r) => r.id === 'geo:evt_a')!.title, /reminder/);
+});
+
 test('the note text names a reminder, and a crossing named by another id still folds', () => {
-  // As the server sends it: the title is the crossing, the body the note; the
-  // feed's crossing carries the trigger-log id, the reminder the geo event id.
+  // As the server sends it: the title is the crossing, the body the note. A
+  // crossing recorded before 0.2.0 carries its trigger-log id, not the geo
+  // event id the reminder has, so it folds by fence, trigger and moment.
   const items: ActivityItem[] = [
     geo({ id: 'g', ts: ist(12, 4), eventId: 'evt_log_1', trigger: 'arrive', placeName: 'Whole Foods' }),
     {
