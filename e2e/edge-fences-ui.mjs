@@ -526,7 +526,10 @@ try {
     await confirm.click();
     check((await deleted).status() === 204, 'delete failed');
     const tDel = await mark();
-    await waitFor('Gym to leave the Places grid', async () => (await page.getByText('Gym', { exact: true }).count()) === 0, { timeout: 5000 });
+    // The arrival toast still names Gym; the grid is everything outside it.
+    await waitFor('Gym to leave the Places grid', () => page.evaluate(() => ![...document.querySelectorAll('div')].some(
+      (el) => el.childElementCount === 0 && el.textContent === 'Gym' && !el.closest('[aria-label$="Show on the map."]'),
+    )), { timeout: 5000 });
     // Past the dwell's minute and a dwell tick, still standing there, then walking off.
     await sleep(75_000);
     await stop();
