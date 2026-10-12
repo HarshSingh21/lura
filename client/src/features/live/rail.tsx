@@ -237,18 +237,21 @@ export function PeopleList({
                     </Txt>
                   </View>
 
-                  {fix && onFollow ? (
-                    <FollowButton on={following} name={name} onPress={() => onFollow(following ? undefined : key)} />
-                  ) : null}
-
-                  <View style={[styles.peerTag, peer.watchingMe ? styles.peerTagOn : null]}>
-                    <Mono
-                      size={size.monoTiny}
-                      medium
-                      color={peer.watchingMe ? palette.amberInk : color.textFaint}
-                    >
-                      {peer.watchingMe ? 'SEES YOU' : 'PAUSED'}
-                    </Mono>
+                  {/* Stacked, so the ping line keeps the width it needs to
+                      read in full ("Moving · 30 km/h · 3s ago · 92% battery"). */}
+                  <View style={styles.peerActions}>
+                    <View style={[styles.peerTag, peer.watchingMe ? styles.peerTagOn : null]}>
+                      <Mono
+                        size={size.monoTiny}
+                        medium
+                        color={peer.watchingMe ? palette.amberInk : color.textFaint}
+                      >
+                        {peer.watchingMe ? 'SEES YOU' : 'PAUSED'}
+                      </Mono>
+                    </View>
+                    {fix && onFollow ? (
+                      <FollowButton on={following} name={name} onPress={() => onFollow(following ? undefined : key)} />
+                    ) : null}
                   </View>
                 </View>
               </Card>
@@ -565,6 +568,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   peerTagOn: { backgroundColor: color.amberTagBg },
+  peerActions: { alignItems: 'flex-end', gap: 5 },
   manageButton: { marginTop: space.md },
 
   deviceCard: { padding: 11 },

@@ -523,6 +523,26 @@ function TrailLayer({ markers, view, dark }: { markers: MapMarker[]; view: Viewp
           const n = pts.length;
           return (
             <G key={marker.id}>
+              {/* A soft casing under the wake, so it reads over a road of a
+                  similar colour, satellite imagery or the dark basemap alike. */}
+              {pts.map((p, i) => {
+                const prev = i > 0 ? pts[i - 1] : undefined;
+                if (!prev) return null;
+                const recency = i / (n - 1);
+                return (
+                  <Line
+                    key={`casing-${i}`}
+                    x1={prev.x}
+                    y1={prev.y}
+                    x2={p.x}
+                    y2={p.y}
+                    stroke={dark ? '#0b1020' : '#ffffff'}
+                    strokeOpacity={0.55 * recency * recency}
+                    strokeWidth={5 + 2.5 * recency}
+                    strokeLinecap="round"
+                  />
+                );
+              })}
               {pts.map((p, i) => {
                 const prev = i > 0 ? pts[i - 1] : undefined;
                 if (!prev) return null;
