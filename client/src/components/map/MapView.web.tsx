@@ -3,7 +3,7 @@
 // requires. Without it the GL canvas is mis-sized and the controls are unstyled.
 import 'maplibre-gl/dist/maplibre-gl.css';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import {
   setWorkerUrl,
@@ -17,12 +17,13 @@ import {
 
 import { color, palette } from '@/theme/tokens';
 
+import { maplibreStyle } from './basemaps';
 import { absoluteFill } from './fill';
-import { FenceOverlay, MarkerOverlay } from './Overlays';
+import { FenceOverlay, fenceRing, hasPolygon, MarkerOverlay } from './Overlays';
 import { MapCanvas } from './MapCanvas';
 import { MapplsWebMap } from './MapplsMap.web';
-import { circlePolygon, type Viewport } from './projection';
-import type { MapFence, MapTrack, MapViewProps } from './types';
+import type { Viewport } from './projection';
+import type { BasemapId, MapFence, MapTrack, MapViewProps } from './types';
 
 /**
  * MapLibre GL JS on the web (HLD §13).
@@ -91,8 +92,15 @@ function hasWebGL2(): boolean {
   }
 }
 
-/** fatalMapError reports whether an error event means the map will never work. */
-function fatalMapError(message: string): boolean {
+/**
+ * fatalMapError reports whether an error event means the map will never work.
+ *
+ * An event that names a source or tile is one tile failing — an imagery server
+ * without coverage at this zoom, a dropped request — and the rest of the map is
+ * fine; only errors about the map itself (GPU, style) are fatal.
+ */
+function fatalMapError(message: string, event?: { sourceId?: unknown; tile?: unknown }): boolean {
+  if (event && (event.sourceId !== undefined || event.tile !== undefined)) return false;
   return (
     message.includes('WebGL') ||
     message.includes('GPUInitializationError') ||
@@ -107,12 +115,31 @@ function fatalMapError(message: string): boolean {
  * Mappls is used only when the server asked for it, handed out a key, and this
  * is not airgap; if it fails to come up, the MapLibre renderer takes over for the
  * rest of the page's life rather than retrying into a broken map.
+ *
+ * A basemap Mappls has no style for (its catalogue varies by key — satellite is
+ * not on every plan) is drawn by MapLibre instead, for as long as it is chosen:
+ * picking "satellite" must show satellite, whichever provider the server prefers.
  */
 export function MapView(props: MapViewProps) {
   const [mapplsFailedFor, setMapplsFailedFor] = useState<string | null>(null);
+  const [mapplsCannot, setMapplsCannot] = useState<BasemapId[]>([]);
   const key = props.mapplsKey;
-  if (!props.offline && props.provider === 'mappls' && key && mapplsFailedFor !== key) {
-    return <MapplsWebMap {...props} apiKey={key} onFail={() => setMapplsFailedFor(key)} />;
+  const basemap = props.basemap ?? 'streets';
+  if (
+    !props.offline &&
+    props.provider === 'mappls' &&
+    key &&
+    mapplsFailedFor !== key &&
+    !mapplsCannot.includes(basemap)
+  ) {
+    return (
+      <MapplsWebMap
+        {...props}
+        apiKey={key}
+        onFail={() => setMapplsFailedFor(key)}
+        onBasemapUnsupported={(b) => setMapplsCannot((list) => (list.includes(b) ? list : [...list, b]))}
+      />
+    );
   }
   return <MapLibreWebMap {...props} />;
 }
@@ -125,12 +152,14 @@ function MapLibreWebMap(props: MapViewProps) {
     markers = [],
     tracks = [],
     styleUrl,
+    basemap,
     offline,
     interactive = true,
     onPressMap,
     onPressFence,
     variant = 'light',
     recenterKey,
+    followMs,
     onViewportChange,
   } = props;
 
@@ -138,13 +167,26 @@ function MapLibreWebMap(props: MapViewProps) {
   const hostRef = useRef<View | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const userMoved = useRef(false);
-  // Held in a ref so changing the callback does not tear down the map.
+  // Held in refs so changing a callback or the data does not tear down the map,
+  // and so a style swap can re-add the newest fences and tracks.
   const viewportListener = useRef(onViewportChange);
-  viewportListener.current = onViewportChange;
+  const latest = useRef({ fences, tracks, onPressFence });
   const appliedZoom = useRef(zoom);
   // Probed once per mount: the answer cannot change while the page is open.
   const [failed, setFailed] = useState(() => !hasWebGL2());
   const [view, setView] = useState<Viewport>({ center, zoom, width: 0, height: 0 });
+
+  // The chosen basemap resolved to a style. Memoised so an inline raster style
+  // keeps its identity between renders and is only applied when it changes.
+  const style = useMemo(() => maplibreStyle(basemap, styleUrl) ?? fallbackStyle(dark), [basemap, styleUrl, dark]);
+  const styleRef = useRef(style);
+  const appliedStyle = useRef<typeof style | null>(null);
+
+  useEffect(() => {
+    viewportListener.current = onViewportChange;
+    latest.current = { fences, tracks, onPressFence };
+    styleRef.current = style;
+  });
 
   // ---- create the map once
   useEffect(() => {
@@ -156,7 +198,7 @@ function MapLibreWebMap(props: MapViewProps) {
     try {
       map = new MapLibreMap({
         container: node,
-        style: styleUrl ?? fallbackStyle(dark),
+        style: styleRef.current,
         center: [center.lon, center.lat],
         zoom,
         attributionControl: false,
@@ -166,10 +208,13 @@ function MapLibreWebMap(props: MapViewProps) {
         fadeDuration: 120,
       });
     } catch {
-      setFailed(true);
+      // Deferred a microtask so the fallback renders as a fresh update rather
+      // than a cascade inside this effect.
+      void Promise.resolve().then(() => setFailed(true));
       return;
     }
     mapRef.current = map;
+    appliedStyle.current = styleRef.current;
 
     const syncView = () => {
       const c = map.getCenter();
@@ -184,23 +229,44 @@ function MapLibreWebMap(props: MapViewProps) {
       viewportListener.current?.(next);
     };
 
-    map.on('load', () => {
-      installLayers(map, dark);
-      syncView();
+    // `style.load` fires for the first style and again after every setStyle,
+    // which wipes custom sources and layers — so this is where Lura's fence and
+    // track layers are (re-)added, filled with the newest data.
+    map.on('style.load', () => {
+      withMap(map, (m) => {
+        installLayers(m, dark);
+        updateSources(m, latest.current.fences, latest.current.tracks);
+      });
     });
+    map.on('load', syncView);
     map.on('move', syncView);
     map.on('resize', syncView);
     map.on('dragstart', () => {
       userMoved.current = true;
     });
-    map.on('zoomstart', () => {
-      userMoved.current = true;
+    map.on('zoomstart', (event) => {
+      // Only a person zooming counts; an easeTo carrying a zoom is not them.
+      if ((event as { originalEvent?: unknown }).originalEvent) userMoved.current = true;
+    });
+    // Polygon fences are tapped through their GL fill (see FenceOverlay):
+    // circles have screen-space tap targets above the canvas already.
+    map.on('click', (event: MapMouseEvent) => {
+      const press = latest.current.onPressFence;
+      if (!press) return;
+      withMap(map, (m) => {
+        if (!m.getLayer(FENCE_FILL)) return;
+        const hit = m
+          .queryRenderedFeatures(event.point, { layers: [FENCE_FILL] })
+          .find((f) => f.properties?.shape === 'polygon');
+        const id = hit?.properties?.id;
+        if (typeof id === 'string') press(id);
+      });
     });
     map.on('error', (event) => {
       // A missing tile is survivable; a missing GPU or an unloadable style is not.
-      const err = (event as { error?: { message?: string; name?: string } }).error;
-      const message = `${err?.name ?? ''} ${err?.message ?? ''}`;
-      if (fatalMapError(message)) {
+      const ev = event as { error?: { message?: string; name?: string }; sourceId?: unknown; tile?: unknown };
+      const message = `${ev.error?.name ?? ''} ${ev.error?.message ?? ''}`;
+      if (fatalMapError(message, ev)) {
         mapRef.current = null; // stop every imperative call below from touching it
         setFailed(true);
       }
@@ -217,7 +283,18 @@ function MapLibreWebMap(props: MapViewProps) {
     };
     // The map is created once; prop changes are applied by the effects below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [offline, failed, styleUrl, dark, interactive]);
+  }, [offline, failed, dark, interactive]);
+
+  // ---- basemap switch: swap the style, keep the camera and Lura's layers
+  useEffect(() => {
+    withMap(mapRef.current, (map) => {
+      if (appliedStyle.current === style) return;
+      appliedStyle.current = style;
+      // diff:false — a raster style and a vector style share nothing worth
+      // diffing, and a full swap guarantees the style.load re-install runs.
+      map.setStyle(style, { diff: false });
+    });
+  }, [style]);
 
   // ---- taps (drawing a place)
   useEffect(() => {
@@ -232,12 +309,19 @@ function MapLibreWebMap(props: MapViewProps) {
     };
   }, [onPressMap]);
 
-  // ---- follow the centre until the user takes over
+  // ---- follow the centre until the user takes over (or always, in follow mode)
   useEffect(() => {
     withMap(mapRef.current, (map) => {
+      if (followMs !== undefined) {
+        // Follow mode: the camera moves at the marker's pace, linearly, so the
+        // followed person stays put on screen while the city slides past.
+        map.easeTo({ center: [center.lon, center.lat] as LngLatLike, duration: followMs, easing: linear });
+        return;
+      }
       if (userMoved.current) return;
       map.easeTo({ center: [center.lon, center.lat] as LngLatLike, duration: 400 });
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [center.lat, center.lon]);
 
   // ---- zoom controls: apply an explicit zoom without disturbing the centre
@@ -259,11 +343,9 @@ function MapLibreWebMap(props: MapViewProps) {
 
   // ---- push fence/track geometry into the GL sources
   useEffect(() => {
-    withMap(mapRef.current, (map) => {
-      const apply = () => withMap(map, (m) => updateSources(m, fences, tracks));
-      if (map.isStyleLoaded()) apply();
-      else map.once('load', apply);
-    });
+    // Before the style has loaded (first load, or mid-swap) the style.load
+    // handler applies the newest data itself.
+    withMap(mapRef.current, (map) => updateSources(map, fences, tracks));
   }, [fences, tracks]);
 
   if (offline || failed) {
@@ -275,12 +357,14 @@ function MapLibreWebMap(props: MapViewProps) {
       <View ref={hostRef} style={styles.gl} />
       {/* Overlays sit above the canvas and must not swallow map gestures. */}
       <View style={styles.overlays} pointerEvents="box-none">
-        <FenceOverlay fences={fences} view={view} dark={dark} onPress={onPressFence} />
+        <FenceOverlay fences={fences} view={view} dark={dark} onPress={onPressFence} glShapes />
         <MarkerOverlay markers={markers} view={view} dark={dark} />
       </View>
     </View>
   );
 }
+
+const linear = (t: number) => t;
 
 /**
  * withMap runs fn against a live map, swallowing the throw from a map whose GL
@@ -372,8 +456,9 @@ function updateSources(map: MapLibreMap, fences: MapFence[], tracks: MapTrack[])
         color: fence.tone === 'amber' ? palette.amber : palette.accent,
         dashed: !!fence.dashed,
         selected: !!fence.selected,
+        shape: hasPolygon(fence) ? 'polygon' : 'circle',
       },
-      geometry: { type: 'Polygon' as const, coordinates: [circlePolygon(fence.center, fence.radiusM)] },
+      geometry: { type: 'Polygon' as const, coordinates: [fenceRing(fence)] },
     })),
   });
 

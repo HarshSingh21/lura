@@ -3,6 +3,7 @@ import { StyleSheet, TurboModuleRegistry, View, type LayoutChangeEvent } from 'r
 
 import { color } from '@/theme/tokens';
 
+import { mapplsStyleFor, mapplsStyleNames } from './basemaps';
 import { absoluteFill } from './fill';
 import { FenceOverlay, MarkerOverlay, TrackOverlay } from './Overlays';
 import type { Viewport } from './projection';
@@ -35,6 +36,8 @@ type MapplsModule = {
     scrollEnabled?: boolean;
     zoomEnabled?: boolean;
     attributionEnabled?: boolean;
+    mapplsStyle?: string;
+    didLoadedMapplsMapsStyles?: (styles: unknown) => void;
     onPress?: (feature: Feature) => void;
     onRegionIsChanging?: (feature: Feature) => void;
     onRegionDidChange?: (feature: Feature) => void;
@@ -74,10 +77,23 @@ function lonLat(feature: Feature): { lat: number; lon: number } | null {
   return typeof lat === 'number' && typeof lon === 'number' ? { lat, lon } : null;
 }
 
-export function MapplsNativeMap(props: MapViewProps & { sdk: MapplsModule; onFail: () => void }) {
+export function MapplsNativeMap(
+  props: MapViewProps & {
+    sdk: MapplsModule;
+    onFail: () => void;
+    /** Style names the SDK reported for this key (held by the caller), or null before load. */
+    styleNames: string[] | null;
+    /** The SDK reported its style list. */
+    onStyleNames: (names: string[]) => void;
+  },
+) {
   const {
     sdk,
     onFail,
+    styleNames,
+    onStyleNames,
+    basemap = 'streets',
+    followMs,
     center,
     zoom = 14,
     fences = [],
@@ -95,6 +111,9 @@ export function MapplsNativeMap(props: MapViewProps & { sdk: MapplsModule; onFai
   const dark = variant === 'dark';
   const [box, setBox] = useState({ width: 0, height: 0 });
   const [view, setView] = useState<Viewport>({ center, zoom, width: 0, height: 0 });
+  // A basemap with no Mappls style never reaches here: the caller (MapView.native)
+  // hands it to MapLibre once the style list is known.
+  const mapplsStyle = styleNames ? mapplsStyleFor(basemap, styleNames) : undefined;
 
   const onLayout = (event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
@@ -118,6 +137,13 @@ export function MapplsNativeMap(props: MapViewProps & { sdk: MapplsModule; onFai
         // The Mappls logo and attribution are a licence requirement and stay;
         // rotation and tilt are off, as on MapLibre, so a fence stays a circle.
         attributionEnabled
+        mapplsStyle={mapplsStyle}
+        didLoadedMapplsMapsStyles={(list) => {
+          // The SDK passes either the array or an event wrapping it.
+          const payload = (list as { nativeEvent?: { payload?: { mappls_styles?: unknown } } })?.nativeEvent?.payload
+            ?.mappls_styles;
+          onStyleNames(mapplsStyleNames(payload ?? list));
+        }}
         compassEnabled={false}
         rotateEnabled={false}
         pitchEnabled={false}
@@ -142,8 +168,8 @@ export function MapplsNativeMap(props: MapViewProps & { sdk: MapplsModule; onFai
           key={recenterKey}
           centerCoordinate={[center.lon, center.lat]}
           zoomLevel={zoom}
-          animationDuration={400}
-          animationMode="easeTo"
+          animationDuration={followMs ?? 400}
+          animationMode={followMs !== undefined ? 'linearTo' : 'easeTo'}
         />
       </MapView>
 
