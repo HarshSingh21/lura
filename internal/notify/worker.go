@@ -595,6 +595,10 @@ func verbFor(t domain.Trigger) string {
 }
 
 // peerVerbFor is the verb after a person's name: "Nishtha arrived at Grocery".
+// It must say exactly what the client's own title for the geo frame says
+// (client/src/features/notify/model.ts VERB): the owner's toast is drawn from
+// that frame first and re-titled from this one a moment later, and a toast that
+// changes its wording under the reader's eyes looks like a second alert.
 func peerVerbFor(t domain.Trigger) string {
 	switch t {
 	case domain.TriggerArrive:
@@ -602,9 +606,9 @@ func peerVerbFor(t domain.Trigger) string {
 	case domain.TriggerLeave:
 		return "left"
 	case domain.TriggerDwell:
-		return "is still at"
+		return "is staying at"
 	case domain.TriggerPassby:
-		return "passed"
+		return "passed by"
 	}
 	return string(t)
 }
