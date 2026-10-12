@@ -110,9 +110,11 @@ func (s *Service) List(ctx context.Context, userID string) ([]Peer, error) {
 				return nil, err
 			}
 			for _, d := range devices {
-				if d.LastPoint == nil {
-					continue // a device with no fix is noise on someone else's map
-				}
+				// A device with no fix yet is listed too (no point): a viewer
+				// told only about devices with a stored fix would take a phone
+				// whose first fix is still on its way to the store for a
+				// device that no longer exists. Clients draw only what has a
+				// point.
 				peer.Devices = append(peer.Devices, PeerDevice{
 					ID: d.ID, Name: d.Name, Point: d.LastPoint, SpeedMPS: d.SpeedMPS, LastSeen: d.LastSeen,
 				})
