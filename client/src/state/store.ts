@@ -2,8 +2,17 @@ import { Platform } from 'react-native';
 import { create } from 'zustand';
 
 import { DEFAULT_TOKEN, defaultBaseUrl, setConfig } from '@/api/client';
-import type { GeoEvent, Position, Reminder } from '@/api/types';
+import type { GeoEvent, Point, Position, Reminder } from '@/api/types';
 import type { LiveStatus } from '@/api/live';
+import { announce, focusTarget } from '@/features/notify/announce';
+import {
+  fromGeo,
+  fromReminder,
+  ingest,
+  markAllRead as markItemsRead,
+  type NotificationItem,
+} from '@/features/notify/model';
+import { loadMuted, saveMuted } from '@/features/notify/sound';
 
 /**
  * Client-local state (HLD §14: Zustand for local, TanStack Query for server).
@@ -25,6 +34,26 @@ export type LiveState = {
   toasts: Toast[];
   /** Set when the server tells a share viewer their access changed. */
   aclNotice?: { action: string; reason?: string; at: number };
+  /** The signed-in user, from the socket's hello frame: tells my crossings from a peer's. */
+  viewerId?: string;
+};
+
+/**
+ * NotifyState is the notification centre: the session's crossings and
+ * reminders, newest first, one entry per crossing (see features/notify/model).
+ * It is client-local on purpose — the server's trigger log is the durable
+ * record; this is "what did I hear about while this tab was open".
+ */
+export type NotifyState = {
+  notifications: NotificationItem[];
+  /** Per-viewer: mutes chimes and vibration, never the toast itself. */
+  muted: boolean;
+  /**
+   * A request to look at something on the Live map, made from a toast or the
+   * panel. `seq` changes on every request so asking twice for the same place
+   * still recentres.
+   */
+  focus?: { seq: number; placeId?: string; deviceId?: string; point?: Point };
 };
 
 export type Toast = {
@@ -33,6 +62,8 @@ export type Toast = {
   body?: string;
   kind: 'reminder' | 'event' | 'error' | 'info';
   at: number;
+  /** For reminder/event toasts: the notification-centre entry this toast announces. */
+  notificationId?: string;
 };
 
 export type ConnectionState = {
@@ -54,17 +85,30 @@ export type UiState = {
 };
 
 export type Store = LiveState &
-  UiState & {
+  UiState &
+  NotifyState & {
   connection: ConnectionState;
 
   applyPosition: (p: Position) => void;
   applyGeoEvent: (e: GeoEvent) => void;
   applyReminder: (r: Reminder) => void;
+  setViewer: (viewerId: string) => void;
   applyAcl: (action: string, reason?: string) => void;
   setStatus: (s: LiveStatus) => void;
 
   pushToast: (t: Omit<Toast, 'id' | 'at'>) => void;
   dismissToast: (id: string) => void;
+
+  /**
+   * notify records an entry and, the first time a crossing deserves it, toasts it
+   * and plays its chime. Returns whether it announced.
+   */
+  notify: (item: NotificationItem) => { announced: boolean; item: NotificationItem };
+  markNotificationRead: (id: string) => void;
+  markAllNotificationsRead: () => void;
+  clearNotifications: () => void;
+  setMuted: (muted: boolean) => void;
+  requestFocus: (target: { placeId?: string; deviceId?: string; point?: Point }) => void;
 
   setConnection: (next: Partial<ConnectionState>) => void;
   setDrawing: (drawing: boolean) => void;
@@ -111,6 +155,9 @@ export const useStore = create<Store>((set, get) => ({
   status: 'idle',
   toasts: [],
 
+  notifications: [],
+  muted: loadMuted(),
+
   drawing: false,
   sheetOpen: false,
   trackingEnabled: false,
@@ -129,21 +176,18 @@ export const useStore = create<Store>((set, get) => ({
       return { positions: { ...state.positions, [p.deviceId]: p } };
     }),
 
-  applyGeoEvent: (e) => set({ lastEvent: e }),
+  // Every crossing and every reminder goes through notify(), which dedupes the
+  // two frames one crossing can produce into one entry, one toast and one sound.
+  applyGeoEvent: (e) => {
+    set({ lastEvent: e });
+    get().notify(fromGeo(e, get().viewerId));
+  },
 
-  applyReminder: (r) =>
-    set((state) => ({
-      toasts: [
-        ...state.toasts.slice(-3),
-        {
-          id: `toast_${++toastSeq}`,
-          title: r.title,
-          body: r.body,
-          kind: 'reminder' as const,
-          at: Date.now(),
-        },
-      ],
-    })),
+  applyReminder: (r) => {
+    get().notify(fromReminder(r, get().viewerId));
+  },
+
+  setViewer: (viewerId) => set({ viewerId }),
 
   applyAcl: (action, reason) => set({ aclNotice: { action, reason, at: Date.now() } }),
 
@@ -156,13 +200,59 @@ export const useStore = create<Store>((set, get) => ({
 
   dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 
+  notify: (next) => {
+    const res = ingest(get().notifications, next);
+    set((state) => {
+      if (!res.announce) {
+        // The second frame for a crossing re-words the toast already on screen
+        // (the reminder carries the note text) instead of stacking a new one.
+        return {
+          notifications: res.items,
+          toasts: state.toasts.map((t) =>
+            t.notificationId === res.item.id ? { ...t, title: res.item.title, body: res.item.body } : t,
+          ),
+        };
+      }
+      return {
+        notifications: res.items,
+        toasts: [
+          ...state.toasts.slice(-3),
+          {
+            id: `toast_${++toastSeq}`,
+            title: res.item.title,
+            body: res.item.body,
+            kind: res.item.kind === 'geo' ? ('event' as const) : ('reminder' as const),
+            at: Date.now(),
+            notificationId: res.item.id,
+          },
+        ],
+      };
+    });
+    if (res.announce) {
+      announce(res.item, { muted: get().muted, onOpen: () => get().requestFocus(focusTarget(res.item)) });
+    }
+    return { announced: res.announce, item: res.item };
+  },
+
+  markNotificationRead: (id) =>
+    set((state) => ({
+      notifications: state.notifications.map((n) => (n.id === id && !n.read ? { ...n, read: true } : n)),
+    })),
+  markAllNotificationsRead: () => set((state) => ({ notifications: markItemsRead(state.notifications) })),
+  clearNotifications: () => set({ notifications: [] }),
+  setMuted: (muted) => {
+    saveMuted(muted);
+    set({ muted });
+  },
+  requestFocus: (target) => set((state) => ({ focus: { ...target, seq: (state.focus?.seq ?? 0) + 1 } })),
+
   setConnection: (next) => {
     const merged = { ...get().connection, ...next };
     setConfig(merged);
     persistConnection(merged);
     // Positions belong to the previous server; keeping them would draw another
     // deployment's markers on this one's map.
-    set({ connection: merged, positions: {}, lastEvent: undefined });
+    set({ connection: merged, positions: {}, lastEvent: undefined, notifications: [], viewerId: undefined });
   },
 
   setDrawing: (drawing) => set({ drawing }),
@@ -178,3 +268,4 @@ export const selectPositions = (s: Store) => s.positions;
 export const selectStatus = (s: Store) => s.status;
 export const selectToasts = (s: Store) => s.toasts;
 export const selectConnection = (s: Store) => s.connection;
+export const selectUnread = (s: Store) => s.notifications.reduce((n, item) => (item.read ? n : n + 1), 0);

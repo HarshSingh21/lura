@@ -8,6 +8,9 @@ import { TRIGGERS } from '@/api/types';
 import { boundingRadiusM, formatMetres } from '@/components/map/geometry';
 import type { FenceGeometry } from '@/components/map/types';
 import { Button, Field, styles as ui } from '@/components/ui/primitives';
+import { usePeople } from '@/features/people/api';
+import { partitionPeople } from '@/features/people/peer';
+import { PersonPicker, peerOption } from '@/features/people/PersonPicker';
 import { Mono, Txt } from '@/theme/text';
 import { color, font, palette, radius, size, space } from '@/theme/tokens';
 
@@ -45,6 +48,7 @@ export type PlaceFormValues = {
   radiusM: string;
   triggers: Trigger[];
   dwellMins: string;
+  watchUserIds: string[];
 };
 
 /**
@@ -57,6 +61,8 @@ export type PlaceSubmit = {
   tags: string[];
   triggers: Trigger[];
   dwellMins: number;
+  /** Connected people whose crossings of this place notify me. */
+  watchUserIds: string[];
 } & FenceGeometry;
 
 /** Polygon places edit their shape on the map, so the form only checks the rest. */
@@ -107,6 +113,7 @@ export function PlaceForm({
       radiusM: String(drawnCircle?.radiusM ?? initial?.radiusM ?? 120),
       triggers: initial?.triggers ?? ['arrive'],
       dwellMins: String(initial?.dwellMins ?? 45),
+      watchUserIds: initial?.watchUserIds ?? [],
     }),
     [initial, seedPoint, drawnCircle],
   );
@@ -117,6 +124,12 @@ export function PlaceForm({
 
   const triggers = watch('triggers');
   const wantsDwell = triggers.includes('dwell');
+
+  // Only accepted connections can be watched (the server answers not_connected
+  // otherwise). Someone who has paused sharing stays pickable — the watch
+  // resumes the moment they share again — but says so.
+  const people = usePeople();
+  const connected = partitionPeople(people.data?.people ?? []).accepted;
 
   const submit = handleSubmit((values) => {
     const parsed = polygon ? polygonPlaceSchema.safeParse(values) : placeSchema.safeParse(values);
@@ -139,6 +152,7 @@ export function PlaceForm({
         .filter(Boolean),
       triggers: data.triggers,
       dwellMins: wantsDwell ? (data.dwellMins ?? 45) : 0,
+      watchUserIds: values.watchUserIds ?? [],
     };
     if (polygon) {
       onSubmit({ ...rest, shape: 'polygon', polygon });
@@ -321,6 +335,44 @@ export function PlaceForm({
           )}
         />
       ) : null}
+
+      <Controller
+        control={control}
+        name="watchUserIds"
+        render={({ field }) => (
+          <View style={styles.triggerBlock}>
+            <Txt variant="small" color={color.textMuted} style={styles.blockLabel}>
+              Watch people
+            </Txt>
+            {connected.length === 0 ? (
+              <Txt variant="micro" color={color.textFaint}>
+                Connect with someone under People to be told when they cross this place.
+              </Txt>
+            ) : (
+              <>
+                <PersonPicker
+                  multiple
+                  accessibilityLabel="People whose crossings of this place notify you"
+                  options={connected.map((peer) => {
+                    const option = peerOption(peer);
+                    return peer.sharingWithMe ? option : { ...option, hint: 'paused · resumes when they share' };
+                  })}
+                  selected={field.value}
+                  onToggle={(id) =>
+                    field.onChange(
+                      field.value.includes(id) ? field.value.filter((x) => x !== id) : [...field.value, id],
+                    )
+                  }
+                />
+                <Txt variant="micro" color={color.textFaint}>
+                  You are notified when they {triggers.length === 1 && triggers[0] === 'passby' ? 'pass by' : 'cross'} here,
+                  using the triggers above. They are not told.
+                </Txt>
+              </>
+            )}
+          </View>
+        )}
+      />
 
       {error ? (
         <View style={styles.errorBox}>

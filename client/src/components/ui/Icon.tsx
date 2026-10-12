@@ -27,7 +27,14 @@ export type IconName =
   | 'airgap'
   | 'close'
   | 'chevron-up'
-  | 'chevron-down';
+  | 'chevron-down'
+  | 'bell'
+  | 'bell-off'
+  | 'arrive'
+  | 'leave'
+  | 'passby'
+  | 'dwell'
+  | 'watch';
 
 export type IconProps = {
   name: IconName;
@@ -184,6 +191,68 @@ export function Icon({ name, size = 18, color: stroke = color.textBody, strokeWi
       return (
         <Svg width={size} height={size} viewBox="0 0 20 20">
           <Path d="M5 7.5 L10 12.5 L15 7.5" {...common} strokeWidth={1.9} strokeLinejoin="round" />
+        </Svg>
+      );
+
+    case 'bell':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 20 20">
+          <Path d="M5 13.5V9a5 5 0 0 1 10 0v4.5l1.5 1.5h-13z" {...common} strokeLinejoin="round" />
+          <Path d="M8.3 17a1.9 1.9 0 0 0 3.4 0" {...common} />
+        </Svg>
+      );
+
+    case 'bell-off':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 20 20">
+          <Path d="M5 13.5V9a5 5 0 0 1 10 0v4.5l1.5 1.5h-13z" {...common} strokeLinejoin="round" />
+          <Path d="M8.3 17a1.9 1.9 0 0 0 3.4 0" {...common} />
+          <Line x1={3} y1={3} x2={17} y2={17} {...common} strokeWidth={1.8} />
+        </Svg>
+      );
+
+    // Trigger glyphs: an arrow into, out of, past and resting inside a fence ring.
+    case 'arrive':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 20 20">
+          <Circle cx={12} cy={10} r={5.5} {...common} strokeDasharray="2.2 2" />
+          <Line x1={2.5} y1={10} x2={11.5} y2={10} {...common} strokeWidth={1.9} />
+          <Path d="M8.5 7 L11.5 10 L8.5 13" {...common} strokeWidth={1.9} strokeLinejoin="round" />
+        </Svg>
+      );
+
+    case 'leave':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 20 20">
+          <Circle cx={8} cy={10} r={5.5} {...common} strokeDasharray="2.2 2" />
+          <Line x1={8.5} y1={10} x2={17.5} y2={10} {...common} strokeWidth={1.9} />
+          <Path d="M14.5 7 L17.5 10 L14.5 13" {...common} strokeWidth={1.9} strokeLinejoin="round" />
+        </Svg>
+      );
+
+    case 'passby':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 20 20">
+          <Circle cx={10} cy={7} r={4.2} {...common} strokeDasharray="2.2 2" />
+          <Line x1={2} y1={14.5} x2={17} y2={14.5} {...common} strokeWidth={1.9} />
+          <Path d="M14.5 12 L17 14.5 L14.5 17" {...common} strokeWidth={1.9} strokeLinejoin="round" />
+        </Svg>
+      );
+
+    case 'dwell':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 20 20">
+          <Circle cx={10} cy={10} r={6.5} {...common} strokeDasharray="2.2 2" />
+          <Line x1={10} y1={10} x2={10} y2={6.8} {...common} />
+          <Line x1={10} y1={10} x2={12.3} y2={11.4} {...common} />
+        </Svg>
+      );
+
+    case 'watch':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 20 20">
+          <Path d="M2.5 10s2.8-5 7.5-5 7.5 5 7.5 5-2.8 5-7.5 5-7.5-5-7.5-5z" {...common} strokeLinejoin="round" />
+          <Circle cx={10} cy={10} r={2.2} {...common} />
         </Svg>
       );
   }

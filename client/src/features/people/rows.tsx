@@ -1,14 +1,16 @@
 import { useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import { useRouter } from 'expo-router';
 
 import type { Position } from '@/api/types';
 import { Card, Dot, Toggle, styles as ui } from '@/components/ui/primitives';
 import { Mono, Txt } from '@/theme/text';
-import { color, palette, radius, size, space } from '@/theme/tokens';
+import { color, palette, radius, size, space, withAlpha } from '@/theme/tokens';
 
 import { formatRelative } from '@/features/live/rail';
 
 import { describePeopleError, useAcceptPerson, useRemovePerson, useSetPeerSharing } from './api';
+import { personColor } from './color';
 import { firstName, latestFix } from './peer';
 import type { Peer } from './types';
 
@@ -172,9 +174,11 @@ function laneTone(tone: LaneTone) {
 
 /** PeerRow is one accepted connection, drawn as its two independent directions. */
 export function PeerRow({ peer, positions }: { peer: Peer; positions: Record<string, Position> }) {
+  const router = useRouter();
   const setSharing = useSetPeerSharing();
   const remove = useRemovePerson();
   const [confirming, setConfirming] = useState(false);
+  const tint = personColor(peer.peerId);
 
   const name = peer.peerName || peer.peerEmail;
   const short = firstName(peer);
@@ -208,8 +212,16 @@ export function PeerRow({ peer, positions }: { peer: Peer; positions: Record<str
   return (
     <Card style={styles.peerCard}>
       <View style={styles.peerHead}>
-        <View style={[styles.avatar, peer.sharingWithMe ? styles.avatarLive : null]}>
-          <Txt variant="bodySemi" color={peer.sharingWithMe ? palette.accentInk : color.textMuted}>
+        {/* The avatar wears the person's colour — the same one as their map
+            marker and their toasts — so a face here matches a dot there. */}
+        <View
+          style={[
+            styles.avatar,
+            { backgroundColor: withAlpha(tint, peer.sharingWithMe ? 0.18 : 0.08), borderColor: tint },
+            peer.sharingWithMe ? styles.avatarLive : null,
+          ]}
+        >
+          <Txt variant="bodySemi" color={peer.sharingWithMe ? tint : color.textMuted}>
             {initials(name)}
           </Txt>
         </View>
@@ -220,6 +232,12 @@ export function PeerRow({ peer, positions }: { peer: Peer; positions: Record<str
           <Mono size={size.monoSm} color={color.textFaint} numberOfLines={1}>
             {peer.peerEmail}
           </Mono>
+        </View>
+        <View style={[styles.sharesChip, peer.sharingWithMe ? styles.sharesChipOn : null]}>
+          <Dot size={6} color={peer.sharingWithMe ? palette.accent : color.neutralDot} />
+          <Txt variant="micro" color={peer.sharingWithMe ? palette.accentInk : color.textMuted}>
+            {peer.sharingWithMe ? 'Shares with you' : 'Not sharing with you'}
+          </Txt>
         </View>
       </View>
 
@@ -285,6 +303,13 @@ export function PeerRow({ peer, positions }: { peer: Peer; positions: Record<str
         </View>
       ) : (
         <View style={styles.rowActions}>
+          <ActionButton
+            label="Remind me when they arrive somewhere"
+            tone="secondary"
+            accessibilityLabel={`Write a note that fires when ${name} arrives at a place`}
+            onPress={() => router.push({ pathname: '/notes', params: { watch: peer.peerId } })}
+          />
+          <View style={ui.flex} />
           <ActionButton
             label="Remove"
             tone="danger"
@@ -415,7 +440,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarLive: { backgroundColor: color.accentSoft },
+  avatarLive: { borderWidth: 1.5 },
+  sharesChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderRadius: radius.pill,
+    paddingVertical: 4,
+    paddingHorizontal: 9,
+    backgroundColor: color.surfaceMuted,
+  },
+  sharesChipOn: { backgroundColor: color.accentSoft },
   lanes: { gap: space.md },
 
   rowActions: { flexDirection: 'row', gap: space.md, flexWrap: 'wrap' },

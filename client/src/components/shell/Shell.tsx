@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { usePathname, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -33,6 +33,16 @@ export function Shell({ children }: { children: ReactNode }) {
   const status = useStore((s) => s.status);
   const search = useStore((s) => s.search);
   const setSearch = useStore((s) => s.setSearch);
+
+  // A toast or the notification panel asked to see something on the map: go to
+  // the map. The Live screen reads the same request and frames it.
+  const focusSeq = useStore((s) => s.focus?.seq);
+  const handledFocus = useRef(focusSeq);
+  useEffect(() => {
+    if (!focusSeq || focusSeq === handledFocus.current) return;
+    handledFocus.current = focusSeq;
+    if (pathname !== '/') router.push('/');
+  }, [focusSeq, pathname, router]);
 
   const airgap = data?.user.airgap ?? data?.server.airgap ?? false;
   // Every collection is read through `?.` all the way down. The server now sends
