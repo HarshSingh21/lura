@@ -11,14 +11,28 @@ import { playChime } from './sound';
  */
 export function announce(item: NotificationItem, opts: { muted: boolean; onOpen?: () => void }): void {
   if (!opts.muted) playChime(chimeFor(item));
-  showDesktop(item, opts.onOpen);
+  const pending = item.status === 'pending';
+  // A pending reminder stays on the desktop until it is dealt with; its tag is
+  // the reminder id, so the repeat (see useReminderRepeat) replaces it in place.
+  showDesktop(item, opts.onOpen, {
+    requireInteraction: pending,
+    silent: opts.muted,
+    tag: pending && item.reminderId ? reminderTag(item.reminderId) : undefined,
+  });
+}
+
+/** reminderTag is the system notification tag for a pending reminder. */
+export function reminderTag(reminderId: string): string {
+  return `reminder:${reminderId}`;
 }
 
 /**
  * focusTarget is what "show me" means for an entry: the person, when it is about
  * someone (their marker follows them), otherwise the place.
  */
-export function focusTarget(item: NotificationItem): { placeId?: string; deviceId?: string; point?: Point } {
+export function focusTarget(
+  item: Pick<NotificationItem, 'placeId' | 'subjectUserId' | 'deviceId' | 'point'>,
+): { placeId?: string; deviceId?: string; point?: Point } {
   return {
     placeId: item.placeId,
     deviceId: item.subjectUserId ? item.deviceId : undefined,

@@ -7,6 +7,8 @@ import type { Overview, Position } from '@/api/types';
 import { useTrails } from '@/features/live/trails';
 import { useStore } from '@/state/store';
 
+import { syncPendingReminders } from './useReminders';
+
 /**
  * Binds the live socket to the app's state.
  *
@@ -57,6 +59,10 @@ export function useLive(enabled = true) {
           case 'hello':
             // Who "me" is, so a crossing can be told apart from a peer's.
             setViewer(frame.data.viewerId);
+            // Every (re)connect re-reads the pending reminders: an ack made in
+            // another session while this one was offline produced a frame this
+            // one never saw, and so did a reminder that fired meanwhile.
+            void syncPendingReminders();
             break;
 
           case 'snapshot':
@@ -97,6 +103,16 @@ export function useLive(enabled = true) {
           case 'notify':
             applyReminder(frame.data);
             void qc.invalidateQueries({ queryKey: ['notes'] });
+            void qc.invalidateQueries({ queryKey: ['activity'] });
+            break;
+
+          case 'reminder_ack':
+            // Acknowledged here or in any other of my sessions: the card goes now.
+            useStore.getState().applyReminderAck(frame.data.id, frame.data.ackedAt);
+            // An ack can mark the note done.
+            void qc.invalidateQueries({ queryKey: ['notes'] });
+            void qc.invalidateQueries({ queryKey: keys.overview });
+            void qc.invalidateQueries({ queryKey: ['activity'] });
             break;
 
           case 'acl':

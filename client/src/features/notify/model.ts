@@ -1,4 +1,4 @@
-import type { GeoEvent, Point, Reminder, Trigger } from '../../api/types';
+import type { GeoEvent, Point, Reminder, ReminderRecord, ReminderStatus, Trigger } from '../../api/types';
 
 /**
  * The notification centre's data model, free of React, of the store and of any
@@ -18,11 +18,19 @@ import type { GeoEvent, Point, Reminder, Trigger } from '../../api/types';
 /** ChimeKind picks the sound: one per trigger, plus "watch" for a watched person. */
 export type ChimeKind = 'arrive' | 'leave' | 'passby' | 'dwell' | 'watch';
 
+/** Mirrors api/reminders.isStored; repeated so this file keeps type-only imports. */
+function isStored(r: Reminder | ReminderRecord): boolean {
+  return typeof r.id === 'string' && r.id !== '' && (r.status === 'pending' || r.status === 'acknowledged');
+}
+
 export type NotificationItem = {
   /** The crossing's id — the GeoEvent id — so both frames for it land on one entry. */
   id: string;
-  /** 'geo' = a fence crossing with no note; 'note' = a note fired; 'watch' = a watched person crossed. */
-  kind: 'geo' | 'note' | 'watch';
+  /**
+   * 'geo' = a fence crossing with no note; 'note' = a note fired; 'watch' = a
+   * watched person crossed; 'ack' = someone acknowledged a note of mine.
+   */
+  kind: 'geo' | 'note' | 'watch' | 'ack';
   /** Which frame described it last-best: a reminder carries more than a bare crossing. */
   source: 'geo' | 'notify';
   trigger: Trigger;
@@ -41,6 +49,12 @@ export type NotificationItem = {
   /** Epoch ms of the crossing (server time), used for ordering and grouping. */
   at: number;
   read: boolean;
+  /** The stored reminder behind this entry (release spec §6), when there is one. */
+  reminderId?: string;
+  /** Whether that reminder still waits for an Acknowledge. Absent for a bare crossing. */
+  status?: ReminderStatus;
+  /** Epoch ms it was acknowledged. */
+  ackedAt?: number;
   /** Whether this crossing has had its toast and sound. A crossing gets them once. */
   announced: boolean;
 };
@@ -104,25 +118,43 @@ export function fromGeo(e: GeoEvent, viewerId?: string, now = Date.now()): Notif
 }
 
 /** fromReminder turns a delivered reminder into an entry, keeping the note text. */
-export function fromReminder(r: Reminder, viewerId?: string, now = Date.now()): NotificationItem {
-  const e = r.event;
-  const peer = e ? isPeerCrossing(e, viewerId) : false;
-  const id = e?.id || `notify:${r.placeId}:${r.trigger}:${r.ts}`;
+export function fromReminder(r: Reminder | ReminderRecord, viewerId?: string, now = Date.now()): NotificationItem {
+  // A live frame carries the crossing; a stored row (GET /reminders) only its id
+  // and subject.
+  const e = 'event' in r ? r.event : undefined;
+  const ts = ('ts' in r ? r.ts : undefined) || r.createdAt || e?.ts;
+  const subject =
+    e && e.subjectUserId
+      ? { userId: e.userId, subjectUserId: e.subjectUserId, name: e.subjectName }
+      : { userId: r.userId, subjectUserId: r.subjectUserId ?? '', name: r.subjectName };
+  const peer = isPeerCrossing(subject, viewerId);
+  const stored = isStored(r) && !!r.id;
+  const ack = r.kind === 'ack';
+  // An acknowledgement is news of its own, not another description of the
+  // crossing, so it must not fold into that crossing's entry.
+  const id = ack
+    ? `ack:${stored ? r.id : `${r.placeId}:${ts}`}`
+    : e?.id || r.eventId || `notify:${r.placeId}:${r.trigger}:${ts}`;
+  const status: Pick<NotificationItem, 'reminderId' | 'status' | 'ackedAt'> =
+    stored && !ack && r.id && r.status
+      ? { reminderId: r.id, status: r.status, ackedAt: r.ackedAt ? stamp(r.ackedAt, now) : undefined }
+      : {};
   return {
     id,
-    kind: r.kind === 'watch' ? 'watch' : 'note',
+    ...status,
+    kind: ack ? 'ack' : r.kind === 'watch' ? 'watch' : 'note',
     source: 'notify',
     trigger: r.trigger,
     title: r.title?.trim() || (e ? fromGeo(e, viewerId, now).title : 'Reminder'),
     body: r.body?.trim() || undefined,
     placeId: r.placeId || e?.placeId || undefined,
     placeName: r.placeName || e?.placeName || undefined,
-    subjectUserId: peer ? e?.subjectUserId : undefined,
-    subjectName: peer ? e?.subjectName || undefined : undefined,
-    deviceId: r.deviceId || e?.deviceId || undefined,
+    subjectUserId: peer ? subject.subjectUserId : undefined,
+    subjectName: peer ? subject.name || undefined : undefined,
+    deviceId: ('deviceId' in r ? r.deviceId : undefined) || e?.deviceId || undefined,
     fromName: r.fromName?.trim() || undefined,
     point: e?.point,
-    at: stamp(r.ts || e?.ts, now),
+    at: stamp(ts, now),
     read: false,
     announced: false,
   };
@@ -148,7 +180,44 @@ export function mergeItem(prev: NotificationItem, next: NotificationItem): Notif
     fromName: richer.fromName ?? other.fromName,
     read: prev.read,
     at: Math.min(prev.at, next.at),
+    ...mergeStatus(prev, next),
   };
+}
+
+/** Acknowledged is final: a replayed pending copy cannot reopen an entry. */
+function mergeStatus(
+  prev: NotificationItem,
+  next: NotificationItem,
+): Pick<NotificationItem, 'reminderId' | 'status' | 'ackedAt'> {
+  const reminderId = next.reminderId ?? prev.reminderId;
+  if (prev.status === 'acknowledged' || next.status === 'acknowledged') {
+    return { reminderId, status: 'acknowledged', ackedAt: prev.ackedAt ?? next.ackedAt };
+  }
+  return { reminderId, status: next.status ?? prev.status, ackedAt: undefined };
+}
+
+/**
+ * setReminderStatus marks the entry for a reminder as pending or acknowledged
+ * (an Acknowledge here, a `reminder_ack` from elsewhere, or a rollback).
+ */
+export function setReminderStatus(
+  items: NotificationItem[],
+  reminderId: string,
+  status: ReminderStatus,
+  ackedAt?: number,
+): NotificationItem[] {
+  let changed = false;
+  const next = items.map((item) => {
+    if (item.reminderId !== reminderId) return item;
+    changed = true;
+    return { ...item, status, ackedAt: status === 'acknowledged' ? (ackedAt ?? item.ackedAt) : undefined };
+  });
+  return changed ? next : items;
+}
+
+/** filterItems is the panel's All / Pending switch. */
+export function filterItems(items: NotificationItem[], filter: 'all' | 'pending'): NotificationItem[] {
+  return filter === 'pending' ? items.filter((i) => i.status === 'pending') : items;
 }
 
 function stripUndefined<T extends object>(value: T): Partial<T> {
@@ -223,5 +292,7 @@ export function groupByDay(
 /** chimeFor maps an entry to its sound: a watched person always rings the watch chime. */
 export function chimeFor(item: Pick<NotificationItem, 'kind' | 'trigger'>): ChimeKind {
   if (item.kind === 'watch') return 'watch';
+  // "Nishtha acknowledged buy milk": the soft double knock, a closing sound.
+  if (item.kind === 'ack') return 'dwell';
   return item.trigger === 'leave' || item.trigger === 'passby' || item.trigger === 'dwell' ? item.trigger : 'arrive';
 }

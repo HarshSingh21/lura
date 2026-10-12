@@ -3,6 +3,7 @@ import { Animated, Easing, Platform, Pressable, StyleSheet, View } from 'react-n
 
 import { Icon } from '@/components/ui/Icon';
 import { Dot } from '@/components/ui/primitives';
+import { ReminderCards } from '@/features/notify/ReminderCards';
 import { NotificationGlyph, NotificationMeta, tintFor, useOpenNotification } from '@/features/notify/ui';
 import { Txt } from '@/theme/text';
 import { color, palette, radius, shadow, space } from '@/theme/tokens';
@@ -18,18 +19,23 @@ import { useStore, type Toast } from '@/state/store';
  * text, and a meta line ("Nishtha · Grocery · from Harsh"). Tapping it shows that
  * person or place on the Live map.
  *
- * Reminders auto-dismiss but stay long enough to read while driving past the shop
+ * A reminder that waits for an acknowledgement is not a toast: it is a sticky
+ * card (features/notify/ReminderCards) at the top of this stack. Other
+ * reminders auto-dismiss but stay long enough to read while driving past the shop
  * they are about, and a thin bar shows how long is left; errors stay until
  * dismissed, because an error nobody saw is an error nobody fixed.
  */
 export function Toasts() {
   const toasts = useStore((s) => s.toasts);
+  const pending = useStore((s) => s.reminders.cards.length);
   const { isWide } = useLayoutMode();
 
-  if (toasts.length === 0) return null;
+  if (toasts.length === 0 && pending === 0) return null;
 
   return (
     <View style={[styles.stack, !isWide && styles.stackPhone]} pointerEvents="box-none">
+      {/* Pending reminders sit above the passing toasts and outlast them. */}
+      <ReminderCards />
       {toasts.map((toast) => (
         <ToastCard key={toast.id} toast={toast} />
       ))}
