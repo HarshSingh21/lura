@@ -92,7 +92,7 @@ export function PeopleScreen() {
         <View style={[styles.inviteRow, isPhone && styles.inviteRowPhone]}>
           <Field
             label="Their email"
-            placeholder="nistha@lura.local"
+            placeholder="name@example.com"
             value={email}
             onChangeText={(next) => {
               setEmail(next);

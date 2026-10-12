@@ -149,13 +149,15 @@ export function SettingsScreen() {
 
           <Txt variant="cardTitle">Quiet hours</Txt>
           <Txt variant="tiny" color={color.textMuted} style={styles.hint}>
-            Inside this window, reminders are recorded and shown in-app but never pushed. Evaluated in your
-            timezone.
+            Inside this window, reminders still appear in Lura, silently: no sound, no system alert, and
+            nothing is pushed. Evaluated in your timezone.
           </Txt>
-          <View style={styles.row}>
-            <Field label="From" placeholder="22:30" value={quietFrom} onChangeText={setQuietFrom} style={ui.flex} />
-            <Field label="To" placeholder="07:00" value={quietTo} onChangeText={setQuietTo} style={ui.flex} />
-            <Field label="Timezone" placeholder="Asia/Kolkata" value={tz} onChangeText={setTz} style={ui.flex} />
+          {/* The timezone wraps under the times when the card is narrow: three
+              fields abreast on a phone cut "Asia/Kolkata" to "Asia/Kolka". */}
+          <View style={[styles.row, styles.wrapRow]}>
+            <Field label="From" placeholder="22:30" value={quietFrom} onChangeText={setQuietFrom} style={styles.timeField} />
+            <Field label="To" placeholder="07:00" value={quietTo} onChangeText={setQuietTo} style={styles.timeField} />
+            <Field label="Timezone" placeholder="Asia/Kolkata" value={tz} onChangeText={setTz} style={styles.zoneField} />
           </View>
           <Button
             label="Save"
@@ -222,7 +224,9 @@ export function SettingsScreen() {
             </View>
           ) : null}
 
-          <View style={styles.divider} />
+          {/* The rule separates the list from the form; with no list it was a
+              stray line across the top of an empty card. */}
+          {(data?.devices.length ?? 0) > 0 || newToken ? <View style={styles.divider} /> : null}
 
           <Txt variant="cardTitle">Add a device</Txt>
           <Txt variant="tiny" color={color.textMuted} style={styles.hint}>
@@ -230,7 +234,7 @@ export function SettingsScreen() {
             OwnTracks client can use it directly.
           </Txt>
           <View style={styles.row}>
-            <Field placeholder="Pixel 9" value={deviceName} onChangeText={setDeviceName} style={ui.flex} />
+            <Field placeholder="Pixel 9" accessibilityLabel="New device name" value={deviceName} onChangeText={setDeviceName} style={ui.flex} />
             <Button
               label="Add"
               loading={createDevice.isPending}
@@ -459,6 +463,9 @@ const styles = StyleSheet.create({
   card: { gap: space.lg, borderRadius: radius.cardLg, padding: space.xxl },
   hint: { marginTop: 2, maxWidth: 560 },
   row: { flexDirection: 'row', gap: space.lg, flexWrap: 'wrap', alignItems: 'flex-end' },
+  wrapRow: { alignItems: 'flex-start' },
+  timeField: { flexGrow: 1, flexBasis: 90 },
+  zoneField: { flexGrow: 2, flexBasis: 170 },
   rowBetween: { flexDirection: 'row', alignItems: 'flex-start', gap: space.xl },
   divider: { height: 1, backgroundColor: color.hairline, marginVertical: space.sm },
   selfStart: { alignSelf: 'flex-start' },

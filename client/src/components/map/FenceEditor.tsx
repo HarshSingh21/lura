@@ -365,7 +365,7 @@ function DrawLayer({
 
   const instructions =
     state.mode === 'draw-circle'
-      ? 'Press the centre and drag out the radius. A tap drops 100 m.'
+      ? 'Press the centre, drag out the radius · tap for 100 m'
       : state.mode === 'draw-freehand'
         ? 'Press and draw around the place, then release.'
         : vertices.length === 0

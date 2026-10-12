@@ -163,11 +163,17 @@ function PlaceCard({ place, onPress, onEditOnMap }: { place: Place; onPress: () 
             {polygon ? `⬠ polygon · ${polygon.length} corners` : `◎ ${formatMetres(place.radiusM)}`}
           </Mono>
           <Mono size={size.monoXs} color={color.textMuted}>
-            ✎ {place.stats?.notes ?? 0} notes
+            ✎ {plural(place.stats?.notes ?? 0, 'note')}
           </Mono>
           <Mono size={size.monoXs} color={color.textMuted}>
             ⚡ {place.stats?.events ?? 0} fired
           </Mono>
+          {place.watchUserIds.length > 0 ? (
+            // A watched fence fires for someone else's crossings too; say so on the card.
+            <Mono size={size.monoXs} color={color.textMuted}>
+              ◉ watching {place.watchUserIds.length === 1 ? '1 person' : `${place.watchUserIds.length} people`}
+            </Mono>
+          ) : null}
           {place.triggers.includes('dwell') && place.dwellMins > 0 ? (
             <Mono size={size.monoXs} color={color.textMuted}>
               ⏱ {place.dwellMins} min
@@ -188,6 +194,10 @@ function PlaceCard({ place, onPress, onEditOnMap }: { place: Place; onPress: () 
       </View>
     </Card>
   );
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
 
 const styles = StyleSheet.create({
