@@ -62,12 +62,15 @@ export function FenceOverlay({
   dark,
   onPress,
   glShapes,
+  darkGround,
 }: {
   fences: MapFence[];
   view: Viewport;
   dark?: boolean;
   onPress?: (id: string) => void;
   glShapes?: boolean;
+  /** The basemap under the fences is imagery or dark (basemaps.ts onDarkGround). */
+  darkGround?: boolean;
 }) {
   const mpp = metresPerPixel(view.center.lat, view.zoom);
 
@@ -76,7 +79,15 @@ export function FenceOverlay({
       {fences.map((fence) => {
         if (hasPolygon(fence)) {
           return (
-            <PolygonFence key={fence.id} fence={fence} view={view} dark={!!dark} onPress={onPress} drawShape={!glShapes} />
+            <PolygonFence
+              key={fence.id}
+              fence={fence}
+              view={view}
+              dark={!!dark}
+              darkGround={!!darkGround}
+              onPress={onPress}
+              drawShape={!glShapes}
+            />
           );
         }
         const { x, y } = project(fence.center, view);
@@ -108,11 +119,12 @@ export function FenceOverlay({
                   width: diameter,
                   height: diameter,
                   borderRadius: diameter / 2,
-                  backgroundColor: withOpacity(stroke, fence.tone === 'amber' ? 0.12 : 0.1),
-                  borderColor: withOpacity(stroke, fence.selected ? 0.85 : 0.45),
-                  borderWidth: fence.selected ? 2 : 1.5,
+                  backgroundColor: withOpacity(stroke, darkGround ? 0.2 : fence.tone === 'amber' ? 0.12 : 0.1),
+                  borderColor: withOpacity(stroke, fence.selected || darkGround ? 1 : 0.8),
+                  borderWidth: fence.selected ? 3 : 2.5,
                   borderStyle: fence.dashed ? 'dashed' : 'solid',
                 },
+                darkGround ? styles.fenceHaloDark : styles.fenceHaloLight,
               ]}
             />
             {fence.name ? <FenceLabel fence={fence} left={x} top={y - diameter / 2 - 30} /> : null}
@@ -133,12 +145,14 @@ function PolygonFence({
   fence,
   view,
   dark,
+  darkGround,
   onPress,
   drawShape,
 }: {
   fence: MapFence & { polygon: MapFence['center'][] };
   view: Viewport;
   dark: boolean;
+  darkGround: boolean;
   onPress?: (id: string) => void;
   drawShape: boolean;
 }) {
@@ -160,7 +174,8 @@ function PolygonFence({
 
   const stroke = toneColor(fence.tone, dark);
   const c = centroid(pts);
-  const pad = 3;
+  const pad = 5;
+  const points = pts.map((p) => `${(p.x - minX + pad).toFixed(1)},${(p.y - minY + pad).toFixed(1)}`).join(' ');
 
   return (
     <View pointerEvents="box-none" style={absoluteFill}>
@@ -169,14 +184,22 @@ function PolygonFence({
         // gesture meant for the map underneath it.
         <View pointerEvents="none" style={[styles.polygonBox, { left: minX - pad, top: minY - pad, width: w + pad * 2, height: h + pad * 2 }]}>
           <Svg width={w + pad * 2} height={h + pad * 2}>
+            {/* The halo under the outline, as the GL renderers' casing line. */}
             <Polygon
-              points={pts.map((p) => `${(p.x - minX + pad).toFixed(1)},${(p.y - minY + pad).toFixed(1)}`).join(' ')}
+              points={points}
+              fill="none"
+              stroke={darkGround ? '#06110b' : '#ffffff'}
+              strokeOpacity={darkGround ? 0.6 : 0.92}
+              strokeWidth={fence.selected ? 7 : 5.5}
+              strokeLinejoin="round"
+            />
+            <Polygon
+              points={points}
               fill={stroke}
-              fillOpacity={fence.tone === 'amber' ? 0.16 : 0.14}
+              fillOpacity={darkGround ? 0.22 : fence.tone === 'amber' ? 0.16 : 0.14}
               stroke={stroke}
-              strokeOpacity={fence.selected ? 0.95 : 0.85}
-              strokeWidth={fence.selected ? 3 : 2}
-              strokeDasharray={fence.dashed ? '6 5' : undefined}
+              strokeWidth={fence.selected ? 3.5 : 2.5}
+              strokeDasharray={fence.dashed ? '6 4' : undefined}
               strokeLinejoin="round"
             />
           </Svg>
@@ -569,6 +592,20 @@ function withOpacity(hex: string, alpha: number): string {
 
 const styles = StyleSheet.create({
   fence: { position: 'absolute' },
+  // The circle's halo, matching the GL renderers' casing line: it keeps the
+  // outline readable over rooftops and the dark style, and crisp over streets.
+  fenceHaloDark: {
+    shadowColor: '#06110b',
+    shadowOpacity: 0.6,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  fenceHaloLight: {
+    shadowColor: '#ffffff',
+    shadowOpacity: 0.9,
+    shadowRadius: 2,
+    shadowOffset: { width: 0, height: 0 },
+  },
   polygonBox: { position: 'absolute' },
   fenceLabel: {
     position: 'absolute',

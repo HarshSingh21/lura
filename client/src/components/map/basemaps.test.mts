@@ -13,6 +13,7 @@ import {
   maplibreStyle,
   mapplsStyleFor,
   mapplsStyleNames,
+  onDarkGround,
   OPENFREEMAP_STYLES,
 } from './basemaps.ts';
 import type { BasemapId } from './types.ts';
@@ -100,4 +101,12 @@ test('mapplsStyleNames accepts objects or strings and drops junk', () => {
   assert.deepEqual(mapplsStyleNames([{ name: 'a' }, 'b', null, { displayName: 'x' }, { name: '' }]), ['a', 'b']);
   assert.deepEqual(mapplsStyleNames(undefined), []);
   assert.deepEqual(mapplsStyleNames({ name: 'a' }), []);
+});
+
+test('imagery and the dark style are dark grounds; the street styles are not', () => {
+  assert.deepEqual(
+    BASEMAP_IDS.filter((id) => onDarkGround(id)),
+    ['dark', 'satellite', 'hybrid'],
+  );
+  assert.equal(onDarkGround(undefined), false);
 });
