@@ -209,8 +209,15 @@ async function observe(t, placeIds) {
   for (const n of names) nameOf.set(n, n);
   const about = (toast) => [...ids].some((id) => nameOf.get(id) && toast.label.includes(nameOf.get(id))) || names.some((n) => toast.label.includes(n) || toast.text.includes(n));
   // The spy records one entry per toast element (lib/instrument.mjs), kept up
-  // to date when a reminder re-words it.
-  const dedupe = (toasts) => toasts.map((x) => ({ ...x, head: x.label.replace(/\. Show on the map\.$/, '') }));
+  // to date when a reminder re-words it. A reminder waiting for an
+  // acknowledgement replaces its crossing's toast with a sticky card — another
+  // element naming the same crossing (its notice id): one notice, not two.
+  const dedupe = (toasts) => {
+    const seen = new Set();
+    return toasts
+      .filter((x) => !x.notice || (seen.has(x.notice) ? false : (seen.add(x.notice), true)))
+      .map((x) => ({ ...x, head: x.label.replace(/\. Show on the map\.$/, '') }));
+  };
   const toastsH = dedupe(after(recH.toasts, t.h).filter(about));
   const toastsN = dedupe(after(recN.toasts, t.n).filter(about));
   return {

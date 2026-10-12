@@ -276,7 +276,7 @@ fi
 for _ in $(seq 1 50); do lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t >/dev/null 2>&1 || break; sleep 0.1; done
 [ "${E2E_DOWN_MS:-0}" -gt 0 ] && sleep "$(awk "BEGIN { print ${E2E_DOWN_MS} / 1000 }")"
 [ "${1:-}" = "stop" ] && exit 0
-echo "== restart: $(date -u +%H:%M:%S)" >>"$DIR/server.log"
+echo "== e2e: (re)starting Lura at $(date -u +%H:%M:%S) UTC" >>"$DIR/server.log"
 nohup env "${ENVS[@]}" "$BIN" >>"$DIR/server.log" 2>&1 &
 echo $! >"$DIR/server.pid"
 for _ in $(seq 1 150); do
