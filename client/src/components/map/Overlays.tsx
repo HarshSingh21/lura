@@ -435,8 +435,14 @@ function LiveMarker({ marker, view, tint }: { marker: MapMarker; view: Viewport;
     <Animated.View
       pointerEvents="none"
       testID={`lura-marker-${marker.id}`}
-      {...webData({ lat: point.lat, lon: point.lon, label: marker.label ?? '' })}
-      style={[styles.anchor, { transform: [{ translateX }, { translateY }] }]}
+      {...webData({
+        lat: point.lat,
+        lon: point.lon,
+        label: marker.label ?? '',
+        heading: heading !== undefined && Number.isFinite(heading) ? Math.round(heading) : '',
+        stale: marker.stale ? 'true' : 'false',
+      })}
+      style={[styles.anchor, marker.stale ? styles.anchorStale : null, { transform: [{ translateX }, { translateY }] }]}
     >
       {showAccuracy ? (
         <View
@@ -482,11 +488,18 @@ function LiveMarker({ marker, view, tint }: { marker: MapMarker; view: Viewport;
       />
 
       {marker.pulse ? <Dot size={18} color={tint} pulse style={styles.pulse} /> : null}
-      <View style={[styles.markerDot, { backgroundColor: tint }]} />
+      {/* A device that went quiet keeps its place on the map, hollow and faded,
+          so a last-known position is never mistaken for a live one. */}
+      <View
+        style={[
+          styles.markerDot,
+          marker.stale ? { backgroundColor: '#ffffff', borderColor: tint, borderStyle: 'dashed' } : { backgroundColor: tint },
+        ]}
+      />
 
       {marker.label ? (
         <View style={styles.labelWrap}>
-          <View style={styles.markerLabel}>
+          <View style={[styles.markerLabel, marker.stale ? styles.markerLabelStale : null]}>
             <Dot size={6} color={tint} />
             <Txt variant="micro" color="#ffffff" style={styles.markerLabelText} numberOfLines={1}>
               {marker.label}
@@ -600,6 +613,7 @@ const styles = StyleSheet.create({
   // A zero-size anchor at the marker's coordinate; everything else is placed
   // relative to it, so one transform moves the whole marker.
   anchor: { position: 'absolute', left: 0, top: 0, width: 0, height: 0 },
+  anchorStale: { opacity: 0.7 },
   accuracy: { position: 'absolute', borderWidth: 1 },
   cone: { position: 'absolute', left: -CONE_PX, top: -CONE_PX, width: CONE_PX * 2, height: CONE_PX * 2 },
   ripple: {
@@ -635,6 +649,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     ...shadow('float'),
   },
+  markerLabelStale: { backgroundColor: '#5f6673' },
   markerLabelText: { fontSize: 10.5, fontWeight: '500', flexShrink: 1 },
   smallMarker: {
     position: 'absolute',

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Svg, { Circle, Path } from 'react-native-svg';
@@ -24,7 +24,7 @@ import { useLayoutMode } from '@/theme/useLayout';
 import { useStore } from '@/state/store';
 import { useGpsStatus } from '@/hooks/usePublishing';
 
-import { colorForUser, formatSpeed, glideMsFor, headingFor, MOVING_MPS, speedOf, type TrailPoint } from './motion';
+import { colorForUser, fixTimeMs, formatAge, formatSpeed, glideMsFor, headingFor, isStale, MOVING_MPS, speedOf, type TrailPoint } from './motion';
 import { DeviceList, DeviceTracking, PeopleList, SharingBanner, UpcomingReminders, useNow, type FollowKey } from './rail';
 import { useTrails } from './trails';
 
@@ -166,7 +166,7 @@ export function LiveScreen() {
   const gps = useGpsStatus();
   // A coarse clock for "is this ping still live": a marker stops pulsing within
   // ~15 s of its device going quiet, without re-rendering the map every second.
-  const pulseNow = useNow(15_000);
+  const pulseNow = useNow(5_000);
   const meId = data?.user.id;
   const offline = data?.user.airgap || data?.server.airgap;
 
@@ -178,6 +178,28 @@ export function LiveScreen() {
   // arrives). A peer with a paused switch has no devices here at all.
   const people = useMemo(() => peopleOf(data), [data]);
   const seenBy = useMemo(() => watchers(people), [people]);
+  // Connected people whose own switch is off: they paused sharing with me. The
+  // map says so in words — their marker is gone, and "gone" must not read as
+  // "lost signal" or "the app is broken".
+  const pausedPeers = useMemo(() => people.filter((p) => p.status === 'accepted' && !p.sharingWithMe), [people]);
+  // And the moment it happens, once: a toast for each flip of someone's switch.
+  const sharingBefore = useRef<Record<string, boolean> | null>(null);
+  useEffect(() => {
+    const now: Record<string, boolean> = {};
+    for (const p of people) if (p.status === 'accepted') now[p.peerId] = p.sharingWithMe;
+    const before = sharingBefore.current;
+    sharingBefore.current = now;
+    if (!before) return; // first load: nothing changed, it just is
+    for (const p of people) {
+      if (p.status !== 'accepted' || before[p.peerId] === undefined || before[p.peerId] === now[p.peerId]) continue;
+      const name = p.peerName || p.peerEmail;
+      pushToast(
+        now[p.peerId]
+          ? { kind: 'info', title: `${name} is sharing with you again`, body: 'Their live position is back on the map.' }
+          : { kind: 'info', title: `${name} paused sharing with you`, body: 'You will not see where they are until they turn it back on.' },
+      );
+    }
+  }, [people, pushToast]);
   const peerColors = useMemo(
     () => Object.fromEntries(people.map((p) => [p.peerId, colorForUser(p.peerId, meId, palette.accent)])),
     [people, meId],
@@ -253,18 +275,26 @@ export function LiveScreen() {
     label: string,
     colour: string,
     fallbackSpeed: number,
+    fallbackSeen?: string,
   ): MapMarker => {
     const trail: TrailPoint[] = trails[deviceId] ?? [];
     const live = positions[deviceId];
     const speed = trail.length > 0 ? speedOf(trail) : fallbackSpeed;
-    const lastSeen = live ? new Date(live.recvTs).getTime() : undefined;
+    const seenIso = fallbackSeen ? new Date(fallbackSeen).getTime() : undefined;
+    const lastSeen = live ? fixTimeMs(live) : seenIso;
+    // A fix this old is where they *were*: say so on the marker itself, in place
+    // of a speed that is no longer true.
+    const stale = isStale(lastSeen, pulseNow);
     const arrived = lastEvent && lastEvent.deviceId === deviceId && lastEvent.trigger === 'arrive' ? lastEvent.id : undefined;
     return {
       id,
       point,
-      label: speed > MOVING_MPS ? `${label} · ${formatSpeed(speed)}` : label,
+      label: stale && lastSeen !== undefined
+        ? `${label} · ${formatAge(pulseNow - lastSeen)}`
+        : speed > MOVING_MPS ? `${label} · ${formatSpeed(speed)}` : label,
       color: colour,
-      pulse: lastSeen !== undefined && pulseNow - lastSeen < LIVE_PULSE_MS,
+      stale,
+      pulse: !stale && lastSeen !== undefined && pulseNow - lastSeen < LIVE_PULSE_MS,
       headingDeg: headingFor(trail),
       accuracyM: live?.accuracyM || undefined,
       animateMs: glideMsFor(trail),
@@ -279,7 +309,7 @@ export function LiveScreen() {
         const live = positions[device.id];
         const point = live?.point ?? device.lastPoint;
         if (!point) return null;
-        return liveMarker(device.id, device.id, point, device.name, palette.accent, live?.speedMps ?? device.speedMps ?? 0);
+        return liveMarker(device.id, device.id, point, device.name, palette.accent, live?.speedMps ?? device.speedMps ?? 0, device.lastSeen);
       })
       .filter((m) => m !== null);
     // liveMarker reads exactly these.
@@ -305,6 +335,7 @@ export function LiveScreen() {
           base,
           peerColors[peer.peerId] ?? palette.amber,
           fix.speedMps,
+          fix.lastSeen,
         );
       });
     });
@@ -721,6 +752,22 @@ export function LiveScreen() {
           />
         </View>
 
+        {pausedPeers.length > 0 && !fenceEdit ? (
+          <View style={[styles.pausedStack, !isDesktop && styles.pausedStackPhone]} pointerEvents="none">
+            {pausedPeers.slice(0, 3).map((p) => (
+              <View key={p.peerId} style={styles.pausedChip} accessibilityRole="text">
+                <View style={styles.pausedGlyph}>
+                  <View style={styles.pausedBar} />
+                  <View style={styles.pausedBar} />
+                </View>
+                <Txt variant="small" color={color.textBody} numberOfLines={1}>
+                  <Txt variant="bodySemi">{p.peerName || p.peerEmail}</Txt> paused sharing with you
+                </Txt>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
         {/* attribution: a licence requirement for OSM-derived tiles */}
         <View style={[styles.attribution, !isDesktop && styles.attributionPhone]} pointerEvents="none">
           <Mono size={size.monoTiny} color={color.textSubtle}>
@@ -956,6 +1003,23 @@ const styles = StyleSheet.create({
   zoomButton: { width: 38, height: 36, alignItems: 'center', justifyContent: 'center' },
   zoomButtonTop: { borderBottomWidth: 1, borderBottomColor: color.hairlineSoft },
 
+  pausedStack: { position: 'absolute', left: 12, bottom: 36, gap: 6, maxWidth: '70%' },
+  pausedStackPhone: { bottom: 112 },
+  pausedChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: color.surface,
+    borderWidth: 1,
+    borderColor: color.border,
+    borderRadius: radius.md,
+    paddingLeft: 9,
+    paddingRight: 12,
+    paddingVertical: 6,
+    ...shadow('float'),
+  },
+  pausedGlyph: { flexDirection: 'row', gap: 2.5, alignItems: 'center', justifyContent: 'center', width: 14, height: 14 },
+  pausedBar: { width: 3.5, height: 11, borderRadius: 1.5, backgroundColor: color.textMuted },
   attribution: {
     position: 'absolute',
     left: 10,

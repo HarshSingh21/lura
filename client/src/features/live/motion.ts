@@ -160,6 +160,37 @@ export function speedOf(buffer: readonly TrailPoint[]): number {
   return s < 70 ? s : 0;
 }
 
+/**
+ * A device whose newest fix is older than this may no longer be where it was:
+ * its marker turns hollow and its rows say "last seen". Phones heartbeat at
+ * least every 30 s while still (hooks/fixGate), so four missed heartbeats.
+ */
+export const STALE_AFTER_MS = 120_000;
+
+/**
+ * How far behind the server's receive time a device clock may be before the
+ * fix is treated as taken earlier than it arrived. Below it, the difference is
+ * clock skew; above it, the fix was queued (a phone back from a tunnel
+ * replaying what it recorded) and "just now" would be a lie.
+ */
+export const QUEUED_FIX_MS = 60_000;
+
+/**
+ * fixTimeMs is when a fix describes the device as being there: the server's
+ * receive time, unless the device says it took the fix well before that.
+ */
+export function fixTimeMs(p: Pick<Position, 'recvTs' | 'deviceTs'>): number {
+  const recv = new Date(p.recvTs).getTime();
+  const taken = p.deviceTs ? new Date(p.deviceTs).getTime() : Number.NaN;
+  if (Number.isFinite(taken) && Number.isFinite(recv) && taken < recv - QUEUED_FIX_MS) return taken;
+  return recv;
+}
+
+/** isStale says whether a fix taken at `fixMs` is too old to be drawn as live at `now`. */
+export function isStale(fixMs: number | undefined, now: number): boolean {
+  return fixMs !== undefined && Number.isFinite(fixMs) && now - fixMs >= STALE_AFTER_MS;
+}
+
 /** formatAge writes "3s ago" / "4 min ago" for a ping, from ms since it arrived. */
 export function formatAge(ms: number): string {
   if (!Number.isFinite(ms)) return '';

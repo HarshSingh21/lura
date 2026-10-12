@@ -45,6 +45,11 @@ export type MapMarker = {
   color?: string;
   /** Glide from the previous point to this one over ~this many ms (live pings). 0 = jump. */
   animateMs?: number;
+  /**
+   * The last fix is old enough that the person may no longer be there: drawn
+   * hollow and faded, and the label says how long ago (see live/motion.ts).
+   */
+  stale?: boolean;
   /** Changing this value plays a one-shot "arrived" ripple on the marker. */
   rippleKey?: string | number;
   /**
