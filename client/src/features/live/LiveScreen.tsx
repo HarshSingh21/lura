@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useRouter } from 'expo-router';
 
@@ -19,6 +19,13 @@ import { useStore } from '@/state/store';
 import { useTracking } from '@/hooks/useTracking';
 
 import { DeviceList, DeviceTracking, PeopleList, SharingBanner, UpcomingReminders } from './rail';
+
+/**
+ * The last focus request (from a toast or the notification panel) this screen
+ * acted on. Module-level so coming back to the map later does not replay an old
+ * "show me Nishtha".
+ */
+let consumedFocusSeq = 0;
 
 /** Fallback view when a workspace has no places and no fixes yet (central Bengaluru). */
 const FALLBACK_CENTER: Point = { lat: 12.9716, lon: 77.5946 };
@@ -59,6 +66,23 @@ export function LiveScreen() {
   const [box, setBox] = useState<Box>({ width: 0, height: 0 });
   const [draft, setDraft] = useState<Point | null>(null);
 
+  // "Show me" from a notification: frame the place or person and pull the camera
+  // in. The request already selected them (features/notify/ui); navigating here
+  // is the Shell's job. Adjusted during render, like the fit below, so the map
+  // never paints a frame at the old view.
+  const focus = useStore((s) => s.focus);
+  const [focusSeen, setFocusSeen] = useState(() => consumedFocusSeq);
+  const [focusPoint, setFocusPoint] = useState<Point | null>(null);
+  if (focus && focus.seq > focusSeen) {
+    setFocusSeen(focus.seq);
+    setFocusPoint(focus.point ?? null);
+    setZoom((z) => Math.max(z, 16));
+    setRecenterKey((k) => k + 1);
+  }
+  useEffect(() => {
+    consumedFocusSeq = focusSeen;
+  }, [focusSeen]);
+
   // This device publishes as the first device in the workspace. A real
   // multi-device setup would pick explicitly; Phase 1 has one phone.
   const primaryDevice = data?.devices[0];
@@ -79,6 +103,7 @@ export function LiveScreen() {
       const chosen = positions[selectedDeviceId]?.point ?? devices.find((d) => d.id === selectedDeviceId)?.lastPoint;
       if (chosen) return chosen;
     }
+    if (focusPoint) return focusPoint;
     const live = Object.values(positions).sort(
       (a, b) => new Date(b.recvTs).getTime() - new Date(a.recvTs).getTime(),
     )[0];
@@ -93,7 +118,7 @@ export function LiveScreen() {
       return { lat, lon };
     }
     return FALLBACK_CENTER;
-  }, [positions, devices, places, selectedDeviceId]);
+  }, [positions, devices, places, selectedDeviceId, focusPoint]);
 
   const fences = useMemo<MapFence[]>(
     () =>
@@ -227,6 +252,7 @@ export function LiveScreen() {
         places={places}
         onSelect={(id) => {
           selectDevice(id);
+          setFocusPoint(null);
           // Tapping a device in the rail is a request to look at it.
           setRecenterKey((k) => k + 1);
           setSheetOpen(false);
@@ -315,6 +341,7 @@ export function LiveScreen() {
             iconColor={color.accent}
             onPress={() => {
               setFittedKey(null); // pressing "locate me" asks for the fit again
+              setFocusPoint(null);
               setRecenterKey((k) => k + 1);
             }}
           />

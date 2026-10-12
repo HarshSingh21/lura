@@ -2,13 +2,14 @@ import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { Icon } from '@/components/ui/Icon';
 import { Dot } from '@/components/ui/primitives';
+import { NotificationBell } from '@/features/notify/NotificationCenter';
 import { Mono, Txt } from '@/theme/text';
 import { color, font, layout, palette, radius, size, space } from '@/theme/tokens';
 import { useLayoutMode } from '@/theme/useLayout';
 import type { LiveStatus } from '@/api/live';
 
 /**
- * The top bar: identity, search, the airgap switch and the account chip.
+ * The top bar: identity, search, notifications, the airgap switch and the account chip.
  *
  * The airgap control is deliberately here rather than buried in settings. HLD §11
  * makes "no outbound calls" a product-defining invariant and requires it to be
@@ -76,6 +77,8 @@ export function TopBar({
 
       <View style={styles.right}>
         <StatusPill status={status} compact={!isWide} />
+
+        <NotificationBell />
 
         <Pressable
           accessibilityRole="switch"
