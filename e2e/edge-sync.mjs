@@ -512,6 +512,13 @@ try {
     facts.office = office.place ?? office;
     await nishtha.api('POST', '/api/v1/notes', { text: 'call Harsh about lunch', placeId: facts.office.id, trigger: 'arrive', watchUserId: harsh.id });
 
+    // Nishtha's old tablet: one live fix now, so the server learns its clock;
+    // scenario 6 uploads what it "queued" afterwards.
+    const old = await nishtha.api('POST', '/api/v1/devices', { name: 'Old tablet', kind: 'phone' });
+    facts.oldDev = { id: old.device.id, token: old.pubToken };
+    facts.oldLiveTst = Math.floor(Date.now() / 1000);
+    await pub(facts.oldDev, { lat: 12.9622, lon: 77.6301 }, { speedMps: 0, tst: facts.oldLiveTst });
+
     for (const p of people) p.obs = await new Observer(p).open();
     await waitFor('Nishtha on Harsh’s map', () => marker(harsh.page, `peer_${facts.nDev.id}`), { timeout: 15000 });
     await waitFor('Harsh on Nishtha’s map', () => marker(nishtha.page, `peer_${facts.hDev.id}`), { timeout: 15000 });
@@ -532,6 +539,9 @@ try {
       await harsh.ctx.setGeolocation({ latitude: hPath[i].lat, longitude: hPath[i].lon, accuracy: 6 });
       const fix = await pub(facts.nDev, lerp(from, to, (i + 1) / 6), { speedMps: 4.2, cog: 52 });
       await sleep(2400); // let both browsers settle on it, and Harsh's gate let his fix out
+      // A page whose main thread is busy booting the map paints its ticking
+      // "Ns ago" late; compare what the app shows, not how loaded the box is.
+      await Promise.all(people.map((p) => settled(p.page, { quietMs: 1500 })));
       // One instant: every reading in parallel.
       const [hm, hRow, nm, nRow, nDevs, hPeople, hm2, hOwnRow, nPeople, hDevs] = await Promise.all([
         marker(harsh.page, nPeer()), rowAt(harsh.page, `peer-${nishtha.id}`),
@@ -623,7 +633,7 @@ try {
     const t0 = Date.now();
     const posts = [];
     const nWalk = walker(facts.nDev, NISHTHA_START, { lat: 12.9716, lon: 77.6392 }, { periodMs: 700, steps: 25, onFix: (r) => posts.push(r) });
-    const hPath = Array.from({ length: 34 }, (_, i) => lerp({ lat: 12.9793, lon: 77.6413 }, { lat: 12.9768, lon: 77.6452 }, (i + 1) / 34));
+    const hPath = Array.from({ length: 40 }, (_, i) => lerp({ lat: 12.9793, lon: 77.6413 }, { lat: 12.9768, lon: 77.6452 }, (i + 1) / 40));
     const hWalk = gpsWalk(harsh, hPath, 2100);
     await hWalk.done;
     await nWalk.stop();
@@ -719,13 +729,16 @@ try {
     check(at(hm, P1) && at(nm, P1), `markers are not at the newest fix: ${JSON.stringify({ hm, nm })}`);
     check(at(server.lastPoint, P1), `the server's last point went backwards: ${JSON.stringify(server.lastPoint)}`);
 
-    // ---- a fix older than the fresh window lands inside a watched fence: history, not news
-    const old = await nishtha.api('POST', '/api/v1/devices', { name: 'Old tablet', kind: 'phone' });
-    const oldDev = { id: old.device.id, token: old.pubToken };
+    // ---- a phone back from a tunnel uploads what it queued: history, not news.
+    // Her old tablet sent one live fix during setup (so the server knows its
+    // clock); it then "went into a tunnel", passed the pharmacy a few seconds
+    // later, and only now — more than the fresh window on — uploads that.
+    const oldDev = facts.oldDev;
+    const wait = facts.oldLiveTst * 1000 + FRESH_WINDOW_MS + 30_000 - Date.now();
+    if (wait > 0) await sleep(wait);
     const ts = Date.now();
-    const staleTst = Math.floor((Date.now() - FRESH_WINDOW_MS - 60_000) / 1000);
-    await pub(oldDev, FENCES.Pharmacy, { speedMps: 0, tst: staleTst });
-    await pub(oldDev, FENCES.Pharmacy, { speedMps: 0, tst: staleTst + 5 });
+    await pub(oldDev, FENCES.Pharmacy, { speedMps: 0, tst: facts.oldLiveTst + 5 });
+    await pub(oldDev, FENCES.Pharmacy, { speedMps: 0, tst: facts.oldLiveTst + 10 });
     await sleep(4000);
     const geo = harsh.obs.since(ts, (f) => f.type === 'geo' || f.type === 'notify');
     const toastsH = (await edge(harsh.page)).toasts.filter((x) => x.wall >= ts);
@@ -740,7 +753,7 @@ try {
     check(nm2 && !/new device|·.*·/.test(nm2.label.replace(/ · \d+ km\/h$/, '')), `her marker still names two devices: "${nm2?.label}"`);
     check(geo.length === 0 && toastsH.length === 0 && fired.length === 0, `a stale fix fired: ${JSON.stringify({ geo, toastsH, fired })}`);
     // The old fix is drawn, if at all, as what it is: old.
-    check(!oldMarker || oldMarker.stale, `a fix from ${Math.round((Date.now() / 1000 - staleTst) / 60)} min ago is drawn as live: ${JSON.stringify(oldMarker)}`);
+    check(!oldMarker || oldMarker.stale, `a fix from ${Math.round((Date.now() / 1000 - facts.oldLiveTst) / 60)} min ago is drawn as live: ${JSON.stringify(oldMarker)}`);
     return { framesForOldOrDup: framesH.length, markerMoves: movesH.length + movesN.length, staleFired: fired.length, oldMarker, shots };
   });
 
@@ -817,6 +830,9 @@ try {
       const s = await liveStatus(harsh.page);
       return s && s !== 'open' ? s : null;
     }, { timeout: 5000, every: 100 });
+    // The map itself says it is not live, in words.
+    const banner = await waitFor('the offline banner on the map', async () =>
+      harsh.page.evaluate(() => document.querySelector('[data-testid="lura-live-banner"]')?.innerText ?? null), { timeout: 3000 });
     const offShot = await harsh.shot(OUT, '03-offline');
     // While he is away she walks into the Bakery and out again.
     await sleep(3000);
@@ -832,6 +848,7 @@ try {
     await harsh.ctx.setOffline(false);
     await waitFor('Harsh live again', async () => (await liveStatus(harsh.page)) === 'open', { timeout: 8000, every: 100 });
     const liveMs = Date.now() - tOn;
+    await waitFor('the banner to go', async () => !(await harsh.page.evaluate(() => !!document.querySelector('[data-testid="lura-live-banner"]'))), { timeout: 3000 });
     await waitFor('her marker at her current fix', async () => {
       const m = await marker(harsh.page, nPeer());
       return m && Math.abs(m.lat - cur.lat) < 1e-9 && Math.abs(m.lon - cur.lon) < 1e-9;
@@ -851,7 +868,7 @@ try {
     check(toasts.length === 1, `${toasts.length} toasts for the missed Bakery crossing`);
     check(entries.length === 1, `${entries.length} notification entries for it: ${entries}`);
     check(statuses.includes(offStatus) && statuses.at(-1) === 'open', `status went ${statuses}`);
-    return { offStatus, statuses, liveMs, markerAtCurrentMs: jumpMs, missedToasts: toasts.length, entries, shots: [offShot, shot] };
+    return { offStatus, banner: banner.replace(/\n/g, ' '), statuses, liveMs, markerAtCurrentMs: jumpMs, missedToasts: toasts.length, entries, shots: [offShot, shot] };
   }, { cleanup: () => harsh.ctx.setOffline(false) });
 
   // ---------------------------------------------------------------- 4
