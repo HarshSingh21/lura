@@ -181,6 +181,7 @@ func run() error {
 		ArriveDebounce:    cfg.ArriveDebounce,
 		ArriveMaxSpeedMPS: cfg.ArriveMaxSpeedMPS,
 		PassbyMinSpeedMPS: cfg.PassbyMinSpeedMPS,
+		LeaveMarginM:      cfg.LeaveMarginM,
 		CoolOff:           cfg.CoolOff,
 		DwellTick:         cfg.DwellTick,
 		Partitions:        cfg.GeofencePartitions,

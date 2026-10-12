@@ -167,6 +167,8 @@ export function HistoryScreen() {
               key={device.id}
               accessibilityRole="button"
               accessibilityState={{ selected: device.id === activeDevice }}
+              // react-native-web ignores accessibilityState; a toggle button says it is on this way.
+              aria-pressed={device.id === activeDevice}
               accessibilityLabel={`Show the track of ${device.name}`}
               onPress={() => setDeviceId(device.id)}
               style={[styles.filterChip, device.id === activeDevice && styles.filterChipActive]}

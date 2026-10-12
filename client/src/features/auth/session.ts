@@ -5,7 +5,14 @@ import { create } from 'zustand';
 
 import { keycloak, loadDiscovery } from './config';
 import { decodeIdToken, tokenLifetimeMs, type Profile } from './jwt';
-import { isExpiring, refreshDelayMs } from './refresh';
+import {
+  isExpiring,
+  REFRESH_DEADLINE_MS,
+  refreshDelayMs,
+  RETRY_DELAY_MS,
+  shouldForceRenewal,
+  withDeadline,
+} from './refresh';
 
 /**
  * The signed-in session (HLD §14: Zustand for local state).
@@ -18,8 +25,13 @@ import { isExpiring, refreshDelayMs } from './refresh';
  *     cold start does not bounce a signed-in user back to the login page.
  *   - **It refreshes ahead of expiry.** A location app sits open for hours; the
  *     realm issues 15-minute access tokens. Waiting for a 401 would mean the map
- *     silently stops moving mid-drive, so a timer renews the token a minute before
- *     it lapses and the UI never sees the seam.
+ *     silently stops moving mid-drive, so a timer renews the token a minute (or
+ *     a quarter of its lifetime, if shorter) before it lapses. Timers stop while
+ *     a machine sleeps and are throttled in a hidden tab, so the timer is only
+ *     the first of three lines: every API call and socket handshake checks the
+ *     token first (`ensureFreshAccessToken`), a tab coming back renews at once,
+ *     and a 401 forces one renewal (`renewRejectedToken`). The policy — margins,
+ *     deadlines, when a 401 may force a refresh — lives in refresh.ts.
  *
  * The interactive part of sign-in (opening Keycloak) lives in `useOidc.ts`. This
  * store only ever *adopts* the result, which is why `signIn` takes tokens rather
@@ -67,9 +79,6 @@ const KEYS = {
   id: 'lura.session.id',
   expiresAt: 'lura.session.expires',
 } as const;
-
-/** A refresh that failed on the network (not on the token) is retried this often. */
-const RETRY_DELAY_MS = 30_000;
 
 /* ------------------------------------------------------------------ storage */
 
@@ -227,8 +236,12 @@ export const useSession = create<SessionState>((set, get) => ({
 
     inFlightRefresh = (async () => {
       try {
-        const discovery = await loadDiscovery();
-        const response = await refreshAsync({ clientId: keycloak.clientId, refreshToken }, discovery);
+        // Bounded: a token request that never answers would otherwise hold
+        // inFlightRefresh forever, and every later refresh would wait on it.
+        const response = await withDeadline(
+          loadDiscovery().then((discovery) => refreshAsync({ clientId: keycloak.clientId, refreshToken }, discovery)),
+          REFRESH_DEADLINE_MS,
+        );
         get().signIn(toTokens(response, get()));
         return true;
       } catch (err) {
@@ -319,8 +332,8 @@ restoreSession();
 
 /**
  * getAccessToken is the plain getter for non-React callers (the API client, the
- * WebSocket URL builder). It never blocks and never triggers a refresh: the timer
- * above is what keeps the value current.
+ * WebSocket URL builder). It never blocks and never triggers a refresh; callers
+ * that are about to use the token go through ensureFreshAccessToken.
  */
 export function getAccessToken(): string | undefined {
   return useSession.getState().accessToken;
@@ -343,6 +356,38 @@ export async function ensureFreshAccessToken(): Promise<string | undefined> {
   if (!refreshToken) return accessToken;
   await useSession.getState().refresh();
   return useSession.getState().accessToken;
+}
+
+let lastForcedRenewal: number | undefined;
+
+/**
+ * renewRejectedToken is what to try after the server answered 401 to
+ * `rejected`. The token may look fresh by its own clock and still be refused
+ * (the session was cut short at Keycloak, or this machine's clock is off), so
+ * this renews regardless of expiry — at most once per FORCED_RENEWAL_GAP_MS,
+ * and not at all when the session already moved on to another token.
+ */
+export async function renewRejectedToken(rejected: string | undefined): Promise<string | undefined> {
+  const { accessToken, refreshToken } = useSession.getState();
+  if (!refreshToken || !shouldForceRenewal(rejected, accessToken, lastForcedRenewal, Date.now())) return accessToken;
+  lastForcedRenewal = Date.now();
+  await useSession.getState().refresh();
+  return useSession.getState().accessToken;
+}
+
+// A tab that comes back into view, regains focus or comes back online renews at
+// once if its token went stale meanwhile: browsers throttle a hidden tab's
+// timers and a sleeping machine runs none, so the renewal timer may not have
+// run on time. Cheap when the token is fresh — nothing is fetched.
+if (Platform.OS === 'web' && typeof document !== 'undefined' && typeof window !== 'undefined') {
+  const wake = () => {
+    if (document.visibilityState === 'visible' && useSession.getState().status === 'signed-in') {
+      void ensureFreshAccessToken();
+    }
+  };
+  document.addEventListener('visibilitychange', wake);
+  window.addEventListener('focus', wake);
+  window.addEventListener('online', wake);
 }
 
 /** Selectors, so components subscribe to the narrowest slice they need. */

@@ -28,16 +28,17 @@ import { useStore, type Toast } from '@/state/store';
 export function Toasts() {
   const toasts = useStore((s) => s.toasts);
   const pending = useStore((s) => s.reminders.cards.length);
-  const { isWide } = useLayoutMode();
+  const { isWide, isDesktop } = useLayoutMode();
 
   if (toasts.length === 0 && pending === 0) return null;
 
   // Wide: under the bell, where the notification centre opens, so a toast reads
-  // as "new in there" and never sits on the map's zoom and locate controls.
-  // Phone: above the tab bar, within reach of a thumb.
-
+  // as "new in there" and never sits on the map's zoom and locate controls; on
+  // the desktop layout it is exactly as wide as the right rail it covers, so it
+  // never hides any of the map either. Phone: above the tab bar, within reach
+  // of a thumb, with a lane kept clear for the map's control column.
   return (
-    <View style={[styles.stack, !isWide && styles.stackPhone]} pointerEvents="box-none">
+    <View style={[styles.stack, isDesktop ? styles.stackDesktop : isWide ? styles.stackWide : styles.stackPhone]} pointerEvents="box-none">
       {/* Pending reminders sit above the passing toasts and outlast them. */}
       <ReminderCards />
       {toasts.map((toast) => (
@@ -48,6 +49,9 @@ export function Toasts() {
 }
 
 const native = Platform.OS !== 'web';
+
+/** Room on the right for the map's control column (18 px inset + 38 px buttons + a gap). */
+const CONTROLS_LANE = 64;
 
 function ToastCard({ toast, fromTop }: { toast: Toast; fromTop: boolean }) {
   // A stable callback, so a new toast arriving does not restart this one's timer.
@@ -184,13 +188,12 @@ const styles = StyleSheet.create({
   stack: {
     position: 'absolute',
     top: layout.topBarHeight + space.md,
-    right: space.xxl,
     gap: space.md,
-    width: 380,
-    maxWidth: '92%',
     zIndex: 60,
   },
-  stackPhone: { top: undefined, left: space.lg, right: space.lg, width: undefined, maxWidth: undefined, bottom: 84 },
+  stackDesktop: { right: space.lg, width: layout.railWidth - space.lg * 2 },
+  stackWide: { right: space.xxl, width: 380 },
+  stackPhone: { top: undefined, left: space.lg, right: CONTROLS_LANE, bottom: 84 },
   toast: {
     flexDirection: 'row',
     alignItems: 'flex-start',

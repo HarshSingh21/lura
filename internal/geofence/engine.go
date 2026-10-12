@@ -41,12 +41,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 
 	"github.com/HarshSingh21/locnot/internal/bus"
 	"github.com/HarshSingh21/locnot/internal/domain"
 	"github.com/HarshSingh21/locnot/internal/gate"
+	"github.com/HarshSingh21/locnot/internal/geo"
 	"github.com/HarshSingh21/locnot/internal/idgen"
 	"github.com/HarshSingh21/locnot/internal/metrics"
 	"github.com/HarshSingh21/locnot/internal/obs"
@@ -69,7 +71,30 @@ type Config struct {
 	// DefaultDwell applies when a place asks for a dwell trigger without saying
 	// how long.
 	DefaultDwell time.Duration
+	// LeaveMarginM is the leave hysteresis: a device inside a fence is only
+	// judged to have left once a fix lands this far outside the boundary (or
+	// its own accuracy radius when that is larger, up to MaxLeaveMarginM).
+	// Without it a phone standing at the edge with ±8 m of GPS noise "leaves"
+	// and "arrives" every few fixes, and the cool-off — not the geometry — is
+	// all that stands between the user and a stream of notifications.
+	LeaveMarginM float64
+	// CrossMaxGap bounds the crossing rule: the straight line between two
+	// fixes is only trusted as the path travelled when they are at most this
+	// far apart in time.
+	CrossMaxGap time.Duration
+	// MaxPlausibleSpeedMPS rejects a crossing inferred from a jump no vehicle
+	// makes (a GPS glitch, a phone waking up somewhere else).
+	MaxPlausibleSpeedMPS float64
 }
+
+// MaxLeaveMarginM caps how far a poor accuracy figure may widen the leave
+// hysteresis, so a phone reporting ±500 m is not kept "inside" forever.
+const MaxLeaveMarginM = 50
+
+// crossMinStepM is the shortest step between fixes worth testing for a
+// crossing: a shorter step cannot jump over even the narrowest fence (a 20 m
+// circle is 40 m across).
+const crossMinStepM = 20
 
 func (c Config) withDefaults() Config {
 	if c.FreshWindow <= 0 {
@@ -96,6 +121,15 @@ func (c Config) withDefaults() Config {
 	if c.DefaultDwell <= 0 {
 		c.DefaultDwell = 15 * time.Minute
 	}
+	if c.LeaveMarginM <= 0 {
+		c.LeaveMarginM = 20
+	}
+	if c.CrossMaxGap <= 0 {
+		c.CrossMaxGap = 2 * time.Minute
+	}
+	if c.MaxPlausibleSpeedMPS <= 0 {
+		c.MaxPlausibleSpeedMPS = 70
+	}
 	return c
 }
 
@@ -110,6 +144,17 @@ type fenceState struct {
 	EnteredAt       time.Time
 	ArriveConfirmed bool
 	DwellArmed      bool
+	// DwellFired is set once this visit's dwell has fired: a dwell is "you have
+	// been here N minutes", said once per visit. Re-arming after it fired
+	// computed a fire time already in the past and announced it again on every
+	// tick (every cool-off, with the default) for as long as the device stayed.
+	DwellFired bool
+	// Settled is set once the visit passes the fly-by filter (slowed down, or
+	// stayed ArriveDebounce), whether or not the place has an arrive trigger.
+	// Only a settled visit can end in a leave: driving through a fence is a
+	// pass-by, and "Nishtha left Grocery" after one announces a departure from
+	// somewhere she never stopped.
+	Settled bool
 }
 
 // deviceState is the per-device evaluation state. All mutations happen on the
@@ -120,6 +165,8 @@ type deviceState struct {
 	UserID   string
 	LastEval time.Time
 	Inside   map[string]*fenceState
+	// LastPoint is the previous evaluated fix, for the crossing rule.
+	LastPoint *domain.Point
 }
 
 // Engine is the geofence evaluator.
@@ -250,7 +297,14 @@ func (e *Engine) Evaluate(ctx context.Context, pos domain.Position) error {
 		span.SetAttributes(attribute.Bool("lura.out_of_order", true))
 		return nil
 	}
+	prevEval, prevPoint := st.LastEval, st.LastPoint
 	st.LastEval = pos.RecvTS
+	here := pos.Point
+	st.LastPoint = &here
+	wasInside := make(map[string]bool, len(st.Inside))
+	for id := range st.Inside {
+		wasInside[id] = true
+	}
 
 	// ---- enter/exit diff. PostGIS answers this with ST_DWithin / ST_Covers
 	// over GIST indexes; Tile38 would push it as an event in Phase 2. The
@@ -290,7 +344,19 @@ func (e *Engine) Evaluate(ctx context.Context, pos domain.Position) error {
 				continue
 			}
 		}
-		e.handleExit(ctx, st, placeID, fs, pos)
+		place, found, err := e.placeFor(ctx, fs, placeID, pos)
+		if err != nil {
+			// Unknown is not "left": keep the state for the next fix.
+			continue
+		}
+		if found && place.DistanceOutsideM(pos.Point) <= e.leaveMargin(pos) {
+			// Hysteresis: a fix just outside the edge is GPS noise, not a
+			// departure. The visit carries on as if the fix had landed inside.
+			insideByID[placeID] = place
+			inside = append(inside, place)
+			continue
+		}
+		e.handleExit(ctx, st, placeID, fs, pos, place, found)
 	}
 
 	for _, place := range inside {
@@ -300,6 +366,12 @@ func (e *Engine) Evaluate(ctx context.Context, pos domain.Position) error {
 			continue
 		}
 		e.handleStillInside(ctx, st, place, fs, pos)
+	}
+
+	// Crossings: a fence the path went through between two fixes, neither of
+	// them inside it.
+	if prevPoint != nil {
+		e.crossings(ctx, pos, prevEval, *prevPoint, wasInside, insideByID, peers)
 	}
 
 	span.SetAttributes(
@@ -322,6 +394,8 @@ type peerScope struct {
 	// allUnknown means not even the connection list could.
 	unknown    map[string]bool
 	allUnknown bool
+	// candidates are the watched places themselves, for the crossing rule.
+	candidates []domain.Place
 }
 
 func (s peerScope) unknownOwner(owner string) bool { return s.allUnknown || s.unknown[owner] }
@@ -375,6 +449,7 @@ func (e *Engine) peerPlaces(ctx context.Context, pos domain.Position) peerScope 
 		for _, p := range places {
 			if p.Watches(pos.UserID) || noteWatch[p.ID] {
 				scope.watched[p.ID] = true
+				scope.candidates = append(scope.candidates, p)
 				watching = true
 			}
 		}
@@ -415,6 +490,8 @@ func (e *Engine) handleEnter(ctx context.Context, st *deviceState, place domain.
 		e.fire(ctx, place, pos, domain.TriggerPassby)
 	}
 
+	fs.Settled = pos.SpeedMPS <= e.cfg.ArriveMaxSpeedMPS
+
 	// Arrive: confirm immediately only if the device is already slow. Otherwise
 	// hold it for the debounce window.
 	if hasTrigger(place, domain.TriggerArrive) {
@@ -436,9 +513,12 @@ func (e *Engine) handleEnter(ctx context.Context, st *deviceState, place domain.
 func (e *Engine) handleStillInside(ctx context.Context, st *deviceState, place domain.Place, fs *fenceState, pos domain.Position) {
 	// Arrive confirmation: either the device slowed down, or it has been inside
 	// long enough that a fly-by is ruled out.
+	slowed := pos.SpeedMPS <= e.cfg.ArriveMaxSpeedMPS
+	stayed := pos.RecvTS.Sub(fs.EnteredAt) >= e.cfg.ArriveDebounce
+	if slowed || stayed {
+		fs.Settled = true
+	}
 	if hasTrigger(place, domain.TriggerArrive) && !fs.ArriveConfirmed {
-		slowed := pos.SpeedMPS <= e.cfg.ArriveMaxSpeedMPS
-		stayed := pos.RecvTS.Sub(fs.EnteredAt) >= e.cfg.ArriveDebounce
 		if slowed || stayed {
 			if e.fire(ctx, place, pos, domain.TriggerArrive) {
 				fs.ArriveConfirmed = true
@@ -449,7 +529,7 @@ func (e *Engine) handleStillInside(ctx context.Context, st *deviceState, place d
 	}
 
 	// A place can gain a dwell trigger while the device is already inside.
-	if hasTrigger(place, domain.TriggerDwell) && !fs.DwellArmed {
+	if hasTrigger(place, domain.TriggerDwell) && !fs.DwellArmed && !fs.DwellFired {
 		e.armDwell(ctx, st, place, pos, fs)
 	}
 }
@@ -466,7 +546,35 @@ func (e *Engine) forgetFence(ctx context.Context, st *deviceState, placeID strin
 	e.log.DebugContext(ctx, "geofence: peer fence forgotten", "device", pos.DeviceID, "place", placeID)
 }
 
-func (e *Engine) handleExit(ctx context.Context, st *deviceState, placeID string, fs *fenceState, pos domain.Position) {
+// placeFor reads the current geometry of a fence the device is inside.
+// found=false means the place no longer exists (deleted while inside).
+func (e *Engine) placeFor(ctx context.Context, fs *fenceState, placeID string, pos domain.Position) (domain.Place, bool, error) {
+	owner := fs.OwnerID
+	if owner == "" {
+		owner = pos.UserID
+	}
+	place, err := e.store.GetPlace(ctx, owner, placeID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return domain.Place{}, false, nil
+	}
+	if err != nil {
+		e.log.WarnContext(ctx, "geofence: exit lookup failed", "place", placeID, "error", err)
+		return domain.Place{}, false, err
+	}
+	return place, true, nil
+}
+
+// leaveMargin is the hysteresis for this fix: LeaveMarginM, widened to the
+// fix's own accuracy radius when that is worse, never beyond MaxLeaveMarginM.
+func (e *Engine) leaveMargin(pos domain.Position) float64 {
+	m := e.cfg.LeaveMarginM
+	if pos.AccuracyM > m {
+		m = math.Min(pos.AccuracyM, MaxLeaveMarginM)
+	}
+	return m
+}
+
+func (e *Engine) handleExit(ctx context.Context, st *deviceState, placeID string, fs *fenceState, pos domain.Position, place domain.Place, found bool) {
 	delete(st.Inside, placeID)
 
 	// Cancel any pending dwell: the user left before the timer matured.
@@ -475,22 +583,14 @@ func (e *Engine) handleExit(ctx context.Context, st *deviceState, placeID string
 			"device", pos.DeviceID, "place", placeID, "error", err)
 	}
 
-	owner := fs.OwnerID
-	if owner == "" {
-		owner = pos.UserID
-	}
-	place, err := e.store.GetPlace(ctx, owner, placeID)
-	if err != nil {
+	if !found {
 		// The place was deleted while the device was inside it: nothing to fire.
-		if !errors.Is(err, domain.ErrNotFound) {
-			e.log.WarnContext(ctx, "geofence: exit lookup failed", "place", placeID, "error", err)
-		}
 		return
 	}
 
-	e.log.DebugContext(ctx, "geofence: exit", "device", pos.DeviceID, "place", place.Name)
+	e.log.DebugContext(ctx, "geofence: exit", "device", pos.DeviceID, "place", place.Name, "settled", fs.Settled)
 
-	if hasTrigger(place, domain.TriggerLeave) {
+	if hasTrigger(place, domain.TriggerLeave) && fs.Settled {
 		e.fire(ctx, place, pos, domain.TriggerLeave)
 	}
 
@@ -500,6 +600,60 @@ func (e *Engine) handleExit(ctx context.Context, st *deviceState, placeID string
 	// them re-fire "you arrived" — which is the exact failure the cool-off exists
 	// to prevent (HLD §5.4). The claim expires on its own after CoolOff, so a
 	// genuine return later still fires.
+}
+
+// crossings fires pass-by for fences the straight path from the previous fix
+// to this one went through without either fix landing inside — Tile38's
+// "cross" detection, which HLD §5.4 lists next to enter and exit. Without it a
+// fast pass-by is missed whenever the fixes straddle the fence, which at
+// 15 m/s and a fix every few seconds is the common case for a shop front.
+//
+// The path is only trusted when the two fixes are close in time, the device
+// was moving at pass-by speed, and the implied speed is physically plausible.
+func (e *Engine) crossings(ctx context.Context, pos domain.Position, prevAt time.Time, prev domain.Point,
+	wasInside map[string]bool, insideNow map[string]domain.Place, peers peerScope) {
+	dt := pos.RecvTS.Sub(prevAt)
+	if dt <= 0 || dt > e.cfg.CrossMaxGap {
+		return
+	}
+	step := geo.DistanceM(prev.Lat, prev.Lon, pos.Point.Lat, pos.Point.Lon)
+	if step < crossMinStepM {
+		return
+	}
+	implied := step / dt.Seconds()
+	if implied > e.cfg.MaxPlausibleSpeedMPS {
+		return
+	}
+	if math.Max(pos.SpeedMPS, implied) < e.cfg.PassbyMinSpeedMPS {
+		return
+	}
+
+	own, err := e.store.ListPlaces(ctx, pos.UserID)
+	if err != nil {
+		e.log.WarnContext(ctx, "geofence: list places for crossings failed", "error", err)
+		own = nil
+	}
+	candidates := append(own, peers.candidates...)
+	for _, place := range candidates {
+		if wasInside[place.ID] || !hasTrigger(place, domain.TriggerPassby) {
+			continue
+		}
+		if _, in := insideNow[place.ID]; in {
+			continue
+		}
+		where, crossed := place.CrossedBy(prev, pos.Point)
+		if !crossed {
+			continue
+		}
+		e.log.DebugContext(ctx, "geofence: crossed between fixes",
+			"device", pos.DeviceID, "place", place.Name, "stepM", math.Round(step), "impliedMps", math.Round(implied*10)/10)
+		at := pos
+		at.Point = where
+		if at.SpeedMPS < implied {
+			at.SpeedMPS = implied
+		}
+		e.fire(ctx, place, at, domain.TriggerPassby)
+	}
 }
 
 func (e *Engine) armDwell(ctx context.Context, _ *deviceState, place domain.Place, pos domain.Position, fs *fenceState) {
@@ -581,6 +735,7 @@ func (e *Engine) runDwellDue(ctx context.Context) {
 			st.mu.Lock()
 			if fs, ok := st.Inside[pd.PlaceID]; ok {
 				fs.DwellArmed = false
+				fs.DwellFired = true
 			}
 			st.mu.Unlock()
 		}

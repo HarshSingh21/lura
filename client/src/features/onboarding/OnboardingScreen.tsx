@@ -138,7 +138,7 @@ export function OnboardingScreen({ onDone }: { onDone?: () => void }) {
             <Pressable
               key={step.key}
               accessibilityRole="button"
-              accessibilityState={{ selected: i === index }}
+              aria-selected={i === index}
               accessibilityLabel={`Step ${i + 1} of ${STEPS.length}: ${step.title}`}
               onPress={() => goTo(i)}
               style={styles.dotHit}

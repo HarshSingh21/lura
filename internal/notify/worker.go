@@ -399,8 +399,10 @@ func (w *Worker) deliver(ctx context.Context, msg Message, notes []domain.Note, 
 	w.mu.RUnlock()
 
 	// The in-app channel is always attempted: it is how the live UI shows the
-	// reminder, it never leaves the box, and it ignores quiet hours because it
-	// makes no sound.
+	// reminder, it never leaves the box, and it ignores quiet hours because the
+	// client keeps it silent then: inside the recipient's quiet window the toast
+	// appears without a chime or a system notification
+	// (client/src/features/notify/quiet.ts).
 	var delivered []string
 	if n, ok := available["inapp"]; ok {
 		if err := n.Send(ctx, msg); err != nil {
@@ -604,7 +606,7 @@ func verbFor(t domain.Trigger) string {
 	case domain.TriggerDwell:
 		return "Still at"
 	case domain.TriggerPassby:
-		return "Passing"
+		return "Passed by"
 	}
 	return string(t)
 }
@@ -621,7 +623,7 @@ func peerVerbFor(t domain.Trigger) string {
 	case domain.TriggerLeave:
 		return "left"
 	case domain.TriggerDwell:
-		return "is still at"
+		return "is staying at"
 	case domain.TriggerPassby:
 		return "passed by"
 	}

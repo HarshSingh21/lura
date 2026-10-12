@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/HarshSingh21/locnot/internal/bus"
 	"github.com/HarshSingh21/locnot/internal/domain"
 	"github.com/HarshSingh21/locnot/internal/geo"
 	"github.com/HarshSingh21/locnot/internal/store"
@@ -126,6 +127,7 @@ func (s *Server) handleCreatePlace(w http.ResponseWriter, r *http.Request) {
 	s.log.InfoContext(ctx, "place created",
 		"place", created.ID, "name", created.Name, "shape", created.Shape, "radiusM", created.RadiusM,
 		"vertices", len(created.Polygon), "triggers", created.Triggers, "watching", len(created.WatchUserIDs))
+	s.workspaceChanged(ctx, uid, "places")
 	writeJSON(w, http.StatusCreated, map[string]any{"place": created})
 }
 
@@ -203,6 +205,7 @@ func (s *Server) handleUpdatePlace(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	s.workspaceChanged(r.Context(), userID(r), "places")
 	writeJSON(w, http.StatusOK, map[string]any{"place": updated})
 }
 
@@ -211,7 +214,24 @@ func (s *Server) handleDeletePlace(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	// Its notes lost their place too, so both lists are stale.
+	s.workspaceChanged(r.Context(), userID(r), "places")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// workspaceChanged tells every live session of the user that their places or
+// notes changed, so a fence moved on the phone moves on the laptop at once
+// instead of on the next 60 s poll. It rides the user's own acl subject — the
+// one channel every session of theirs already listens on — with an action the
+// client reads as "refetch the workspace"; nobody else is told anything.
+func (s *Server) workspaceChanged(ctx context.Context, uid, what string) {
+	if s.deps.Bus == nil {
+		return
+	}
+	payload := map[string]any{"action": what, "userId": uid}
+	if err := bus.PublishJSON(s.deps.Bus, bus.ACLSubject(uid), payload); err != nil {
+		s.log.WarnContext(ctx, "workspace change publish failed", "what", what, "error", err)
+	}
 }
 
 func validatePlace(p domain.Place) error {
@@ -522,6 +542,7 @@ func (s *Server) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	s.workspaceChanged(r.Context(), userID(r), "notes")
 	writeJSON(w, http.StatusCreated, map[string]any{"note": created, "suggestion": suggestion})
 }
 
@@ -576,6 +597,7 @@ func (s *Server) handleUpdateNote(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	s.workspaceChanged(r.Context(), userID(r), "notes")
 	writeJSON(w, http.StatusOK, map[string]any{"note": updated})
 }
 
@@ -584,6 +606,7 @@ func (s *Server) handleDeleteNote(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	s.workspaceChanged(r.Context(), userID(r), "notes")
 	w.WriteHeader(http.StatusNoContent)
 }
 

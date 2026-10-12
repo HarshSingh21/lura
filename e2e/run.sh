@@ -6,7 +6,8 @@
 #   E2E_PORT=8091 e2e/run.sh       # its own server, so several runs can go at once
 #   E2E_STEPS=6,8 E2E_SEED=1 e2e/run.sh   # only those steps; step 4's fences come from the API
 #   E2E_KEEP_RUNNING=1 e2e/run.sh   # leave Lura on :$E2E_PORT (default 8080) serving the build afterwards
-#   E2E_SUITE=edge-sync E2E_PORT=8096 e2e/run.sh   # the edge-case suite (e2e/edge.sh)
+#   E2E_SUITE=edge-sync E2E_PORT=8096 e2e/run.sh        # the sync edge cases (or: e2e/edge.sh sync)
+#   E2E_SUITE=edge-fences-ui E2E_PORT=8097 e2e/run.sh   # fences, notifications, screens (e2e/edge.sh fences-ui)
 #
 # Requirements: Docker with the `lura-keycloak` container running (see
 # deploy/keycloak/README.md), Go, Node 20+, Google Chrome. For the Mappls phase,
@@ -27,8 +28,8 @@ PHASES="${E2E_PHASES:-maplibre mappls}"
 SUITE="${E2E_SUITE:-scenario}"
 case "$SUITE" in
   scenario) ;;
-  edge-sync) PHASES="maplibre" ;; # the edge cases are about sync, not basemaps
-  *) echo "e2e: unknown E2E_SUITE=$SUITE (scenario | edge-sync)"; exit 2 ;;
+  edge-sync | edge-fences-ui) PHASES="maplibre" ;; # edge cases, not basemaps
+  *) echo "e2e: unknown E2E_SUITE=$SUITE (scenario | edge-sync | edge-fences-ui)"; exit 2 ;;
 esac
 # The web build the server serves. The edge suite builds its own, against its
 # own Keycloak client, so it never overwrites client/dist under another run.
@@ -174,6 +175,8 @@ server_env() {
     # Short, so the stale-fix case can post a fix older than it.
     echo "LURA_FRESH_WINDOW=${E2E_FRESH_WINDOW:-2m}"
   fi
+  # A suite that checks push delivery runs its own webhook sink.
+  if [ -n "${LURA_WEBHOOK_URL:-}" ]; then echo "LURA_WEBHOOK_URL=$LURA_WEBHOOK_URL"; fi
   if [ "$provider" = "mappls" ]; then
     echo "LURA_MAP_PROVIDER=mappls"
     echo "LURA_MAPPLS_WEB_KEY=${LURA_MAPPLS_WEB_KEY:-}"

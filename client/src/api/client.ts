@@ -1,5 +1,7 @@
 import { Platform } from 'react-native';
 
+import { withSessionToken } from '@/features/auth/refresh';
+
 /**
  * The HTTP client.
  *
@@ -73,20 +75,31 @@ let config: ClientConfig = { baseUrl: defaultBaseUrl(), token: DEFAULT_TOKEN };
  * free of a cycle (the session store needs the client to refresh). The token
  * rotates roughly every 15 minutes, so it is read per request — capturing it
  * once would start 401ing a quarter of an hour after sign-in.
+ *
+ *   current  the token held now, without waiting (URL builders);
+ *   fresh    the token, renewed first when it is about to expire;
+ *   renew    a token to retry with after the server refused one (a 401).
  */
-type TokenProvider = () => string | undefined;
-let sessionToken: TokenProvider = () => undefined;
-let freshSessionToken: () => Promise<string | undefined> = async () => sessionToken();
+export type SessionTokenProvider = {
+  current: () => string | undefined;
+  fresh: () => Promise<string | undefined>;
+  renew: (rejected: string | undefined) => Promise<string | undefined>;
+};
 
-/** setSessionTokenProvider is called once, during app start-up. */
-export function setSessionTokenProvider(current: TokenProvider, fresh?: () => Promise<string | undefined>) {
-  sessionToken = current;
-  if (fresh) freshSessionToken = fresh;
+let session: SessionTokenProvider = {
+  current: () => undefined,
+  fresh: async () => undefined,
+  renew: async () => undefined,
+};
+
+/** setSessionTokenProvider is called once, during app start-up (auth/bridge.ts). */
+export function setSessionTokenProvider(provider: SessionTokenProvider) {
+  session = provider;
 }
 
 /** bearer prefers a real session and falls back to the development token. */
 function bearer(): string {
-  return sessionToken() ?? config.token;
+  return session.current() ?? config.token;
 }
 
 export function getConfig(): ClientConfig {
@@ -111,21 +124,30 @@ export type RequestOptions = {
   timeoutMs?: number;
 };
 
-/** request performs one API call and returns the decoded JSON body. */
+/**
+ * request performs one API call and returns the decoded JSON body.
+ *
+ * A session call renews its token first when it is about to expire, and
+ * retries once with a renewed token on a 401 (auth/refresh.ts withSessionToken):
+ * the session's renewal timer does not run while the machine sleeps and is
+ * throttled in a hidden tab, so the token in hand can already be dead.
+ */
 export async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+  if (opts.anonymous || opts.bearerToken) return send<T>(path, opts, opts.bearerToken);
+  return withSessionToken(
+    { fresh: async () => (await session.fresh()) ?? config.token, renew: session.renew },
+    (token) => send<T>(path, opts, token),
+    (err) => err instanceof ApiError && err.status === 401,
+  );
+}
+
+async function send<T>(path: string, opts: RequestOptions, token: string | undefined): Promise<T> {
   const { baseUrl } = config;
   const method = opts.method ?? 'GET';
 
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
-  if (!opts.anonymous) {
-    // Renew first when the token is inside its expiry margin. The session's
-    // refresh timer does not run while the machine sleeps, so after a wake the
-    // token in hand can already be dead; checking per request costs nothing
-    // while it is fresh.
-    const token = opts.bearerToken ?? (await freshSessionToken()) ?? config.token;
-    headers.Authorization = `Bearer ${token}`;
-  }
+  if (!opts.anonymous) headers.Authorization = `Bearer ${token ?? bearer()}`;
 
   // A hung request must not hang the UI: every call gets a deadline, and the
   // caller's own signal still wins.
@@ -193,7 +215,7 @@ export function wsUrl(path: string, opts: { anonymous?: boolean } = {}): string 
  * retry a 401 the way a fetch can, so it is worth awaiting a refresh first.
  */
 export async function wsUrlFresh(path: string, opts: { anonymous?: boolean } = {}): Promise<string> {
-  if (!opts.anonymous) await freshSessionToken();
+  if (!opts.anonymous) await session.fresh();
   return wsUrl(path, opts);
 }
 
@@ -206,6 +228,6 @@ export function downloadUrl(path: string): string {
 
 /** downloadUrlFresh refreshes first, for the same reason as wsUrlFresh. */
 export async function downloadUrlFresh(path: string): Promise<string> {
-  await freshSessionToken();
+  await session.fresh();
   return downloadUrl(path);
 }

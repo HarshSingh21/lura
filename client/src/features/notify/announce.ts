@@ -8,8 +8,12 @@ import { playChime } from './sound';
  * announce is the side-effect half of a new notification: the chime (unless the
  * viewer muted it) and, when the tab is hidden, a system notification. The store
  * calls it exactly once per crossing — the dedupe has already happened by then.
+ *
+ * During the viewer's quiet hours neither happens: the toast and the panel
+ * entry are the whole announcement, as the server holds back push (quiet.ts).
  */
-export function announce(item: NotificationItem, opts: { muted: boolean; onOpen?: () => void }): void {
+export function announce(item: NotificationItem, opts: { muted: boolean; quiet?: boolean; onOpen?: () => void }): void {
+  if (opts.quiet) return;
   if (!opts.muted) {
     const chime = chimeFor(item);
     playChime(chime.kind, { watched: chime.watched });

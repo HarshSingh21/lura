@@ -8,6 +8,7 @@ import { color, palette, radius, shadow, size } from '@/theme/tokens';
 import { Dot } from '@/components/ui/primitives';
 import { absoluteFill } from './fill';
 import { pointInPolygon } from './geometry';
+import { estimateLabelWidth, placeLabels } from './labels';
 import { circlePolygon, metresPerPixel, project, type Viewport } from './projection';
 import type { MapFence, MapMarker, MapTone, MapTrack } from './types';
 
@@ -89,35 +90,51 @@ export function FenceOverlay({
 }) {
   const mpp = metresPerPixel(view.center.lat, view.zoom);
 
+  // Where every visible fence sits on screen, and where its label would go.
+  const laid = fences.map((fence) => {
+    if (hasPolygon(fence)) {
+      const shape = polygonOnScreen(fence, view);
+      return shape ? { fence, shape, cx: shape.c.x, top: shape.minY - 30, extent: Math.max(shape.w, shape.h) } : null;
+    }
+    const { x, y } = project(fence.center, view);
+    const diameter = (fence.radiusM * 2) / mpp;
+    // Off-screen fences are skipped rather than rendered at huge offsets: a
+    // city's worth of places should not cost a city's worth of views.
+    if (diameter < 6 || x < -diameter || y < -diameter || x > view.width + diameter || y > view.height + diameter) {
+      return null;
+    }
+    return { fence, circle: { x, y, diameter }, cx: x, top: y - diameter / 2 - 30, extent: diameter };
+  });
+  // Names that would pile on top of each other wait for a closer zoom.
+  const named = placeLabels(
+    laid.flatMap((l) =>
+      l && l.fence.name
+        ? [{ id: l.fence.id, cx: l.cx, top: l.top, width: estimateLabelWidth(l.fence.name, l.fence.badge), height: 24, selected: l.fence.selected, extent: l.extent }]
+        : [],
+    ),
+  );
+
   return (
     <>
-      {fences.map((fence) => {
-        if (hasPolygon(fence)) {
+      {laid.map((l) => {
+        if (!l) return null;
+        const { fence } = l;
+        const showName = !!fence.name && named.has(fence.id);
+        if (l.shape) {
           return (
             <PolygonFence
               key={fence.id}
-              fence={fence}
-              view={view}
+              fence={fence as MapFence & { polygon: MapFence['center'][] }}
+              shape={l.shape}
               dark={!!dark}
               darkGround={!!darkGround}
               onPress={onPress}
               drawShape={!glShapes}
+              showName={showName}
             />
           );
         }
-        const { x, y } = project(fence.center, view);
-        const diameter = (fence.radiusM * 2) / mpp;
-        // Off-screen fences are skipped rather than rendered at huge offsets: a
-        // city's worth of places should not cost a city's worth of views.
-        if (
-          diameter < 6 ||
-          x < -diameter ||
-          y < -diameter ||
-          x > view.width + diameter ||
-          y > view.height + diameter
-        ) {
-          return null;
-        }
+        const { x, y, diameter } = l.circle!;
         const stroke = toneColor(fence.tone, !!dark);
 
         return (
@@ -142,7 +159,7 @@ export function FenceOverlay({
                 darkGround ? styles.fenceHaloDark : styles.fenceHaloLight,
               ]}
             />
-            {fence.name ? <FenceLabel fence={fence} left={x} top={y - diameter / 2 - 30} /> : null}
+            {showName ? <FenceLabel fence={fence} left={x} top={y - diameter / 2 - 30} /> : null}
           </View>
         );
       })}
@@ -156,21 +173,10 @@ export function FenceOverlay({
  * just above its top edge — where a circle's label sits, and clear of the marker
  * of whoever is standing inside it.
  */
-function PolygonFence({
-  fence,
-  view,
-  dark,
-  darkGround,
-  onPress,
-  drawShape,
-}: {
-  fence: MapFence & { polygon: MapFence['center'][] };
-  view: Viewport;
-  dark: boolean;
-  darkGround: boolean;
-  onPress?: (id: string) => void;
-  drawShape: boolean;
-}) {
+type PolygonScreen = { pts: { x: number; y: number }[]; minX: number; minY: number; w: number; h: number; c: { x: number; y: number } };
+
+/** polygonOnScreen projects a ring and frames it, or returns null when it is off screen or too small to draw. */
+function polygonOnScreen(fence: MapFence & { polygon: MapFence['center'][] }, view: Viewport): PolygonScreen | null {
   const pts = fence.polygon.map((p) => project(p, view));
   let minX = Infinity;
   let minY = Infinity;
@@ -186,9 +192,28 @@ function PolygonFence({
   const h = maxY - minY;
   if (maxX < 0 || maxY < 0 || minX > view.width || minY > view.height) return null;
   if (w < 4 && h < 4) return null;
+  return { pts, minX, minY, w, h, c: centroid(pts) };
+}
 
+function PolygonFence({
+  fence,
+  shape,
+  dark,
+  darkGround,
+  onPress,
+  drawShape,
+  showName,
+}: {
+  fence: MapFence & { polygon: MapFence['center'][] };
+  shape: PolygonScreen;
+  dark: boolean;
+  darkGround: boolean;
+  onPress?: (id: string) => void;
+  drawShape: boolean;
+  showName: boolean;
+}) {
+  const { pts, minX, minY, w, h, c } = shape;
   const stroke = toneColor(fence.tone, dark);
-  const c = centroid(pts);
   const pad = 5;
   const points = pts.map((p) => `${(p.x - minX + pad).toFixed(1)},${(p.y - minY + pad).toFixed(1)}`).join(' ');
 
@@ -220,7 +245,7 @@ function PolygonFence({
           </Svg>
         </View>
       ) : null}
-      {fence.name ? (
+      {showName ? (
         <FenceLabel fence={fence} left={c.x} top={minY - 30} onPress={onPress ? () => onPress(fence.id) : undefined} />
       ) : null}
     </View>
@@ -260,13 +285,13 @@ function FenceLabel({
   );
   if (!onPress) {
     return (
-      <View pointerEvents="none" style={[styles.fenceLabel, { left, top }]}>
+      <View pointerEvents="none" style={[styles.fenceLabel, { left, top }]} testID={`lura-fence-label-${fence.id}`}>
         {inner}
       </View>
     );
   }
   return (
-    <View pointerEvents="box-none" style={[styles.fenceLabel, { left, top }]}>
+    <View pointerEvents="box-none" style={[styles.fenceLabel, { left, top }]} testID={`lura-fence-label-${fence.id}`}>
       <Pressable accessibilityRole="button" accessibilityLabel={fence.name ? `Place ${fence.name}` : 'Place'} onPress={onPress}>
         {inner}
       </Pressable>

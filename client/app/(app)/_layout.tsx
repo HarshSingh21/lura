@@ -2,7 +2,7 @@ import { Slot } from 'expo-router';
 
 import { Shell } from '@/components/shell/Shell';
 import { useLive } from '@/hooks/useLive';
-import { usePublishing } from '@/hooks/usePublishing';
+import { usePublishing, useQuietHoursSync } from '@/hooks/usePublishing';
 import { useReminders } from '@/hooks/useReminders';
 
 /**
@@ -19,6 +19,8 @@ export default function AppLayout() {
   // Pending reminders: read on sign-in / load (and on every reconnect, from
   // useLive), and chimed again until acknowledged.
   useReminders();
+  // Quiet hours silence chimes on whichever screen is open.
+  useQuietHoursSync();
   return (
     <Shell>
       <Slot />

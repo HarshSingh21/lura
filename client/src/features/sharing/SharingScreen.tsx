@@ -33,7 +33,9 @@ export function SharingScreen() {
   const createShare = useCreateShare();
   const revokeShare = useRevokeShare();
 
-  const [mode, setMode] = useState<ShareMode>('until_arrive');
+  // Until the person picks, the default is the mode they can actually use:
+  // "until I arrive" needs a place, so someone with none starts on a duration.
+  const [chosenMode, setMode] = useState<ShareMode | null>(null);
   const [label, setLabel] = useState('');
   const [durationMins, setDurationMins] = useState('120');
   const [arrivePlaceId, setArrivePlaceId] = useState<string>('');
@@ -43,6 +45,8 @@ export function SharingScreen() {
   const shares = data?.shares ?? [];
   const devices = data?.devices ?? [];
   const arriveChoice = arrivePlaceId || places[0]?.id || '';
+  const mode: ShareMode = chosenMode ?? (places.length > 0 ? 'until_arrive' : 'duration');
+  const blocked = mode === 'until_arrive' && !arriveChoice;
 
   const submit = () => {
     const input: ShareInput = { mode, label: label.trim() || undefined };
@@ -112,7 +116,7 @@ export function SharingScreen() {
                     <Pressable
                       key={place.id}
                       accessibilityRole="radio"
-                      accessibilityState={{ selected: place.id === arriveChoice }}
+                      aria-selected={place.id === arriveChoice}
                       onPress={() => setArrivePlaceId(place.id)}
                       style={[styles.placeChip, place.id === arriveChoice && styles.placeChipActive]}
                     >
@@ -156,6 +160,7 @@ export function SharingScreen() {
           <Button
             label="Generate link"
             full
+            disabled={blocked}
             loading={createShare.isPending}
             onPress={submit}
             style={styles.generate}

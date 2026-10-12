@@ -123,6 +123,18 @@ measures its < 2 s NFR from the confirming fix, not from first entry.
 **Pass-by.** Enter while still moving (`speed ≥ PASSBY_MIN_SPEED_MPS`). Phase 1
 applies it to place circles; the corridor geometry of HLD §5.5 changes the fence,
 not this rule. The activation policy remains the open question the HLD flags.
+A fast pass-by can land no fix inside the fence at all (15 m/s, a fix every
+few seconds, a 60 m shop front), so the engine also tests the straight path
+between consecutive fixes — Tile38's `cross` — and fires pass-by when it went
+through a fence, provided the fixes are at most 2 min apart, the device was
+moving at pass-by speed and the implied speed is plausible (≤ 70 m/s).
+
+**Leave hysteresis.** A device inside a fence leaves only when a fix lands
+`LEAVE_MARGIN_M` (default 20 m) outside the boundary, widened to the fix's
+accuracy radius up to 50 m. A phone parked on the edge with ±8 m of noise is one
+visit, not an arrive/leave pair per fix. And only a *settled* visit — one that
+passed the fly-by filter — can end in `leave`: driving through is a pass-by, not
+a departure.
 
 **Dwell.** Armed on enter, persisted in the store (not a cache — HLD §17 lists
 cache-only dwell timers as a data-loss risk), cancelled on exit, fired by a ticker

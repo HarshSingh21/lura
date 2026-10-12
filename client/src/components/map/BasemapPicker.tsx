@@ -44,7 +44,7 @@ export function BasemapPicker({
               <Pressable
                 key={id}
                 accessibilityRole="radio"
-                accessibilityState={{ selected }}
+                aria-selected={selected}
                 accessibilityLabel={`${info.label} map`}
                 onPress={() => {
                   onChange(id);
@@ -160,7 +160,10 @@ const styles = StyleSheet.create({
   panel: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    width: 3 * 62 + 2 * 4 + 16,
+    // Three chips, two gaps, the padding and the 1 px border: the box is
+    // border-box, and without the border term the third chip wrapped, leaving
+    // a two-column grid with an empty strip down its right side.
+    width: 3 * 62 + 2 * 4 + 2 * 8 + 2 * 1,
     gap: 4,
     padding: 8,
     backgroundColor: color.surface,

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { Controller, useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
@@ -121,6 +121,9 @@ export function PlaceForm({
   const { control, handleSubmit, setError, formState } = useForm<PlaceFormValues>({
     defaultValues: defaults,
   });
+
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const noteCount = initial?.stats?.notes ?? 0;
 
   const triggers = useWatch({ control, name: 'triggers' });
   const wantsDwell = triggers.includes('dwell');
@@ -382,12 +385,37 @@ export function PlaceForm({
         </View>
       ) : null}
 
-      <View style={styles.actions}>
-        {onDelete ? <Button label="Delete" variant="danger" onPress={onDelete} /> : null}
-        <View style={ui.flex} />
-        {onCancel ? <Button label="Cancel" variant="ghost" onPress={onCancel} /> : null}
-        <Button label={initial ? 'Save place' : 'Create place'} onPress={submit} loading={submitting} />
-      </View>
+      {confirmingDelete && onDelete ? (
+        // Deleting a fence is not undoable and silently changes what its notes
+        // do, so it says so before it happens.
+        <View style={styles.confirmBox} accessibilityRole="alert">
+          <Txt variant="small" color={palette.dangerInk} style={styles.confirmTitle}>
+            Delete {initial?.name ?? 'this place'}?
+          </Txt>
+          <Txt variant="small" color={color.textBody}>
+            {noteCount > 0
+              ? `Its ${noteCount === 1 ? 'note keeps its' : `${noteCount} notes keep their`} text but will no longer fire here. Nothing about this place will notify anyone again.`
+              : 'Nothing about this place will notify anyone again.'}
+          </Txt>
+          <View style={styles.actions}>
+            <View style={ui.flex} />
+            <Button label="Keep it" variant="ghost" onPress={() => setConfirmingDelete(false)} />
+            <Button
+              label={`Delete ${initial?.name ?? 'place'}`}
+              variant="danger"
+              onPress={onDelete}
+              loading={submitting}
+            />
+          </View>
+        </View>
+      ) : (
+        <View style={styles.actions}>
+          {onDelete ? <Button label="Delete" variant="danger" onPress={() => setConfirmingDelete(true)} /> : null}
+          <View style={ui.flex} />
+          {onCancel ? <Button label="Cancel" variant="ghost" onPress={onCancel} /> : null}
+          <Button label={initial ? 'Save place' : 'Create place'} onPress={submit} loading={submitting} />
+        </View>
+      )}
     </View>
   );
 }
@@ -445,4 +473,13 @@ const styles = StyleSheet.create({
     padding: space.lg,
   },
   actions: { flexDirection: 'row', alignItems: 'center', gap: space.md, flexWrap: 'wrap' },
+  confirmBox: {
+    gap: space.md,
+    backgroundColor: 'rgba(200,101,86,0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(200,101,86,0.45)',
+    borderRadius: radius.lg,
+    padding: space.lg,
+  },
+  confirmTitle: { fontFamily: font.sansSemiBold },
 });

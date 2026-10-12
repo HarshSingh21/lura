@@ -1,5 +1,5 @@
 /**
- * When to renew an access token.
+ * When and how to renew an access token — the policy half of the session.
  *
  * Kept free of imports so it is tested with plain `node --test` (refresh.test.mts):
  * the rule decides whether a session quietly outlives its tokens or hammers
@@ -32,4 +32,84 @@ export function refreshDelayMs(expiresAt: number, lifetimeMs: number, now: numbe
 /** isExpiring says whether a token must be renewed before it is used for a handshake. */
 export function isExpiring(expiresAt: number | undefined, lifetimeMs: number, now: number): boolean {
   return expiresAt === undefined || expiresAt - now < refreshMarginMs(lifetimeMs);
+}
+
+/** A token request that has not answered in this long is treated as a network failure. */
+export const REFRESH_DEADLINE_MS = 20_000;
+/** A refresh that failed on the network (not on the token) is retried this often. */
+export const RETRY_DELAY_MS = 30_000;
+/**
+ * After a 401 forces a renewal, another 401 within this long reuses the token
+ * that renewal produced: a server refusing every token (a user it does not
+ * know, a clock it disagrees with) must not turn each request into a refresh.
+ */
+export const FORCED_RENEWAL_GAP_MS = 10_000;
+
+/**
+ * withDeadline settles like `work`, or rejects after `ms`. A token request that
+ * never answers would otherwise hold the in-flight refresh forever, and every
+ * later request would wait on it.
+ */
+export function withDeadline<T>(work: Promise<T>, ms: number, message = 'The sign-in server did not answer in time.'): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * shouldForceRenewal decides whether a 401 for `rejected` is worth a refresh.
+ * Not when the session already holds a different token (someone renewed it in
+ * the meantime: use that one), and not again within FORCED_RENEWAL_GAP_MS.
+ */
+export function shouldForceRenewal(
+  rejected: string | undefined,
+  current: string | undefined,
+  lastForcedAt: number | undefined,
+  now: number,
+): boolean {
+  if (current && current !== rejected) return false;
+  return lastForcedAt === undefined || now - lastForcedAt >= FORCED_RENEWAL_GAP_MS;
+}
+
+/** The session's side of an authorised call (installed by auth/bridge.ts). */
+export type TokenSource = {
+  /** The token to send now, renewed first when it is inside its expiry margin. */
+  fresh: () => Promise<string | undefined>;
+  /** A token to try after the server refused `rejected`; may be the same one. */
+  renew: (rejected: string | undefined) => Promise<string | undefined>;
+};
+
+/**
+ * withSessionToken runs `send` with a fresh token and, when the server answers
+ * 401, once more with a renewed one — never more than once, and not at all when
+ * the renewal produced the token that was just refused.
+ *
+ * The renewal timer alone is not enough: timers do not run while a machine
+ * sleeps and are throttled in a hidden or busy tab, so the token in hand can be
+ * dead by the time a request goes out.
+ */
+export async function withSessionToken<T>(
+  source: TokenSource,
+  send: (token: string | undefined) => Promise<T>,
+  isUnauthorized: (err: unknown) => boolean,
+): Promise<T> {
+  const token = await source.fresh();
+  try {
+    return await send(token);
+  } catch (err) {
+    if (!isUnauthorized(err)) throw err;
+    const renewed = await source.renew(token);
+    if (!renewed || renewed === token) throw err;
+    return send(renewed);
+  }
 }

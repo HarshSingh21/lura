@@ -49,10 +49,11 @@ const DRAFT_ID = '__draft__';
 
 type DrawMode = 'draw-circle' | 'draw-polygon' | 'draw-freehand';
 
-const DRAW_MODES: { mode: DrawMode; label: string }[] = [
-  { mode: 'draw-circle', label: 'Circle' },
-  { mode: 'draw-polygon', label: 'Polygon' },
-  { mode: 'draw-freehand', label: 'Freehand' },
+const DRAW_MODES: { mode: DrawMode; label: string; doing: string }[] = [
+  { mode: 'draw-circle', label: 'Circle', doing: 'Drawing a circle' },
+  { mode: 'draw-polygon', label: 'Polygon', doing: 'Drawing a polygon' },
+  // "Drawing a freehand" is not English; the outline is what is drawn.
+  { mode: 'draw-freehand', label: 'Freehand', doing: 'Drawing an outline' },
 ];
 
 /** geometryOfPlace is a place's fence as the editor understands it. */
@@ -625,7 +626,7 @@ export function LiveScreen() {
                 <Dot size={7} color={palette.accent} />
                 <Txt variant="bodySemi" numberOfLines={1}>
                   {drawingMode
-                    ? `Drawing a ${DRAW_MODES.find((m) => m.mode === drawingMode)?.label.toLowerCase()}`
+                    ? (DRAW_MODES.find((m) => m.mode === drawingMode)?.doing ?? 'Drawing')
                     : editingId === DRAFT_ID
                       ? 'New place'
                       : `Editing ${places.find((p) => p.id === editingId)?.name ?? 'place'}`}
@@ -804,9 +805,18 @@ export function LiveScreen() {
 
         {/* attribution: a licence requirement for OSM-derived tiles. The Mappls
             SDK draws its own logo and credit in this corner, and its terms
-            forbid covering them, so the chip stands aside while Mappls draws. */}
+            forbid covering them, so the chip stands aside while Mappls draws.
+            While the fence editor's toolbar holds the bottom of a phone screen,
+            the credit moves above it rather than printing across it. */}
         {(renderer ?? data?.server.mapProvider) === 'mappls' && !offline ? null : (
-          <View style={[styles.attribution, !isDesktop && styles.attributionPhone]} pointerEvents="none">
+          <View
+            style={[
+              styles.attribution,
+              !isDesktop && styles.attributionPhone,
+              !isDesktop && fenceEdit ? styles.attributionAboveToolbar : null,
+            ]}
+            pointerEvents="none"
+          >
             <Mono size={size.monoTiny} color={color.textSubtle} testID="lura-map-credit">
               {attribution(basemap, {
                 serverStyleUrl: data?.server.mapStyleUrl,
@@ -1087,6 +1097,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   attributionPhone: { bottom: 84 },
+  attributionAboveToolbar: { bottom: 128 },
 
   statusOverlay: {
     position: 'absolute',

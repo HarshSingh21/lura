@@ -97,8 +97,8 @@ function NavRow({
         // Named by where it goes: the counter beside it is a glance, and a link
         // whose name changes every time a device or note is added cannot be found.
         accessibilityLabel={item.label}
-        aria-selected={active}
-        accessibilityState={{ selected: active }}
+        // The current page, as a link states it (aria-selected is for tabs and options).
+        aria-current={active ? 'page' : undefined}
         onPress={() => router.push(item.href)}
         style={({ pressed }) => [
           styles.navRow,

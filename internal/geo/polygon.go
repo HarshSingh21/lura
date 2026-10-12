@@ -232,3 +232,75 @@ func collinearOverlap(p1, p2, q1, q2 Vertex) bool {
 	return strictlyInside(p1, p2, q1) || strictlyInside(p1, p2, q2) ||
 		strictlyInside(q1, q2, p1) || strictlyInside(q1, q2, p2)
 }
+
+// ---------------------------------------------------------------- distances and crossings
+
+// local projects v onto a plane tangent at ref, in metres (x east, y north).
+// At geofence scale (well under 10 km) the error is centimetres, far below GPS
+// noise, and it keeps distance-to-edge a plain 2-D problem.
+func local(ref, v Vertex) (x, y float64) {
+	k := math.Cos(rad(ref.Lat))
+	return rad(v.Lon-ref.Lon) * EarthRadiusM * k, rad(v.Lat-ref.Lat) * EarthRadiusM
+}
+
+// closestOnSegment returns the parameter t in [0, 1] of the point on segment
+// ab closest to p, all in the plane.
+func closestOnSegment(px, py, ax, ay, bx, by float64) float64 {
+	dx, dy := bx-ax, by-ay
+	l2 := dx*dx + dy*dy
+	if l2 == 0 {
+		return 0
+	}
+	t := ((px-ax)*dx + (py-ay)*dy) / l2
+	return math.Max(0, math.Min(1, t))
+}
+
+// SegmentDistanceM is the distance in metres from p to the segment ab.
+func SegmentDistanceM(p, a, b Vertex) float64 {
+	ax, ay := local(p, a)
+	bx, by := local(p, b)
+	t := closestOnSegment(0, 0, ax, ay, bx, by)
+	return math.Hypot(ax+(bx-ax)*t, ay+(by-ay)*t)
+}
+
+// ClosestPointOnSegment is the point of segment ab nearest to p.
+func ClosestPointOnSegment(p, a, b Vertex) Vertex {
+	ax, ay := local(p, a)
+	bx, by := local(p, b)
+	t := closestOnSegment(0, 0, ax, ay, bx, by)
+	return Vertex{Lat: a.Lat + (b.Lat-a.Lat)*t, Lon: a.Lon + (b.Lon-a.Lon)*t}
+}
+
+// DistanceToRingM is the distance in metres from p to the nearest edge of the
+// ring. It says nothing about which side p is on: callers that need "how far
+// outside" check PointInPolygon first.
+func DistanceToRingM(p Vertex, ring []Vertex) float64 {
+	n := len(ring)
+	if n == 0 {
+		return math.Inf(1)
+	}
+	best := math.Inf(1)
+	for i := 0; i < n; i++ {
+		if d := SegmentDistanceM(p, ring[i], ring[(i+1)%n]); d < best {
+			best = d
+		}
+	}
+	return best
+}
+
+// SegmentCrossesRing reports whether the segment ab touches any edge of the
+// ring — the "cross" of Tile38's fence detection: a path that went through a
+// fence between two fixes even though neither fix landed inside it. It uses
+// the same planar lon/lat rule as ValidatePolygon and PointInPolygon.
+func SegmentCrossesRing(a, b Vertex, ring []Vertex) bool {
+	n := len(ring)
+	if n < MinPolygonVertices {
+		return false
+	}
+	for i := 0; i < n; i++ {
+		if segmentsTouch(a, b, ring[i], ring[(i+1)%n]) {
+			return true
+		}
+	}
+	return false
+}

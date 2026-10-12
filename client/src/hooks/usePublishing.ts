@@ -70,3 +70,15 @@ function useRememberTracking(userId: string | undefined) {
     }
   }, [userId, enabled]);
 }
+
+/**
+ * useQuietHoursSync keeps the store's copy of the viewer's quiet hours in step
+ * with their account, so a chime knows whether it may sound (notify/quiet.ts).
+ */
+export function useQuietHoursSync(): void {
+  const { data } = useOverview();
+  const user = data?.user;
+  useEffect(() => {
+    useStore.getState().setQuietHours(user ? { from: user.quietFrom, to: user.quietTo, tz: user.tz } : null);
+  }, [user]);
+}

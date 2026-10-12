@@ -47,6 +47,7 @@ type Config struct {
 	ArriveDebounce     time.Duration // time inside a fence before "arrive" confirms
 	ArriveMaxSpeedMPS  float64       // or confirm early when speed drops below this
 	PassbyMinSpeedMPS  float64       // enter-while-moving threshold for pass-by
+	LeaveMarginM       float64       // leave hysteresis: metres outside the edge before a leave
 	CoolOff            time.Duration // per (device, place, trigger) suppression window
 	DwellTick          time.Duration // how often armed dwell timers are checked
 	GeofencePartitions int           // per-device partitions (ordering guarantee)
@@ -131,6 +132,7 @@ func Default() Config {
 		ArriveDebounce:     45 * time.Second,
 		ArriveMaxSpeedMPS:  1.5,
 		PassbyMinSpeedMPS:  3.0,
+		LeaveMarginM:       20,
 		CoolOff:            30 * time.Minute,
 		DwellTick:          10 * time.Second,
 		GeofencePartitions: 4,
@@ -175,7 +177,10 @@ func Load() (Config, error) {
 	c := Default()
 
 	c.HTTPAddr = env("LURA_HTTP_ADDR", c.HTTPAddr)
-	c.PublicBaseURL = strings.TrimRight(env("LURA_PUBLIC_BASE_URL", c.PublicBaseURL), "/")
+	// Without an explicit public URL, share links and the pub snippet point at
+	// localhost on the port this server actually listens on — not at :8080
+	// whatever LURA_HTTP_ADDR says.
+	c.PublicBaseURL = strings.TrimRight(env("LURA_PUBLIC_BASE_URL", localBaseURL(c.HTTPAddr)), "/")
 	if v := os.Getenv("LURA_ALLOWED_ORIGINS"); v != "" {
 		c.AllowedOrigins = splitList(v)
 	}
@@ -197,6 +202,7 @@ func Load() (Config, error) {
 	c.ArriveDebounce = envDur("LURA_ARRIVE_DEBOUNCE", c.ArriveDebounce)
 	c.ArriveMaxSpeedMPS = envFloat("LURA_ARRIVE_MAX_SPEED_MPS", c.ArriveMaxSpeedMPS)
 	c.PassbyMinSpeedMPS = envFloat("LURA_PASSBY_MIN_SPEED_MPS", c.PassbyMinSpeedMPS)
+	c.LeaveMarginM = envFloat("LURA_LEAVE_MARGIN_M", c.LeaveMarginM)
 	c.CoolOff = envDur("LURA_COOLOFF", c.CoolOff)
 	c.DwellTick = envDur("LURA_DWELL_TICK", c.DwellTick)
 	c.GeofencePartitions = envInt("LURA_GEOFENCE_PARTITIONS", c.GeofencePartitions)
@@ -322,6 +328,7 @@ func (c Config) Redacted() map[string]any {
 		"arriveDebounce":     c.ArriveDebounce.String(),
 		"arriveMaxSpeedMPS":  c.ArriveMaxSpeedMPS,
 		"passbyMinSpeedMPS":  c.PassbyMinSpeedMPS,
+		"leaveMarginM":       c.LeaveMarginM,
 		"coolOff":            c.CoolOff.String(),
 		"geofencePartitions": c.GeofencePartitions,
 		"retentionDays":      c.RetentionDays,
@@ -381,6 +388,22 @@ func envInt(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+// localBaseURL is http://localhost:<port> for a listen address like ":8097"
+// or "0.0.0.0:8097", and the historical default for anything it cannot read.
+func localBaseURL(addr string) string {
+	i := strings.LastIndex(addr, ":")
+	if i < 0 || i == len(addr)-1 {
+		return "http://localhost:8080"
+	}
+	port := addr[i+1:]
+	for _, r := range port {
+		if r < '0' || r > '9' {
+			return "http://localhost:8080"
+		}
+	}
+	return "http://localhost:" + port
 }
 
 func envFloat(key string, def float64) float64 {

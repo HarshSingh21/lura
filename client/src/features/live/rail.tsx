@@ -45,7 +45,7 @@ function FollowButton({ on, name, onPress }: { on: boolean; name: string; onPres
   return (
     <Pressable
       accessibilityRole="switch"
-      accessibilityState={{ checked: on }}
+      aria-checked={on}
       accessibilityLabel={on ? `Stop following ${name}` : `Follow ${name} on the map`}
       onPress={onPress}
       hitSlop={6}

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Platform, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { Icon } from '@/components/ui/Icon';
@@ -35,6 +36,7 @@ export function TopBar({
   aiEngine?: string;
 }) {
   const { isWide, isDesktop } = useLayoutMode();
+  const [searchFocused, setSearchFocused] = useState(false);
 
   return (
     <View style={styles.bar}>
@@ -54,7 +56,7 @@ export function TopBar({
       </View>
 
       {isWide ? (
-        <View style={styles.search}>
+        <View style={[styles.search, searchFocused && styles.searchFocused]}>
           <Icon name="search" size={15} color={color.textSubtle} />
           <TextInput
             value={search}
@@ -64,6 +66,9 @@ export function TopBar({
             placeholderTextColor={color.textSubtle}
             style={styles.searchInput}
             returnKeyType="search"
+            accessibilityLabel="Search places, addresses, or Plus Codes"
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
           />
           {/* Geocoding is Photon (HLD §13); naming it sets the expectation that
               search is self-hosted too. */}
@@ -82,7 +87,7 @@ export function TopBar({
 
         <Pressable
           accessibilityRole="switch"
-          accessibilityState={{ checked: airgap }}
+          aria-checked={airgap}
           accessibilityLabel="Airgap mode"
           onPress={onToggleAirgap}
           style={({ pressed }) => [styles.airgap, airgap && styles.airgapOn, pressed && styles.pressed]}
@@ -179,6 +184,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 13,
     paddingVertical: 9,
   },
+  // The input drops the browser's ring, so the field itself shows focus.
+  searchFocused: { borderColor: palette.accent, backgroundColor: color.surface },
   searchInput: {
     flex: 1,
     fontFamily: font.sans,

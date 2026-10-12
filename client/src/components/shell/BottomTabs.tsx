@@ -29,7 +29,7 @@ export function BottomTabs({ pathname, sharing }: { pathname: string; sharing: b
             <Pressable
               key={item.key}
               accessibilityRole="link"
-              accessibilityState={{ selected: active }}
+              aria-current={active ? 'page' : undefined}
               accessibilityLabel={item.label}
               onPress={() => router.push(item.href)}
               style={styles.tab}
