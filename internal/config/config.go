@@ -177,7 +177,10 @@ func Load() (Config, error) {
 	c := Default()
 
 	c.HTTPAddr = env("LURA_HTTP_ADDR", c.HTTPAddr)
-	c.PublicBaseURL = strings.TrimRight(env("LURA_PUBLIC_BASE_URL", c.PublicBaseURL), "/")
+	// Without an explicit public URL, share links and the pub snippet point at
+	// localhost on the port this server actually listens on — not at :8080
+	// whatever LURA_HTTP_ADDR says.
+	c.PublicBaseURL = strings.TrimRight(env("LURA_PUBLIC_BASE_URL", localBaseURL(c.HTTPAddr)), "/")
 	if v := os.Getenv("LURA_ALLOWED_ORIGINS"); v != "" {
 		c.AllowedOrigins = splitList(v)
 	}
@@ -385,6 +388,22 @@ func envInt(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+// localBaseURL is http://localhost:<port> for a listen address like ":8097"
+// or "0.0.0.0:8097", and the historical default for anything it cannot read.
+func localBaseURL(addr string) string {
+	i := strings.LastIndex(addr, ":")
+	if i < 0 || i == len(addr)-1 {
+		return "http://localhost:8080"
+	}
+	port := addr[i+1:]
+	for _, r := range port {
+		if r < '0' || r > '9' {
+			return "http://localhost:8080"
+		}
+	}
+	return "http://localhost:" + port
 }
 
 func envFloat(key string, def float64) float64 {
