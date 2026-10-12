@@ -25,7 +25,8 @@ import { fitBounds } from '@/components/map/projection';
  */
 
 const RANGES = [
-  { key: '-24h', label: 'Today' },
+  // A rolling window, not the calendar day: 'Today' at 9 am showed yesterday evening.
+  { key: '-24h', label: '24 hours' },
   { key: '-72h', label: '3 days' },
   { key: '-168h', label: 'Week' },
   { key: '-720h', label: '30 days' },
@@ -49,7 +50,8 @@ export function HistoryScreen() {
 
   // Open on the day rather than on a hard-coded city.
   const view = useMemo(
-    () => fitBounds(track, isDesktop ? width - layout.historyRailWidth : width, height, 60),
+    // Stacked (phone), the map is the band above the timeline, not the whole height.
+    () => fitBounds(track, isDesktop ? width - layout.historyRailWidth : width, isDesktop ? height : height * 0.42, 60),
     [track, width, height, isDesktop],
   );
 
@@ -159,7 +161,7 @@ export function HistoryScreen() {
   );
 
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, !isDesktop && styles.rootStacked]}>
       <View style={styles.mapWrap}>
         <MapView
           center={view?.center ?? { lat: 12.9716, lon: 77.5946 }}
@@ -306,15 +308,25 @@ function formatRange(startTs: string, endTs: string): string {
   return `${start.toLocaleTimeString(undefined, opts)} – ${end.toLocaleTimeString(undefined, opts)}`;
 }
 
+/**
+ * formatDayLabel says where the window starts. The windows are rolling (the
+ * last 24 hours, the last 3 days), so naming a single day read as the wrong
+ * date: the 24-hour window shown at 7 pm on Monday was labelled "Sunday".
+ */
 function formatDayLabel(from?: string): string {
   if (!from) return 'Recent';
   const date = new Date(from);
   if (Number.isNaN(date.getTime())) return 'Recent';
-  return date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  const day = date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return `Since ${day}, ${time}`;
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, flexDirection: 'row', minHeight: 0 },
+  // Below the desktop width the timeline goes under the map; side by side, a
+  // 390 px phone left the map a 45 px sliver and wrapped its summary letter by letter.
+  rootStacked: { flexDirection: 'column' },
   mapWrap: { flex: 1, backgroundColor: color.mapBg, overflow: 'hidden' },
 
   summaryPill: {
