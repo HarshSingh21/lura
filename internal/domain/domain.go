@@ -5,6 +5,7 @@ package domain
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"time"
 
@@ -156,6 +157,35 @@ func (p Place) Contains(pt Point) bool {
 		return geo.PointInPolygon(pt.Lat, pt.Lon, p.Ring())
 	}
 	return geo.DWithin(p.Center.Lat, p.Center.Lon, pt.Lat, pt.Lon, float64(p.RadiusM))
+}
+
+// DistanceOutsideM is how far outside the fence a point is, in metres: 0 for a
+// point inside or on the boundary. The engine's leave hysteresis uses it, so a
+// fix jittering a few metres across the edge is not a departure.
+func (p Place) DistanceOutsideM(pt Point) float64 {
+	if p.Contains(pt) {
+		return 0
+	}
+	if p.IsPolygon() {
+		return geo.DistanceToRingM(geo.Vertex(pt), p.Ring())
+	}
+	return math.Max(0, geo.DistanceM(p.Center.Lat, p.Center.Lon, pt.Lat, pt.Lon)-float64(p.RadiusM))
+}
+
+// CrossedBy reports whether the straight path from a to b passes through the
+// fence, and where it came closest to the fence's centre. It is how a pass-by
+// is noticed when no fix landed inside: at 15 m/s and one fix every 10 s, a
+// 60 m shop front is jumped over entirely.
+func (p Place) CrossedBy(a, b Point) (Point, bool) {
+	va, vb := geo.Vertex(a), geo.Vertex(b)
+	near := Point(geo.ClosestPointOnSegment(geo.Vertex(p.Center), va, vb))
+	if p.Contains(a) || p.Contains(b) {
+		return near, true
+	}
+	if p.IsPolygon() {
+		return near, geo.SegmentCrossesRing(va, vb, p.Ring())
+	}
+	return near, geo.SegmentDistanceM(geo.Vertex(p.Center), va, vb) <= float64(p.RadiusM)
 }
 
 // Ring converts the polygon to the geo package's vertex type.

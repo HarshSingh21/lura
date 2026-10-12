@@ -47,6 +47,7 @@ type Config struct {
 	ArriveDebounce     time.Duration // time inside a fence before "arrive" confirms
 	ArriveMaxSpeedMPS  float64       // or confirm early when speed drops below this
 	PassbyMinSpeedMPS  float64       // enter-while-moving threshold for pass-by
+	LeaveMarginM       float64       // leave hysteresis: metres outside the edge before a leave
 	CoolOff            time.Duration // per (device, place, trigger) suppression window
 	DwellTick          time.Duration // how often armed dwell timers are checked
 	GeofencePartitions int           // per-device partitions (ordering guarantee)
@@ -131,6 +132,7 @@ func Default() Config {
 		ArriveDebounce:     45 * time.Second,
 		ArriveMaxSpeedMPS:  1.5,
 		PassbyMinSpeedMPS:  3.0,
+		LeaveMarginM:       20,
 		CoolOff:            30 * time.Minute,
 		DwellTick:          10 * time.Second,
 		GeofencePartitions: 4,
@@ -197,6 +199,7 @@ func Load() (Config, error) {
 	c.ArriveDebounce = envDur("LURA_ARRIVE_DEBOUNCE", c.ArriveDebounce)
 	c.ArriveMaxSpeedMPS = envFloat("LURA_ARRIVE_MAX_SPEED_MPS", c.ArriveMaxSpeedMPS)
 	c.PassbyMinSpeedMPS = envFloat("LURA_PASSBY_MIN_SPEED_MPS", c.PassbyMinSpeedMPS)
+	c.LeaveMarginM = envFloat("LURA_LEAVE_MARGIN_M", c.LeaveMarginM)
 	c.CoolOff = envDur("LURA_COOLOFF", c.CoolOff)
 	c.DwellTick = envDur("LURA_DWELL_TICK", c.DwellTick)
 	c.GeofencePartitions = envInt("LURA_GEOFENCE_PARTITIONS", c.GeofencePartitions)
@@ -322,6 +325,7 @@ func (c Config) Redacted() map[string]any {
 		"arriveDebounce":     c.ArriveDebounce.String(),
 		"arriveMaxSpeedMPS":  c.ArriveMaxSpeedMPS,
 		"passbyMinSpeedMPS":  c.PassbyMinSpeedMPS,
+		"leaveMarginM":       c.LeaveMarginM,
 		"coolOff":            c.CoolOff.String(),
 		"geofencePartitions": c.GeofencePartitions,
 		"retentionDays":      c.RetentionDays,
