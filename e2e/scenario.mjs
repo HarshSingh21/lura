@@ -820,17 +820,21 @@ try {
     const g2 = await placeNamed(harsh, 'Grocery');
     check(p2 && haversineM(p2.center, pharmacy.center) < 0.01 && p2.radiusM === pharmacy.radiusM, `the circle changed across the restart: ${JSON.stringify(p2)}`);
     check(g2 && g2.polygon.length === grocery.polygon.length && g2.polygon.every((q, i) => haversineM(q, grocery.polygon[i]) < 0.01), 'the polygon changed across the restart');
-    // A fix sent after the restart goes all the way to the other browser.
+    // Fixes sent after the restart go all the way to the other browser: out to
+    // a turning point and back (lurasim closes its route), drawn as they come.
     const nMarker = `peer_${facts.nDevice.id}`;
-    const target = NISHTHA_LOOP[1];
-    const run = sim(facts.nDevice, [NISHTHA_START, target], { interval: '700ms', scale: 2 });
+    const turn = NISHTHA_LOOP[1];
+    const tSim = await pageNow(harsh);
+    const run = sim(facts.nDevice, [NISHTHA_START, turn], { interval: '700ms', scale: 2 });
     await run.done;
-    const seen = await waitFor('Nishtha’s post-restart fix on Harsh’s map', async () => {
+    const seen = await waitFor('Nishtha’s post-restart fixes on Harsh’s map', async () => {
       const m = await harsh.marker(nMarker);
-      return m && haversineM(m, target) < 10 ? m : null;
+      return m && haversineM(m, NISHTHA_START) < 10 ? m : null;
     }, { timeout: 20000 });
+    const frames = since((await harsh.record()).frames, tSim).filter((f) => f.type === 'position' && f.deviceId === facts.nDevice.id);
+    check(frames.some((f) => haversineM(f, turn) < 10), `Harsh's app never got the turning-point fix after the restart (${frames.length} frames)`);
     const shots = [await harsh.shot(OUT, '05-after-restart'), await nishtha.shot(OUT, '05-after-restart')];
-    return { downMs: r.readyAt - r.stoppedAt, reconnectMs, kept: { people: after.people.map((x) => x.length), notes: after.notes.length, devices: after.devices.length }, markerErrM: Math.round(haversineM(seen, target) * 10) / 10, shots };
+    return { downMs: r.readyAt - r.stoppedAt, reconnectMs, kept: { people: after.people.map((x) => x.length), notes: after.notes.length, devices: after.devices.length }, framesAfter: frames.length, markerErrM: Math.round(haversineM(seen, NISHTHA_START) * 10) / 10, shots };
   }
 
   await step('5', 'Harsh moves and resizes the circle, reshapes the polygon; both persist', async () => {
