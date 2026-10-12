@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 
@@ -32,6 +33,12 @@ type provisioner struct {
 	// known caches the user ids already provisioned, so the steady state costs a
 	// map lookup rather than a database round trip per request.
 	known sync.Map
+
+	// creating serialises the slow path. A freshly signed-in app fires several
+	// requests at once, and on Postgres two concurrent first inserts of the same
+	// person collide on the e-mail index (ON CONFLICT only covers the id), so one
+	// of them failed with a 409 for no reason the person could see.
+	creating sync.Mutex
 }
 
 func newProvisioner(s *Server) *provisioner { return &provisioner{server: s} }
@@ -57,6 +64,11 @@ func (p *provisioner) ensure(ctx context.Context, principal auth.Principal, clai
 		return nil
 	}
 
+	p.creating.Lock()
+	defer p.creating.Unlock()
+	if _, seen := p.known.Load(principal.UserID); seen {
+		return nil // provisioned by the request we waited behind
+	}
 	if _, err := p.server.deps.Store.GetUser(ctx, principal.UserID); err == nil {
 		p.known.Store(principal.UserID, struct{}{})
 		return nil
@@ -72,6 +84,14 @@ func (p *provisioner) ensure(ctx context.Context, principal auth.Principal, clai
 		TZ: p.server.deps.Config.DefaultTimezone(),
 	}
 	if err := p.server.deps.Store.UpsertUser(ctx, user); err != nil {
+		// Another Lura process sharing the database may have created the row in
+		// the meantime; if it is there now, this person is provisioned.
+		if errors.Is(err, domain.ErrConflict) {
+			if _, getErr := p.server.deps.Store.GetUser(ctx, principal.UserID); getErr == nil {
+				p.known.Store(principal.UserID, struct{}{})
+				return nil
+			}
+		}
 		return err
 	}
 	p.known.Store(principal.UserID, struct{}{})
