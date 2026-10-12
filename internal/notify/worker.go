@@ -589,7 +589,7 @@ func verbFor(t domain.Trigger) string {
 	case domain.TriggerDwell:
 		return "Still at"
 	case domain.TriggerPassby:
-		return "Passing"
+		return "Passed by"
 	}
 	return string(t)
 }

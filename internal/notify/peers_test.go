@@ -140,7 +140,7 @@ func TestPeerNoteDeliveredToBothRecipients(t *testing.T) {
 	if toHarsh.FromUserID != "" || toHarsh.FromName != "" {
 		t.Errorf("Harsh's own note carries from=%q/%q", toHarsh.FromUserID, toHarsh.FromName)
 	}
-	if toNishtha.Title != "Passing Grocery" || toNishtha.Body != "buy milk" {
+	if toNishtha.Title != "Passed by Grocery" || toNishtha.Body != "buy milk" {
 		t.Errorf("Nishtha's reminder = %q / %q, want her own point of view", toNishtha.Title, toNishtha.Body)
 	}
 	if toNishtha.FromUserID != harsh || toNishtha.FromName != "Harsh" {
