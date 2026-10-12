@@ -8,11 +8,12 @@ import { color, font, layout, palette, radius, shadow, size, space } from '@/the
 import { useLayoutMode } from '@/theme/useLayout';
 import { selectUnread, useStore } from '@/state/store';
 
-import { groupByDay, type NotificationItem } from './model';
+import { filterItems, groupByDay, type NotificationItem } from './model';
 import { installAudioUnlock, playChime } from './sound';
 import {
   NotificationGlyph,
   NotificationMeta,
+  ReminderStatusLine,
   describePermission,
   useDesktopPermission,
   useOpenNotification,
@@ -70,10 +71,13 @@ function NotificationPanel({ visible, onClose }: { visible: boolean; onClose: ()
   const clear = useStore((s) => s.clearNotifications);
   const openItem = useOpenNotification();
   const desktop = useDesktopPermission();
+  const [filter, setFilter] = useState<'all' | 'pending'>('all');
+  const pendingCount = items.reduce((n, i) => (i.status === 'pending' ? n + 1 : n), 0);
+  const shownItems = filterItems(items, filter);
 
   // Regrouped on every render (at most a hundred entries), so "today" is still
   // right when the panel is reopened after midnight.
-  const groups = groupByDay(items);
+  const groups = groupByDay(shownItems);
   const show = (item: NotificationItem) => {
     openItem(item);
     onClose();
@@ -116,6 +120,25 @@ function NotificationPanel({ visible, onClose }: { visible: boolean; onClose: ()
           </Pressable>
         </View>
 
+        <View style={styles.filterRow} accessibilityRole="tablist">
+          {(['all', 'pending'] as const).map((key) => {
+            const active = filter === key;
+            return (
+              <Pressable
+                key={key}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: active }}
+                onPress={() => setFilter(key)}
+                style={[styles.filterChip, active && styles.filterChipActive]}
+              >
+                <Txt variant="small" color={active ? palette.accentInk : color.textMuted} style={styles.link}>
+                  {key === 'all' ? 'All' : `Pending${pendingCount > 0 ? ` · ${pendingCount}` : ''}`}
+                </Txt>
+              </Pressable>
+            );
+          })}
+        </View>
+
         <View style={styles.toolbar}>
           <Pressable
             accessibilityRole="button"
@@ -154,6 +177,8 @@ function NotificationPanel({ visible, onClose }: { visible: boolean; onClose: ()
               title="Nothing yet"
               body="Arrivals, departures and reminders appear here as they happen — yours, and those of people you watch."
             />
+          ) : shownItems.length === 0 ? (
+            <EmptyState title="Nothing pending" body="Every reminder has been acknowledged." />
           ) : (
             <>
               <Group title="TODAY" items={groups.today} onOpen={show} />
@@ -188,33 +213,57 @@ function Group({
         {title}
       </Mono>
       {items.map((item) => (
-        <Pressable
-          key={item.id}
-          accessibilityRole="button"
-          accessibilityLabel={`${item.title}${item.read ? '' : ', unread'}. Show on the map.`}
-          onPress={() => onOpen(item)}
-          style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-            styles.row,
-            !item.read && styles.rowUnread,
-            (pressed || hovered) && styles.rowHover,
-          ]}
-        >
-          <NotificationGlyph item={item} size={32} />
-          <View style={styles.flex}>
-            <Txt variant="bodySemi" color={item.read ? color.textBody : color.textStrong} numberOfLines={2}>
-              {item.title}
-            </Txt>
-            {item.body ? (
-              <Txt variant="tiny" color={color.textMuted} numberOfLines={2} style={styles.rowBody}>
-                {item.body}
+        <View key={item.id} style={styles.rowWrap}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${item.title}${item.read ? '' : ', unread'}${
+              item.status === 'pending' ? ', waiting for acknowledgement' : ''
+            }. Show on the map.`}
+            onPress={() => onOpen(item)}
+            style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+              styles.row,
+              !item.read && styles.rowUnread,
+              (pressed || hovered) && styles.rowHover,
+            ]}
+          >
+            <NotificationGlyph item={item} size={32} />
+            <View style={styles.flex}>
+              <Txt variant="bodySemi" color={item.read ? color.textBody : color.textStrong} numberOfLines={2}>
+                {item.title}
               </Txt>
-            ) : null}
-            <NotificationMeta item={item} />
-          </View>
-          {!item.read ? <View style={styles.unreadDot} /> : null}
-        </Pressable>
+              {item.body ? (
+                <Txt variant="tiny" color={color.textMuted} numberOfLines={2} style={styles.rowBody}>
+                  {item.body}
+                </Txt>
+              ) : null}
+              <NotificationMeta item={item} />
+              <ReminderStatusLine item={item} />
+            </View>
+            {!item.read ? <View style={styles.unreadDot} /> : null}
+          </Pressable>
+          {item.status === 'pending' && item.reminderId ? (
+            <AckButton reminderId={item.reminderId} title={item.title} />
+          ) : null}
+        </View>
       ))}
     </View>
+  );
+}
+
+function AckButton({ reminderId, title }: { reminderId: string; title: string }) {
+  const acknowledge = useStore((s) => s.acknowledgeReminder);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Acknowledge ${title}`}
+      onPress={() => void acknowledge(reminderId)}
+      style={({ pressed }) => [styles.ack, pressed && styles.pressed]}
+    >
+      <Icon name="check" size={13} color={palette.accentInk} strokeWidth={2.2} />
+      <Txt variant="small" color={palette.accentInk} style={styles.link}>
+        Acknowledge
+      </Txt>
+    </Pressable>
   );
 }
 
@@ -293,6 +342,23 @@ const styles = StyleSheet.create({
     borderBottomColor: color.hairline,
   },
   link: { fontFamily: font.sansMedium },
+  filterRow: { flexDirection: 'row', gap: space.sm, paddingHorizontal: space.xxl, paddingBottom: space.md },
+  filterChip: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: radius.md, backgroundColor: color.surfaceMuted },
+  filterChipActive: { backgroundColor: color.accentSoft },
+  rowWrap: { gap: 0 },
+  ack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 5,
+    marginLeft: 32 + space.lg + space.md,
+    marginTop: -4,
+    marginBottom: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.md,
+    backgroundColor: color.accentSoft,
+  },
 
   list: { flexGrow: 0 },
   listInner: { padding: space.md, paddingBottom: space.lg },

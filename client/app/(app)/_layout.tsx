@@ -3,6 +3,7 @@ import { Slot } from 'expo-router';
 import { Shell } from '@/components/shell/Shell';
 import { useLive } from '@/hooks/useLive';
 import { usePublishing } from '@/hooks/usePublishing';
+import { useReminders } from '@/hooks/useReminders';
 
 /**
  * The control-centre layout: chrome plus one live socket.
@@ -15,6 +16,9 @@ export default function AppLayout() {
   useLive();
   // This device's own location, published from whichever screen is open.
   usePublishing();
+  // Pending reminders: read on sign-in / load (and on every reconnect, from
+  // useLive), and chimed again until acknowledged.
+  useReminders();
   return (
     <Shell>
       <Slot />

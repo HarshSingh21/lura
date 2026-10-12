@@ -4,7 +4,9 @@ import { boundingRadiusM, polygonCentroid } from '@/components/map/geometry';
 import type { FenceGeometry } from '@/components/map/types';
 
 import { ApiError, request } from './client';
+import { fetchActivity } from './reminders';
 import type {
+  ActivityResponse,
   Channel,
   Device,
   HistorySummary,
@@ -40,6 +42,7 @@ export const keys = {
   events: ['events'] as const,
   history: (deviceId: string, from: string, to: string) => ['history', deviceId, from, to] as const,
   publicShare: (token: string) => ['publicShare', token] as const,
+  activity: (from: string, to: string) => ['activity', from, to] as const,
 };
 
 /** retry skips retries for client errors: a 400 will still be a 400. */
@@ -395,6 +398,21 @@ export function useHistory(params: { deviceId?: string; from?: string; to?: stri
   return useQuery<HistorySummary>({
     queryKey: keys.history(params.deviceId ?? 'all', params.from ?? '-24h', params.to ?? 'now'),
     queryFn: () => request<HistorySummary>(`/api/v1/history?${qs}`),
+    retry,
+  });
+}
+
+/**
+ * useActivity is the History screen's timeline for one window (a day in the
+ * user's zone). The live socket invalidates ['activity'] when a reminder fires
+ * or is acknowledged; the slow poll for an open "today" catches trips and
+ * stops, which the server derives from positions without a frame of their own.
+ */
+export function useActivity(params: { from: string; to: string; live?: boolean }) {
+  return useQuery<ActivityResponse>({
+    queryKey: keys.activity(params.from, params.to),
+    queryFn: () => fetchActivity({ from: params.from, to: params.to }),
+    refetchInterval: params.live ? 60_000 : false,
     retry,
   });
 }

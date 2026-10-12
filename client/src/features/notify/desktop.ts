@@ -47,18 +47,46 @@ export async function requestDesktop(): Promise<DesktopPermission> {
   }
 }
 
+export type DesktopOptions = {
+  /** Keep it on screen until the viewer acts: a pending reminder (release spec §6). */
+  requireInteraction?: boolean;
+  /** Alert again even though a notification with this tag is already showing (a repeat). */
+  renotify?: boolean;
+  /** No system sound: the viewer muted Lura. */
+  silent?: boolean;
+  /** Defaults to the entry id. */
+  tag?: string;
+};
+
+/** Notifications still on screen, by tag, so an acknowledgement elsewhere can take them down. */
+const open = new Map<string, Notification>();
+
 /** showDesktop raises a system notification when the page is hidden. Returns whether it did. */
-export function showDesktop(item: NotificationItem, onClick?: () => void): boolean {
+export function showDesktop(
+  item: Pick<NotificationItem, 'id' | 'title' | 'body' | 'fromName' | 'placeName'>,
+  onClick?: () => void,
+  opts: DesktopOptions = {},
+): boolean {
   const N = api();
   if (!N || desktopPermission() !== 'granted') return false;
   if (typeof document === 'undefined' || !document.hidden) return false;
+  const tag = opts.tag ?? item.id;
   try {
     const lines = [item.body, item.fromName ? `from ${item.fromName}` : undefined].filter(Boolean);
-    const n = new N(item.title, {
+    const options: NotificationOptions & { renotify?: boolean } = {
       body: lines.join(' · ') || item.placeName || undefined,
-      tag: item.id,
+      tag,
       icon: '/favicon.ico',
-    });
+      requireInteraction: !!opts.requireInteraction,
+      silent: !!opts.silent,
+    };
+    // `renotify` without a tag throws in Chrome; there is always a tag here.
+    if (opts.renotify) options.renotify = true;
+    const n = new N(item.title, options);
+    open.set(tag, n);
+    n.onclose = () => {
+      if (open.get(tag) === n) open.delete(tag);
+    };
     n.onclick = () => {
       try {
         window.focus();
@@ -72,5 +100,17 @@ export function showDesktop(item: NotificationItem, onClick?: () => void): boole
   } catch {
     // Chrome on Android throws for `new Notification` outside a service worker.
     return false;
+  }
+}
+
+/** closeDesktop takes down a notification this tab raised, e.g. once its reminder is acknowledged. */
+export function closeDesktop(tag: string): void {
+  const n = open.get(tag);
+  if (!n) return;
+  open.delete(tag);
+  try {
+    n.close();
+  } catch {
+    // Already gone.
   }
 }

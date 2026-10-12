@@ -32,11 +32,18 @@ export function tintFor(item: Pick<NotificationItem, 'subjectUserId' | 'trigger'
 }
 
 /** NotificationGlyph is the trigger icon in a tinted tile, with a "watch" eye for a watched person. */
-export function NotificationGlyph({ item, size: s = 34 }: { item: NotificationItem; size?: number }) {
+export function NotificationGlyph({
+  item,
+  size: s = 34,
+}: {
+  item: Pick<NotificationItem, 'kind' | 'trigger' | 'subjectUserId'>;
+  size?: number;
+}) {
   const tint = tintFor(item);
+  const glyph: IconName = item.kind === 'ack' ? 'check' : (GLYPH[item.trigger] ?? 'live');
   return (
     <View style={[styles.glyph, { width: s, height: s, borderRadius: s * 0.32, backgroundColor: withAlpha(tint, 0.14) }]}>
-      <Icon name={GLYPH[item.trigger] ?? 'live'} size={s * 0.56} color={tint} strokeWidth={1.8} />
+      <Icon name={glyph} size={s * 0.56} color={tint} strokeWidth={1.8} />
       {item.kind === 'watch' ? (
         <View style={[styles.badge, { backgroundColor: tint }]}>
           <Icon name="watch" size={10} color="#ffffff" strokeWidth={2} />
@@ -75,6 +82,26 @@ export function NotificationMeta({ item, now }: { item: NotificationItem; now?: 
   );
 }
 
+/** ReminderStatusLine says where a stored reminder stands: "Pending" or "Acknowledged at 08:52". */
+export function ReminderStatusLine({ item }: { item: Pick<NotificationItem, 'status' | 'ackedAt'> }) {
+  if (!item.status) return null;
+  const pending = item.status === 'pending';
+  return (
+    <View style={[styles.status, { backgroundColor: pending ? color.amberSoft : color.accentSofter }]}>
+      <View style={[styles.statusDot, { backgroundColor: pending ? palette.amber : palette.accent }]} />
+      <Mono size={size.monoTiny} medium color={pending ? palette.amberInk : palette.accentInk}>
+        {pending ? 'PENDING' : `ACKNOWLEDGED${item.ackedAt ? ` AT ${formatClock(item.ackedAt)}` : ''}`}
+      </Mono>
+    </View>
+  );
+}
+
+/** formatClock is a 24-hour hh:mm in the device's zone. */
+export function formatClock(at: number): string {
+  const d = new Date(at);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 /** formatWhen keeps the panel scannable: "now", "4 min", "13:05", "Mon 13:05". */
 export function formatWhen(at: number, now = Date.now()): string {
   const seconds = Math.max(0, Math.round((now - at) / 1000));
@@ -97,7 +124,7 @@ export function useOpenNotification() {
   const { data } = useOverview();
   const places = data?.places;
   return useCallback(
-    (item: NotificationItem) => {
+    (item: Pick<NotificationItem, 'id' | 'placeId' | 'subjectUserId' | 'deviceId' | 'point'>) => {
       const { markNotificationRead, requestFocus, selectPlace, selectDevice } = useStore.getState();
       markNotificationRead(item.id);
       const target = focusTarget(item);
@@ -164,4 +191,15 @@ const styles = StyleSheet.create({
   meta: { flexDirection: 'row', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginTop: 4 },
   metaPart: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   personDot: { width: 7, height: 7, borderRadius: radius.pill },
+  status: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 5,
+    marginTop: 5,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: radius.sm,
+  },
+  statusDot: { width: 6, height: 6, borderRadius: 3 },
 });
