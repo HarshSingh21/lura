@@ -126,13 +126,15 @@ export function MapView(props: MapViewProps) {
   const [mapplsCannot, setMapplsCannot] = useState<BasemapId[]>([]);
   const key = props.mapplsKey;
   const basemap = props.basemap ?? 'streets';
-  if (
-    !props.offline &&
-    props.provider === 'mappls' &&
-    key &&
-    mapplsFailedFor !== key &&
-    !mapplsCannot.includes(basemap)
-  ) {
+  const mappls =
+    !props.offline && props.provider === 'mappls' && !!key && mapplsFailedFor !== key && !mapplsCannot.includes(basemap);
+  // The credit line under the map has to name whoever is actually drawing it.
+  const onRenderer = props.onRenderer;
+  const renderer = mappls ? 'mappls' : 'maplibre';
+  useEffect(() => {
+    onRenderer?.(renderer);
+  }, [onRenderer, renderer]);
+  if (mappls && key) {
     return (
       <MapplsWebMap
         {...props}

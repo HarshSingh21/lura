@@ -4,10 +4,11 @@ import { StyleSheet, View } from 'react-native';
 import type { Point } from '@/api/types';
 import { color } from '@/theme/tokens';
 
-import { mapplsStyleFor, mapplsStyleNames } from './basemaps';
+import { mapplsStyleFor, mapplsStyleNames, onDarkGround } from './basemaps';
 import { absoluteFill } from './fill';
 import { FenceOverlay, MarkerOverlay, TrackOverlay } from './Overlays';
 import { FenceEditor } from './FenceEditor';
+import { describeFailure, isFatalMapplsError } from './mapplsErrors';
 import type { Viewport } from './projection';
 import type { BasemapId, MapViewProps } from './types';
 
@@ -32,6 +33,9 @@ import type { BasemapId, MapViewProps } from './types';
 /** How long a map may take to report `load` before it is treated as failed. */
 const LOAD_TIMEOUT_MS = 15_000;
 
+/** How many tile errors, with no idle map in between, mean Mappls cannot draw here. */
+const MAX_TILE_FAILURES = 24;
+
 /** The slice of the Mappls Map object this renderer relies on. */
 type MapplsMapObject = {
   on?: (event: string, handler: (e?: unknown) => void) => void;
@@ -41,14 +45,16 @@ type MapplsMapObject = {
   easeTo?: (options: { center?: [number, number]; zoom?: number; duration?: number; easing?: (t: number) => number }) => void;
   setCenter?: (center: { lat: number; lng: number }) => void;
   setZoom?: (zoom: number) => void;
-  setStyle?: (name: string) => void;
   getStyles?: () => unknown;
+  isStyleLoaded?: () => boolean;
   remove?: () => void;
 };
 
 type MapplsGlobal = {
   Map: new (id: string, options: Record<string, unknown>) => MapplsMapObject;
   getStyles?: () => unknown;
+  /** Switches a map to one of the key's named styles ("standard-night", …). */
+  setStyle?: (name: string, map: MapplsMapObject, callback?: () => void) => unknown;
 };
 
 declare global {
@@ -221,7 +227,13 @@ export function MapplsWebMap(
   /**
    * applyBasemap switches the Mappls style, or reports that there is none for
    * this basemap so MapLibre can take over. Streets with no matching name is the
-   * SDK's own default and needs nothing.
+   * SDK's own default and needs nothing — and neither does streets on a map
+   * that has not switched yet, because the day street style is what it opens on.
+   *
+   * A style *name* goes through the SDK's own `mappls.setStyle(name, map)`. The
+   * map object's `setStyle` is MapLibre's, which takes a style URL: handed
+   * "standard-day" it fetched /standard-day from Lura's own origin, parsed the
+   * app's index.html as a style and raised a JSON error on every basemap switch.
    */
   const applyBasemap = (map: MapplsMapObject, wanted: BasemapId) => {
     const names = styleNames.current;
@@ -232,8 +244,14 @@ export function MapplsWebMap(
       return;
     }
     if (appliedStyle.current === name) return;
+    if (appliedStyle.current === null && wanted === 'streets') {
+      appliedStyle.current = name;
+      return;
+    }
+    const setNamedStyle = window.mappls?.setStyle;
     try {
-      map.setStyle?.(name);
+      if (typeof setNamedStyle !== 'function') throw new Error('no named-style switch in this SDK build');
+      setNamedStyle.call(window.mappls, name, map);
       appliedStyle.current = name;
     } catch {
       if (wanted !== 'streets') unsupportedListener.current?.(wanted);
@@ -246,10 +264,14 @@ export function MapplsWebMap(
     let map: MapplsMapObject | null = null;
     let loadTimer: ReturnType<typeof setTimeout> | undefined;
 
-    const fail = () => {
+    // Why Mappls was given up on goes to the console as a warning: the map
+    // itself carries on under MapLibre, so the person sees nothing wrong, and an
+    // operator asking "why is this not Mappls" needs the reason somewhere.
+    const fail = (reason: unknown) => {
       if (cancelled) return;
       cancelled = true;
       mapRef.current = null;
+      console.warn(`[lura] Mappls is unavailable here, drawing with MapLibre: ${describeFailure(reason)}`);
       failListener.current();
     };
 
@@ -296,8 +318,15 @@ export function MapplsWebMap(
           }
         };
 
-        loadTimer = setTimeout(fail, LOAD_TIMEOUT_MS);
-        listen(live, 'load', () => {
+        // Ready means the style is in and the map is drawing. `load` is not a
+        // dependable signal for that: it waits for every first tile, and when
+        // Mappls' CDN answers one of them with a 412 or 408 it can never come,
+        // which used to throw a working map away after LOAD_TIMEOUT_MS. So the
+        // first of `load`, `idle` or a loaded style counts, once.
+        let ready = false;
+        const onReady = () => {
+          if (ready || cancelled) return;
+          ready = true;
           clearTimeout(loadTimer);
           syncView();
           void styleNamesOf(mappls, live).then((names) => {
@@ -305,6 +334,21 @@ export function MapplsWebMap(
             styleNames.current = names;
             applyBasemap(live, basemapRef.current);
           });
+        };
+        const styleLoaded = () => {
+          try {
+            return live.isStyleLoaded?.() === true;
+          } catch {
+            return false;
+          }
+        };
+        loadTimer = setTimeout(() => {
+          if (styleLoaded()) onReady();
+          else fail(`the map style did not load in ${LOAD_TIMEOUT_MS} ms`);
+        }, LOAD_TIMEOUT_MS);
+        listen(live, 'load', onReady);
+        listen(live, 'styledata', () => {
+          if (styleLoaded()) onReady();
         });
         listen(live, 'move', syncView);
         listen(live, 'moveend', () => {
@@ -323,10 +367,17 @@ export function MapplsWebMap(
           const lngLat = (event as { lngLat?: { lat: number; lng: number } } | undefined)?.lngLat;
           if (lngLat && pressListener.current) pressListener.current({ lat: lngLat.lat, lon: lngLat.lng });
         });
+        // Auth and style failures are fatal; a single missing tile is not. A map
+        // whose tiles keep failing without ever settling is, though — that is a
+        // blank map with a working SDK — so failures are counted between idles.
+        let tileFailures = 0;
+        listen(live, 'idle', () => {
+          tileFailures = 0;
+          onReady();
+        });
         listen(live, 'error', (event) => {
-          // Auth and style failures are fatal; a single missing tile is not.
-          const message = String((event as { error?: { message?: string } } | undefined)?.error?.message ?? '');
-          if (/auth|token|key|licen|style|40[13]/i.test(message)) fail();
+          if (isFatalMapplsError(event)) fail(event);
+          else if ((tileFailures += 1) >= MAX_TILE_FAILURES) fail(`${tileFailures} tile errors without the map settling`);
         });
       })
       .catch(fail);
@@ -394,7 +445,7 @@ export function MapplsWebMap(
       {/* Overlays sit above the map and must not swallow its gestures. */}
       <View style={styles.overlays} pointerEvents="box-none">
         <TrackOverlay tracks={tracks} view={view} dark={dark} />
-        <FenceOverlay fences={fences} view={view} dark={dark} onPress={onPressFence} />
+        <FenceOverlay fences={fences} view={view} dark={dark} darkGround={onDarkGround(basemap)} onPress={onPressFence} />
         <MarkerOverlay markers={markers} view={view} dark={dark} />
         {fenceEdit && onFenceGeometry ? (
           <FenceEditor state={fenceEdit} view={view} onGeometry={onFenceGeometry} dark={dark} />

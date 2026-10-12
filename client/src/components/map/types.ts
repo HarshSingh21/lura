@@ -99,6 +99,12 @@ export type MapViewProps = {
   provider?: MapProvider;
   /** Mappls Web SDK browser key (server.mapplsWebKey). */
   mapplsKey?: string;
+  /**
+   * Reports which renderer is drawing the basemap. It is not always `provider`:
+   * Mappls hands over to MapLibre when it fails, or for a basemap it has no
+   * style for, and the attribution has to follow.
+   */
+  onRenderer?: (renderer: MapProvider) => void;
   /** Airgap mode must not fetch a remote basemap. */
   offline?: boolean;
   interactive?: boolean;

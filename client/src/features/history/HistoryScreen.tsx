@@ -3,7 +3,7 @@ import { Linking, Platform, Pressable, ScrollView, StyleSheet, View } from 'reac
 
 import { downloadUrlFresh } from '@/api/client';
 import { useHistory, useOverview } from '@/api/hooks';
-import type { Segment } from '@/api/types';
+import type { MapProvider, Segment } from '@/api/types';
 import { attribution } from '@/components/map/basemaps';
 import { BasemapPicker } from '@/components/map/BasemapPicker';
 import { MapView } from '@/components/map/MapView';
@@ -37,6 +37,7 @@ export function HistoryScreen() {
   const [range, setRange] = useState<(typeof RANGES)[number]['key']>('-24h');
   const [deviceId, setDeviceId] = useState<string | undefined>(undefined);
   const [basemap, setBasemap] = useBasemap();
+  const [renderer, setRenderer] = useState<MapProvider>();
   const offline = overview?.user.airgap || overview?.server.airgap;
 
   const devices = overview?.devices ?? [];
@@ -170,6 +171,7 @@ export function HistoryScreen() {
           basemap={basemap}
           provider={overview?.server.mapProvider}
           mapplsKey={overview?.server.mapplsWebKey}
+          onRenderer={setRenderer}
           offline={offline}
           recenterKey={track.length}
         />
@@ -197,7 +199,7 @@ export function HistoryScreen() {
           <Mono size={size.monoTiny} color={color.textSubtle}>
             {attribution(basemap, {
               serverStyleUrl: overview?.server.mapStyleUrl,
-              provider: overview?.server.mapProvider,
+              provider: renderer ?? overview?.server.mapProvider,
               offline: !!offline,
             })}
           </Mono>
