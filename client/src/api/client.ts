@@ -111,14 +111,34 @@ export type RequestOptions = {
   timeoutMs?: number;
 };
 
-/** request performs one API call and returns the decoded JSON body. */
+/**
+ * request performs one API call and returns the decoded JSON body.
+ *
+ * A session call makes sure its token is fresh first, and retries once with a
+ * renewed token on a 401. The session's own renewal timer is not enough on its
+ * own: a browser throttles timers in a hidden or busy tab, and a timer that
+ * fires after the deadline used to leave every request 401ing until a reload.
+ */
 export async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+  const session = !opts.anonymous && !opts.bearerToken;
+  const token = session ? ((await freshSessionToken()) ?? config.token) : opts.bearerToken;
+  try {
+    return await send<T>(path, opts, token);
+  } catch (err) {
+    if (!session || !(err instanceof ApiError) || err.status !== 401) throw err;
+    const renewed = await freshSessionToken();
+    if (!renewed || renewed === token) throw err;
+    return send<T>(path, opts, renewed);
+  }
+}
+
+async function send<T>(path: string, opts: RequestOptions, token: string | undefined): Promise<T> {
   const { baseUrl } = config;
   const method = opts.method ?? 'GET';
 
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
-  if (!opts.anonymous) headers.Authorization = `Bearer ${opts.bearerToken ?? bearer()}`;
+  if (!opts.anonymous) headers.Authorization = `Bearer ${token ?? bearer()}`;
 
   // A hung request must not hang the UI: every call gets a deadline, and the
   // caller's own signal still wins.

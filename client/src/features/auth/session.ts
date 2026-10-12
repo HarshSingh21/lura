@@ -73,6 +73,24 @@ const REFRESH_MARGIN_MS = 60_000;
 const MIN_REFRESH_DELAY_MS = 5_000;
 /** A refresh that failed on the network (not on the token) is retried this often. */
 const RETRY_DELAY_MS = 30_000;
+/** A token request that has not answered in this long is treated as a network failure. */
+const REFRESH_DEADLINE_MS = 20_000;
+
+function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('The sign-in server did not answer in time.')), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
 
 /* ------------------------------------------------------------------ storage */
 
@@ -229,8 +247,12 @@ export const useSession = create<SessionState>((set, get) => ({
 
     inFlightRefresh = (async () => {
       try {
-        const discovery = await loadDiscovery();
-        const response = await refreshAsync({ clientId: keycloak.clientId, refreshToken }, discovery);
+        // Bounded: a token request that never answers would otherwise hold
+        // inFlightRefresh forever, and every later refresh would wait on it.
+        const response = await withDeadline(
+          loadDiscovery().then((discovery) => refreshAsync({ clientId: keycloak.clientId, refreshToken }, discovery)),
+          REFRESH_DEADLINE_MS,
+        );
         get().signIn(toTokens(response, get()));
         return true;
       } catch (err) {
@@ -345,6 +367,17 @@ export async function ensureFreshAccessToken(): Promise<string | undefined> {
   if (!refreshToken) return accessToken;
   await useSession.getState().refresh();
   return useSession.getState().accessToken;
+}
+
+// A tab that comes back into view renews at once if its token went stale while
+// hidden: browsers throttle a hidden tab's timers, so the renewal timer may not
+// have run on time.
+if (Platform.OS === 'web' && typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && useSession.getState().status === 'signed-in') {
+      void ensureFreshAccessToken();
+    }
+  });
 }
 
 /** Selectors, so components subscribe to the narrowest slice they need. */
