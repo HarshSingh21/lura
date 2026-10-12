@@ -199,8 +199,12 @@ async function mark() {
 async function observe(t, placeIds) {
   // Pending reminders stack: the newest card is shown, the rest fold behind it
   // ("+2 more"), so two that arrive together are one card on screen. Unfold
-  // the stack for a moment so the spy sees every card, then fold it back.
-  for (const p of [harsh, nishtha]) {
+  // the stack for a moment so the spy sees every card, then fold it back. A
+  // card first seen then is counted, but its time is the unfolding's, not
+  // its arrival's, so it is left out of the lag figures.
+  const unfoldedAt = {};
+  for (const [key, p] of [['h', harsh], ['n', nishtha]]) {
+    unfoldedAt[key] = await p.page.evaluate(() => performance.now());
     const more = p.page.getByRole('button', { name: /^Show \d+ more pending reminders$/ });
     if (await more.count()) {
       await more.first().click().catch(() => {});
@@ -223,14 +227,18 @@ async function observe(t, placeIds) {
   // to date when a reminder re-words it. A reminder waiting for an
   // acknowledgement replaces its crossing's toast with a sticky card — another
   // element naming the same crossing (its notice id): one notice, not two.
-  const dedupe = (toasts) => {
-    const seen = new Set();
-    return toasts
+  // A card still pending from before this window (seen again on unfolding)
+  // belongs to an earlier crossing.
+  const dedupe = (toasts, t0) => {
+    const seen = new Set(toasts.filter((x) => x.t < t0 && x.notice).map((x) => x.notice));
+    return after(toasts, t0)
+      .filter(about)
       .filter((x) => !x.notice || (seen.has(x.notice) ? false : (seen.add(x.notice), true)))
       .map((x) => ({ ...x, head: x.label.replace(/\. Show on the map\.$/, '') }));
   };
-  const toastsH = dedupe(after(recH.toasts, t.h).filter(about));
-  const toastsN = dedupe(after(recN.toasts, t.n).filter(about));
+  const toastsH = dedupe(recH.toasts, t.h);
+  const toastsN = dedupe(recN.toasts, t.n);
+  const arrived = (list, key) => list.filter((x) => x.t < unfoldedAt[key]);
   return {
     geo,
     geoN,
@@ -244,7 +252,7 @@ async function observe(t, placeIds) {
     chimesN: chimes(after(recN.notes, t.n)),
     // Server event time → toast on screen, per browser, split into the wire
     // (event → frame on the socket) and the page (frame → toast drawn).
-    lag: { h: lags(toastsH, [...geo, ...notifyH]), n: lags(toastsN, notifyN) },
+    lag: { h: lags(arrived(toastsH, 'h'), [...geo, ...notifyH]), n: lags(arrived(toastsN, 'n'), notifyN) },
   };
 }
 
@@ -283,8 +291,9 @@ function summary(o) {
 /** sameForBoth: one toast per crossing in each browser, and the counts agree. */
 function sameForBoth(o, expected) {
   check(o.geoN.length === 0, `Nishtha received ${o.geoN.length} geo frames for Harsh's fences`);
-  check(o.toastsH.length === expected, `Harsh saw ${o.toastsH.length} toasts, want ${expected}: ${o.toastsH.map((t) => t.head)}`);
-  check(o.toastsN.length === expected, `Nishtha saw ${o.toastsN.length} toasts, want ${expected}: ${o.toastsN.map((t) => t.head)}`);
+  const said = (list) => list.map((t) => `${t.head} [${t.notice || 'no id'}]`);
+  check(o.toastsH.length === expected, `Harsh saw ${o.toastsH.length} toasts, want ${expected}: ${said(o.toastsH)}`);
+  check(o.toastsN.length === expected, `Nishtha saw ${o.toastsN.length} toasts, want ${expected}: ${said(o.toastsN)}`);
   check(o.notifyN.length === expected, `Nishtha got ${o.notifyN.length} reminders, want ${expected}`);
   for (const side of ['h', 'n']) {
     const s = stats(o.lag[side].total);
