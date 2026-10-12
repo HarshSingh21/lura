@@ -103,6 +103,9 @@ function ToastCard({ toast, fromTop }: { toast: Toast; fromTop: boolean }) {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`${toast.title}. Show on the map.`}
+          // Names the crossing, so a toast and the reminder card that replaces
+          // it read as one notice (the e2e suite counts them by it).
+          testID={`lura-notice-${item.id}`}
           onPress={() => {
             open(item);
             onDismiss();

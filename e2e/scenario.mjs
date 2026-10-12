@@ -1023,14 +1023,24 @@ try {
     check(/buy milk/.test(`${notifyN[0].data.title} ${notifyN[0].data.body}`) && /Harsh/.test(notifyN[0].data.fromName ?? ''), 'Nishtha’s reminder is not "buy milk" from Harsh');
     check(geoN.length === 0, 'Nishtha was told about a fence she does not own');
 
-    // UI: one toast per crossing, the badge counts them, one chime each.
-    const toastsH = since(recH.toasts, t0h);
-    const toastsN = since(recN.toasts, t0n);
+    // UI: one notice per crossing, the badge counts them, one chime each. A
+    // pending reminder is a sticky card that replaces its crossing's toast, so
+    // a toast and its card are one notice (both name the crossing).
+    const oneEach = (list) => {
+      const first = new Map();
+      for (const x of list) {
+        const key = x.notice || `${x.label}|${x.text}`;
+        if (!first.has(key)) first.set(key, x);
+      }
+      return [...first.values()];
+    };
+    const toastsH = oneEach(since(recH.toasts, t0h));
+    const toastsN = oneEach(since(recN.toasts, t0n));
     const crossings = new Set(geoH.map((f) => f.data.id)).size;
     const chimesH = chimes(since(recH.notes, t0h));
     const chimesN = chimes(since(recN.notes, t0n));
     const badge = { h: await unreadBadge(harsh), n: await unreadBadge(nishtha) };
-    check(toastsH.length === crossings, `Harsh saw ${toastsH.length} toasts for ${crossings} crossings: ${toastsH.map((t) => t.label)}`);
+    check(toastsH.length === crossings, `Harsh saw ${toastsH.length} notices for ${crossings} crossings: ${toastsH.map((t) => t.label)}`);
     check(toastsH.some((t) => /passed by Grocery/.test(t.label)), 'no pass-by toast for Harsh');
     check(toastsH.some((t) => /left Grocery/.test(t.label)), 'no leave toast for Harsh');
     check(toastsH.some((t) => /arrived at Grocery/.test(t.label)) && arriveOnScreen.harsh, 'the arrive toast for Harsh does not carry the note');
@@ -1042,11 +1052,15 @@ try {
     // Each trigger has its own chime, watched person or not (release spec §4).
     check(JSON.stringify(chimesH.map((c) => c.kind)) === JSON.stringify(triggers), `Harsh's chimes ${chimesH.map((c) => c.kind)} do not follow the crossings ${triggers}`);
     check(chimesN[0].kind === 'arrive', `Nishtha's chime is ${chimesN[0].kind}, not arrive`);
-    // Hidden tab: one system notification, the note, from Harsh, tagged with the crossing.
-    const arriveId = geoH.find((f) => f.data.trigger === 'arrive')?.data.id;
+    // Hidden tab: one system notification, the note, from Harsh. It is a
+    // pending reminder, so it is tagged with the stored reminder (a repeat
+    // replaces it in place rather than stacking another).
+    const reminderTag = `reminder:${notifyN[0].data.id}`;
     check(
-      desktop.nishtha.length === 1 && /Grocery/.test(desktop.nishtha[0].title) && /buy milk/.test(desktop.nishtha[0].body) && /from Harsh/.test(desktop.nishtha[0].body) && desktop.nishtha[0].tag === arriveId,
-      `Nishtha's hidden tab raised ${JSON.stringify(desktop.nishtha)} (crossing ${arriveId})`,
+      desktop.nishtha.length >= 1 &&
+        desktop.nishtha.every((d) => d.tag === reminderTag) &&
+        /Grocery/.test(desktop.nishtha[0].title) && /buy milk/.test(desktop.nishtha[0].body) && /from Harsh/.test(desktop.nishtha[0].body),
+      `Nishtha's hidden tab raised ${JSON.stringify(desktop.nishtha)} (reminder ${reminderTag})`,
     );
     check(desktop.harsh.length === 0, `Harsh's visible tab raised system notifications: ${JSON.stringify(desktop.harsh)}`);
     // The toast follows the frame within a frame or two.

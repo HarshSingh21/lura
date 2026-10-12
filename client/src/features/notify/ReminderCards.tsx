@@ -95,6 +95,8 @@ function Card({ card }: { card: ReminderCard }) {
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${card.title}. Show on the map.`}
+        // The crossing it came from, as on the toast it replaces.
+        testID={`lura-notice-${card.eventId ?? card.id}`}
         onPress={show}
         style={({ pressed }) => [styles.main, pressed && styles.pressed]}
       >

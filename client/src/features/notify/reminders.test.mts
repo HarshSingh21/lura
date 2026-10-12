@@ -138,6 +138,17 @@ test('an ack notification for the owner is not a sticky card', () => {
   assert.equal(res.state.cards.length, 0);
 });
 
+test('a watch card does not repeat its title as its body', () => {
+  const watch = cardFrom(
+    record({ kind: 'watch', title: 'Nishtha Dev left Grocery', body: 'Nishtha Dev left Grocery', noteIds: [] }),
+    HARSH,
+    T0,
+  );
+  assert.equal(watch?.title, 'Nishtha Dev left Grocery');
+  assert.equal(watch?.body, undefined);
+  assert.equal(cardFrom(record({ title: 'Passing Grocery', body: 'buy milk' }), HARSH, T0)?.body, 'buy milk');
+});
+
 test('cards are newest first', () => {
   let s = EMPTY_REMINDERS;
   s = upsert(s, record({ id: 'a', createdAt: '2026-10-12T08:00:00Z' }), HARSH, T0).state;

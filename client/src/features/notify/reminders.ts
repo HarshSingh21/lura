@@ -100,13 +100,17 @@ export function cardFrom(r: StoredReminder, viewerId?: string, now = Date.now())
   const e = eventOf(r);
   const peer = peerOf(r, viewerId);
   const at = stamp(r.createdAt || ('ts' in r ? r.ts : undefined) || e?.ts, now);
+  const title = trimmed(r.title) ?? 'Reminder';
+  // A watch reminder repeats its title as the body for push channels, which
+  // may show only one of them; on the card it would say it twice.
+  const body = trimmed(r.body);
   return {
     id: r.id,
     eventId: r.eventId || e?.id || undefined,
     kind: r.kind === 'watch' ? 'watch' : 'note',
     trigger: r.trigger,
-    title: trimmed(r.title) ?? 'Reminder',
-    body: trimmed(r.body),
+    title,
+    body: body && body !== title ? body : undefined,
     placeId: r.placeId || e?.placeId || undefined,
     placeName: trimmed(r.placeName) ?? trimmed(e?.placeName),
     deviceId: ('deviceId' in r ? r.deviceId : undefined) || e?.deviceId || undefined,

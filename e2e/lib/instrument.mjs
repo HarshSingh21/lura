@@ -67,7 +67,11 @@ export const INSTRUMENT = `(() => {
     const key = label + '|' + (el.innerText || '');
     if (seenToasts.has(key)) return;
     seenToasts.add(key);
-    rec.toasts.push({ t, wall: Date.now(), label, text: el.innerText || '' });
+    // The crossing it is about (lura-notice-<id>): a toast and the sticky card
+    // that replaces it for a pending reminder are one notice.
+    const testId = el.getAttribute('data-testid') || '';
+    const notice = testId.startsWith('lura-notice-') ? testId.slice('lura-notice-'.length) : '';
+    rec.toasts.push({ t, wall: Date.now(), label, text: el.innerText || '', notice });
   };
   const scan = (node, t) => {
     if (node.nodeType !== 1) return;
