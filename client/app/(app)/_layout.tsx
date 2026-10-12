@@ -2,7 +2,7 @@ import { Slot } from 'expo-router';
 
 import { Shell } from '@/components/shell/Shell';
 import { useLive } from '@/hooks/useLive';
-import { usePublishing } from '@/hooks/usePublishing';
+import { usePublishing, useQuietHoursSync } from '@/hooks/usePublishing';
 
 /**
  * The control-centre layout: chrome plus one live socket.
@@ -15,6 +15,8 @@ export default function AppLayout() {
   useLive();
   // This device's own location, published from whichever screen is open.
   usePublishing();
+  // Quiet hours silence chimes on whichever screen is open.
+  useQuietHoursSync();
   return (
     <Shell>
       <Slot />

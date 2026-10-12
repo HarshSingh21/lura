@@ -12,6 +12,7 @@ import {
   markAllRead as markItemsRead,
   type NotificationItem,
 } from '@/features/notify/model';
+import { inQuietHours, type QuietHours } from '@/features/notify/quiet';
 import { loadMuted, saveMuted } from '@/features/notify/sound';
 
 /**
@@ -48,6 +49,12 @@ export type NotifyState = {
   notifications: NotificationItem[];
   /** Per-viewer: mutes chimes and vibration, never the toast itself. */
   muted: boolean;
+  /**
+   * The viewer's quiet hours (Settings). Inside them a toast still appears but
+   * makes no sound and raises no system notification — the in-app half of the
+   * server holding back push (features/notify/quiet.ts).
+   */
+  quietHours: QuietHours | null;
   /**
    * A request to look at something on the Live map, made from a toast or the
    * panel. `seq` changes on every request so asking twice for the same place
@@ -108,6 +115,7 @@ export type Store = LiveState &
   markAllNotificationsRead: () => void;
   clearNotifications: () => void;
   setMuted: (muted: boolean) => void;
+  setQuietHours: (quiet: QuietHours | null) => void;
   requestFocus: (target: { placeId?: string; deviceId?: string; point?: Point }) => void;
 
   setConnection: (next: Partial<ConnectionState>) => void;
@@ -157,6 +165,7 @@ export const useStore = create<Store>((set, get) => ({
 
   notifications: [],
   muted: loadMuted(),
+  quietHours: null,
 
   drawing: false,
   sheetOpen: false,
@@ -229,7 +238,7 @@ export const useStore = create<Store>((set, get) => ({
       };
     });
     if (res.announce) {
-      announce(res.item, { muted: get().muted, onOpen: () => get().requestFocus(focusTarget(res.item)) });
+      announce(res.item, { muted: get().muted, quiet: inQuietHours(get().quietHours), onOpen: () => get().requestFocus(focusTarget(res.item)) });
     }
     return { announced: res.announce, item: res.item };
   },
@@ -243,6 +252,11 @@ export const useStore = create<Store>((set, get) => ({
   setMuted: (muted) => {
     saveMuted(muted);
     set({ muted });
+  },
+  setQuietHours: (quietHours) => {
+    const prev = get().quietHours;
+    if (prev?.from === quietHours?.from && prev?.to === quietHours?.to && prev?.tz === quietHours?.tz) return;
+    set({ quietHours });
   },
   requestFocus: (target) => set((state) => ({ focus: { ...target, seq: (state.focus?.seq ?? 0) + 1 } })),
 

@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { create } from 'zustand';
 
 import { keys, useOverview } from '@/api/hooks';
+import { useStore } from '@/state/store';
 
 import { useTracking, type TrackingStatus } from './useTracking';
 
@@ -39,4 +40,16 @@ export function usePublishing(): void {
   useEffect(() => {
     useGpsStatus.setState(status, true);
   }, [status]);
+}
+
+/**
+ * useQuietHoursSync keeps the store's copy of the viewer's quiet hours in step
+ * with their account, so a chime knows whether it may sound (notify/quiet.ts).
+ */
+export function useQuietHoursSync(): void {
+  const { data } = useOverview();
+  const user = data?.user;
+  useEffect(() => {
+    useStore.getState().setQuietHours(user ? { from: user.quietFrom, to: user.quietTo, tz: user.tz } : null);
+  }, [user]);
 }
