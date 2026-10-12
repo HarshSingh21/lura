@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -21,13 +22,16 @@ const (
 )
 
 type placeRequest struct {
-	ID        string           `json:"id"`
-	Name      string           `json:"name"`
-	Tags      []string         `json:"tags"`
-	Center    *domain.Point    `json:"center"`
-	RadiusM   *int             `json:"radiusM"`
-	Triggers  []domain.Trigger `json:"triggers"`
-	DwellMins *int             `json:"dwellMins"`
+	ID           string             `json:"id"`
+	Name         string             `json:"name"`
+	Tags         []string           `json:"tags"`
+	Shape        *domain.PlaceShape `json:"shape"`
+	Center       *domain.Point      `json:"center"`
+	RadiusM      *int               `json:"radiusM"`
+	Polygon      *[]domain.Point    `json:"polygon"`
+	WatchUserIDs *[]string          `json:"watchUserIds"`
+	Triggers     []domain.Trigger   `json:"triggers"`
+	DwellMins    *int               `json:"dwellMins"`
 }
 
 func (s *Server) handleListPlaces(w http.ResponseWriter, r *http.Request) {
@@ -64,12 +68,26 @@ func (s *Server) handleCreatePlace(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	ctx := r.Context()
+	uid := userID(r)
 	place := domain.Place{
 		ID:       req.ID,
-		UserID:   userID(r),
+		UserID:   uid,
 		Name:     strings.TrimSpace(req.Name),
 		Tags:     domain.NormalizeTags(req.Tags),
+		Shape:    domain.ShapeCircle,
 		Triggers: req.Triggers,
+	}
+	if req.Polygon != nil {
+		place.Polygon = *req.Polygon
+		// "Clients send only polygon for a polygon": a ring with no shape is
+		// unambiguous.
+		if req.Shape == nil && len(place.Polygon) > 0 {
+			place.Shape = domain.ShapePolygon
+		}
+	}
+	if req.Shape != nil {
+		place.Shape = *req.Shape
 	}
 	if req.Center != nil {
 		place.Center = *req.Center
@@ -83,23 +101,38 @@ func (s *Server) handleCreatePlace(w http.ResponseWriter, r *http.Request) {
 	if len(place.Triggers) == 0 {
 		place.Triggers = []domain.Trigger{domain.TriggerArrive}
 	}
+	if req.WatchUserIDs != nil {
+		ids, err := s.connectedIDs(ctx, uid, *req.WatchUserIDs, false)
+		if err != nil {
+			s.writeError(w, r, err)
+			return
+		}
+		place.WatchUserIDs = ids
+	}
+	if err := finishGeometry(&place); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	if err := validatePlace(place); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
 
-	created, err := s.deps.Store.CreatePlace(r.Context(), place)
+	created, err := s.deps.Store.CreatePlace(ctx, place)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
-	s.log.InfoContext(r.Context(), "place created",
-		"place", created.ID, "name", created.Name, "radiusM", created.RadiusM, "triggers", created.Triggers)
+	s.log.InfoContext(ctx, "place created",
+		"place", created.ID, "name", created.Name, "shape", created.Shape, "radiusM", created.RadiusM,
+		"vertices", len(created.Polygon), "triggers", created.Triggers, "watching", len(created.WatchUserIDs))
 	writeJSON(w, http.StatusCreated, map[string]any{"place": created})
 }
 
 // handleUpdatePlace serves both PUT and PATCH: absent fields keep their value,
-// which makes "drag the radius handle" a one-field request.
+// which makes "drag the radius handle" a one-field request. Geometry is any
+// subset too: a new polygon moves or reshapes a ring, a new center alone moves
+// a ring rigidly, and a shape change converts between the two.
 //
 // Mutating a place bumps UpdatedAt, and that is deliberate: UpdatedAt is part of
 // the AI Brain's embedding cache key, so a rename or retag can never be answered
@@ -121,7 +154,22 @@ func (s *Server) handleUpdatePlace(w http.ResponseWriter, r *http.Request) {
 	if req.Tags != nil {
 		place.Tags = domain.NormalizeTags(req.Tags)
 	}
+	wasPolygon := place.Shape == domain.ShapePolygon
+	if req.Polygon != nil {
+		place.Polygon = *req.Polygon
+		if req.Shape == nil && len(place.Polygon) > 0 {
+			place.Shape = domain.ShapePolygon
+		}
+	}
+	if req.Shape != nil {
+		place.Shape = *req.Shape
+	}
 	if req.Center != nil {
+		// Dragging a ring by its body may send only the new centre: move every
+		// vertex by the same offset rather than drop the shape.
+		if wasPolygon && place.Shape == domain.ShapePolygon && req.Polygon == nil {
+			place.Polygon = translate(place.Polygon, req.Center.Lat-place.Center.Lat, req.Center.Lon-place.Center.Lon)
+		}
 		place.Center = *req.Center
 	}
 	if req.RadiusM != nil {
@@ -132,6 +180,18 @@ func (s *Server) handleUpdatePlace(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.DwellMins != nil {
 		place.DwellMins = *req.DwellMins
+	}
+	if req.WatchUserIDs != nil {
+		ids, err := s.connectedIDs(r.Context(), userID(r), *req.WatchUserIDs, false)
+		if err != nil {
+			s.writeError(w, r, err)
+			return
+		}
+		place.WatchUserIDs = ids
+	}
+	if err := finishGeometry(&place); err != nil {
+		s.writeError(w, r, err)
+		return
 	}
 	if err := validatePlace(place); err != nil {
 		s.writeError(w, r, err)
@@ -164,7 +224,9 @@ func validatePlace(p domain.Place) error {
 	if !geo.Valid(p.Center.Lat, p.Center.Lon) || (p.Center.Lat == 0 && p.Center.Lon == 0) {
 		return errInvalid("center must be a valid lat/lon")
 	}
-	if p.RadiusM < minRadiusM || p.RadiusM > maxRadiusM {
+	// A polygon's radius is derived (finishGeometry bounds it); only a circle's
+	// is the user's to choose.
+	if p.Shape != domain.ShapePolygon && (p.RadiusM < minRadiusM || p.RadiusM > maxRadiusM) {
 		return errInvalid("radiusM must be between 20 and 5000")
 	}
 	if len(p.Triggers) == 0 {
@@ -193,6 +255,97 @@ func validatePlace(p domain.Place) error {
 	return nil
 }
 
+// finishGeometry settles a place's shape before validation: a circle drops any
+// ring; a polygon's ring is validated (400 invalid_polygon) and its centroid and
+// bounding radius become Center and RadiusM, overriding whatever the client
+// sent, so indexing, fitting and listing see consistent numbers.
+func finishGeometry(p *domain.Place) error {
+	switch p.Shape {
+	case "", domain.ShapeCircle:
+		p.Shape = domain.ShapeCircle
+		p.Polygon = []domain.Point{}
+		return nil
+	case domain.ShapePolygon:
+	default:
+		return errInvalid("shape must be circle or polygon")
+	}
+
+	ring := make([]geo.Vertex, len(p.Polygon))
+	for i, v := range p.Polygon {
+		ring[i] = geo.Vertex(v)
+	}
+	ring = geo.OpenRing(ring)
+	if err := geo.ValidatePolygon(ring); err != nil {
+		return errCoded(codeInvalidPolygon, err.Error())
+	}
+	c := geo.Centroid(ring)
+	radius := geo.BoundingRadiusM(c, ring)
+	if radius > maxRadiusM {
+		return errCoded(codeInvalidPolygon, "polygon is too large (max 5000 m from its centre to any vertex)")
+	}
+	if radius < 1 {
+		radius = 1
+	}
+	p.Polygon = make([]domain.Point, len(ring))
+	for i, v := range ring {
+		p.Polygon[i] = domain.Point(v)
+	}
+	p.Center = domain.Point(c)
+	p.RadiusM = radius
+	return nil
+}
+
+// translate shifts every vertex by the same lat/lon offset. At geofence scale
+// a degree offset is a rigid move to well under a metre.
+func translate(ring []domain.Point, dLat, dLon float64) []domain.Point {
+	out := make([]domain.Point, len(ring))
+	for i, v := range ring {
+		out[i] = domain.Point{Lat: v.Lat + dLat, Lon: v.Lon + dLon}
+	}
+	return out
+}
+
+// connectedIDs validates a list of people against the owner's connections: each
+// must be an accepted connection (400 not_connected otherwise), or the owner
+// themselves when allowOwner is set. Blanks and duplicates are dropped and the
+// result is never nil.
+//
+// Only acceptance is checked, not the peer's sharing switch: a paused peer is
+// still connected, and the engine already refuses to evaluate them until they
+// share again. Validating the switch here would make "watch" depend on a
+// setting the owner cannot see change.
+func (s *Server) connectedIDs(ctx context.Context, owner string, ids []string, allowOwner bool) ([]string, error) {
+	out := make([]string, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if id == owner {
+			if !allowOwner {
+				return nil, errCoded(codeNotConnected, "you cannot watch yourself")
+			}
+			out = append(out, id)
+			continue
+		}
+		if err := s.requireConnected(ctx, owner, id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+func (s *Server) requireConnected(ctx context.Context, owner, peer string) error {
+	c, err := s.deps.Store.GetConnection(ctx, owner, peer)
+	if errors.Is(err, domain.ErrNotFound) || (err == nil && c.Status != domain.ConnectionAccepted) {
+		return errCoded(codeNotConnected, peer+" is not one of your connections")
+	}
+	return err
+}
+
 // ---------------------------------------------------------------- notes
 
 type noteRequest struct {
@@ -204,6 +357,39 @@ type noteRequest struct {
 	Channel     *string         `json:"channel"`
 	Done        *bool           `json:"done"`
 	AutoSuggest *bool           `json:"autoSuggest"`
+	// WatchUserID: whose movement fires the note ("" = mine).
+	WatchUserID *string `json:"watchUserId"`
+	// NotifyUserIDs: who receives it ([] = me).
+	NotifyUserIDs *[]string `json:"notifyUserIds"`
+}
+
+// applyNotePeople validates and applies the who-fires / who-hears fields of a
+// note request. Naming yourself as the watched person means "my own devices",
+// which is spelled "".
+func (s *Server) applyNotePeople(ctx context.Context, uid string, req noteRequest, note *domain.Note) error {
+	if req.WatchUserID != nil {
+		watch := strings.TrimSpace(*req.WatchUserID)
+		if watch == uid {
+			watch = ""
+		}
+		if watch != "" {
+			if err := s.requireConnected(ctx, uid, watch); err != nil {
+				return err
+			}
+		}
+		note.WatchUserID = watch
+	}
+	if req.NotifyUserIDs != nil {
+		ids, err := s.connectedIDs(ctx, uid, *req.NotifyUserIDs, true)
+		if err != nil {
+			return err
+		}
+		note.NotifyUserIDs = ids
+	}
+	if note.NotifyUserIDs == nil {
+		note.NotifyUserIDs = []string{}
+	}
+	return nil
 }
 
 func (s *Server) handleListNotes(w http.ResponseWriter, r *http.Request) {
@@ -281,6 +467,10 @@ func (s *Server) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Done != nil {
 		note.Done = *req.Done
+	}
+	if err := s.applyNotePeople(ctx, uid, req, &note); err != nil {
+		s.writeError(w, r, err)
+		return
 	}
 
 	autoSuggest := req.AutoSuggest == nil || *req.AutoSuggest
@@ -375,6 +565,10 @@ func (s *Server) handleUpdateNote(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Done != nil {
 		note.Done = *req.Done
+	}
+	if err := s.applyNotePeople(ctx, uid, req, &note); err != nil {
+		s.writeError(w, r, err)
+		return
 	}
 
 	updated, err := s.deps.Store.UpdateNote(ctx, note)
