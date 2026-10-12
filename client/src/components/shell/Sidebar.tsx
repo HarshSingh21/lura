@@ -94,7 +94,10 @@ function NavRow({
   return (
       <Pressable
         accessibilityRole="link"
-        accessibilityState={{ selected: active }}
+        // Named by where it goes: the counter beside it is a glance, and a link
+        // whose name changes every time a device or note is added cannot be found.
+        accessibilityLabel={item.label}
+        aria-selected={active}
         onPress={() => router.push(item.href)}
         style={({ pressed }) => [
           styles.navRow,
