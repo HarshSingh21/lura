@@ -1,86 +1,150 @@
 import { useMemo, useState } from 'react';
-import { Linking, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { downloadUrlFresh } from '@/api/client';
-import { useHistory, useOverview } from '@/api/hooks';
-import type { Segment } from '@/api/types';
+import { useActivity, useHistory, useOverview } from '@/api/hooks';
+import type { Place, Point } from '@/api/types';
 import { attribution } from '@/components/map/basemaps';
 import { BasemapPicker } from '@/components/map/BasemapPicker';
 import { MapView } from '@/components/map/MapView';
+import type { MapMarker, MapTrack } from '@/components/map/types';
 import { useBasemap } from '@/components/map/useBasemap';
+import { Icon } from '@/components/ui/Icon';
 import { Button, Card, EmptyState, styles as ui } from '@/components/ui/primitives';
+import { personColor } from '@/features/people/color';
 import { Mono, Txt } from '@/theme/text';
-import { color, layout, palette, radius, shadow, size, space } from '@/theme/tokens';
+import { color, font, layout, palette, radius, shadow, size, space, withAlpha } from '@/theme/tokens';
 import { useLayoutMode } from '@/theme/useLayout';
 import { fitBounds } from '@/components/map/projection';
 
+import {
+  buildTimeline,
+  dayLabel,
+  dayRange,
+  formatKm,
+  inDay,
+  validZone,
+  type ActivityFocus,
+  type ActivityRow,
+} from './activity';
+
 /**
- * History: the day as a track plus a timeline of trips and stops.
+ * History: one day of the user's life with Lura (release spec §7).
  *
- * The segmentation is the server's (HLD §5.9) — this screen renders it and gets
- * out of the way. Two product points it does make: exports are one tap because
- * data portability is a promise rather than a feature (HLD §11), and the footer
- * says where the history lives, because "private history" is only credible if the
- * UI keeps saying whose infrastructure it is on.
+ * A day picker (today by default); the map draws that day's track and stops;
+ * beside it — below it on a phone — the activity timeline: trips and stops,
+ * fence crossings (the user's own, and those of people whose crossings of the
+ * user's fences they were entitled to see), reminders and whether they were
+ * acknowledged, connection and share changes. Tapping an entry frames it on the
+ * map. Days are the user's days, in the zone on their profile.
+ *
+ * Two product points carried over from the first version: exports are one tap,
+ * because data portability is a promise rather than a feature (HLD §11), and the
+ * footer says where the history lives.
  */
 
-const RANGES = [
-  { key: '-24h', label: 'Today' },
-  { key: '-72h', label: '3 days' },
-  { key: '-168h', label: 'Week' },
-  { key: '-720h', label: '30 days' },
-] as const;
+/** How far back the picker goes; the server keeps more, but a year of arrows is enough. */
+const MAX_DAYS_BACK = 365;
 
 export function HistoryScreen() {
   const { isDesktop, width, height } = useLayoutMode();
   const { data: overview } = useOverview();
-  const [range, setRange] = useState<(typeof RANGES)[number]['key']>('-24h');
+  const [offset, setOffset] = useState(0);
   const [deviceId, setDeviceId] = useState<string | undefined>(undefined);
+  const [focus, setFocus] = useState<{ id: string; seq: number } | undefined>(undefined);
   const [basemap, setBasemap] = useBasemap();
   const offline = overview?.user.airgap || overview?.server.airgap;
+  const tz = validZone(overview?.user.tz);
+  const viewerId = overview?.user.id;
 
-  const devices = overview?.devices ?? [];
+  // The day window is recomputed when the day changes, not every render, so the
+  // query key is stable for the life of the day.
+  const range = useMemo(() => dayRange(offset, tz), [offset, tz]);
+  const label = dayLabel(offset, tz);
+
+  const devices = useMemo(() => overview?.devices ?? [], [overview?.devices]);
   const activeDevice = deviceId ?? devices[0]?.id;
-  const { data, isLoading, error } = useHistory({ deviceId: activeDevice, from: range });
+  const history = useHistory({ deviceId: activeDevice, from: range.from, to: range.to });
+  const activity = useActivity({ from: range.from, to: range.to, live: offset === 0 });
 
-  // Memoised so an empty range is the same array between renders.
-  const segments = useMemo(() => data?.segments ?? [], [data?.segments]);
-  const track = useMemo(() => data?.track ?? [], [data?.track]);
+  const segments = useMemo(() => history.data?.segments ?? [], [history.data?.segments]);
+  const track = useMemo(() => history.data?.track ?? [], [history.data?.track]);
 
-  // Open on the day rather than on a hard-coded city.
-  const view = useMemo(
-    () => fitBounds(track, isDesktop ? width - layout.historyRailWidth : width, height, 60),
-    [track, width, height, isDesktop],
+  const sections = useMemo(
+    () =>
+      buildTimeline(inDay(activity.data?.items ?? [], range), {
+        tz,
+        viewerId,
+        multipleDevices: devices.length > 1,
+      }),
+    [activity.data?.items, range, tz, viewerId, devices.length],
+  );
+  const rows = useMemo(() => sections.flatMap((s) => s.rows), [sections]);
+  const focused = focus ? rows.find((r) => r.id === focus.id) : undefined;
+  const focusGeometry = useMemo(
+    () => (focused?.focus ? resolveFocus(focused.focus, overview?.places ?? []) : undefined),
+    [focused, overview?.places],
   );
 
-  const tracks = useMemo(() => {
+  const mapWidth = isDesktop ? width - layout.sidebarWidth - layout.historyRailWidth : width;
+  const mapHeight = isDesktop ? height - layout.topBarHeight : Math.round(height * 0.4);
+  // Open on the day; after a tap, on the entry.
+  const view = useMemo(() => {
+    const points = focusGeometry?.points.length ? focusGeometry.points : track;
+    return fitBounds(points, mapWidth, mapHeight, 60);
+  }, [focusGeometry, track, mapWidth, mapHeight]);
+
+  const tracks = useMemo<MapTrack[]>(() => {
     const moves = segments
       .filter((s) => s.kind === 'move')
       .map((s) => ({ id: s.id, points: s.path, tone: 'accent' as const, width: 4 }));
     // The raw track is drawn dotted underneath, so gaps between segments are
     // visible rather than silently bridged.
-    return track.length > 1
-      ? [{ id: 'raw', points: track, tone: 'neutral' as const, dotted: true, width: 3 }, ...moves]
-      : moves;
-  }, [segments, track]);
+    const base: MapTrack[] =
+      track.length > 1 ? [{ id: 'raw', points: track, tone: 'neutral', dotted: true, width: 3 }, ...moves] : moves;
+    if (focusGeometry && focusGeometry.points.length > 1) {
+      base.push({ id: 'focus', points: focusGeometry.points, tone: 'amber', width: 6 });
+    }
+    return base;
+  }, [segments, track, focusGeometry]);
 
-  const stopMarkers = useMemo(
-    () =>
-      segments
-        .filter((s) => s.kind === 'stop' && s.path.length > 0)
-        .map((s) => ({
-          id: s.id,
-          point: s.path[Math.floor(s.path.length / 2)] ?? s.path[0]!,
-          tone: 'accent' as const,
-          small: true,
-        })),
-    [segments],
-  );
+  const markers = useMemo<MapMarker[]>(() => {
+    const stops: MapMarker[] = segments
+      .filter((s) => s.kind === 'stop' && s.path.length > 0)
+      .map((s) => ({
+        id: s.id,
+        point: s.path[Math.floor(s.path.length / 2)] ?? s.path[0]!,
+        tone: 'accent' as const,
+        small: true,
+      }));
+    if (focusGeometry?.points.length === 1 && focused) {
+      stops.push({
+        id: `focus:${focused.id}`,
+        point: focusGeometry.points[0]!,
+        label: focusGeometry.label ?? focused.time,
+        tone: 'amber',
+        color: focused.personId ? personColor(focused.personId) : undefined,
+        rippleKey: focus?.seq,
+      });
+    }
+    return stops;
+  }, [segments, focusGeometry, focused, focus?.seq]);
+
+  const select = (row: ActivityRow) => {
+    if (!row.focus) return;
+    setFocus((prev) => ({ id: row.id, seq: (prev?.seq ?? 0) + 1 }));
+  };
+  const changeDay = (next: number) => {
+    setOffset(Math.max(0, Math.min(MAX_DAYS_BACK, next)));
+    setFocus(undefined);
+  };
+
+  const loading = activity.isLoading || history.isLoading;
 
   const timeline = (
     <View style={styles.timeline}>
       <View style={styles.timelineHeader}>
-        <Txt variant="h2">History</Txt>
+        <Txt variant="h2">Activity</Txt>
         <View style={styles.exportRow}>
           <Button label="GPX" variant="ghost" small onPress={() => void exportHistory('gpx', activeDevice, range)} />
           <Button
@@ -92,21 +156,7 @@ export function HistoryScreen() {
         </View>
       </View>
 
-      <View style={styles.filters}>
-        {RANGES.map((r) => (
-          <Pressable
-            key={r.key}
-            accessibilityRole="button"
-            accessibilityState={{ selected: range === r.key }}
-            onPress={() => setRange(r.key)}
-            style={[styles.filterChip, range === r.key && styles.filterChipActive]}
-          >
-            <Txt variant="small" color={range === r.key ? palette.accentInk : color.textMuted}>
-              {r.label}
-            </Txt>
-          </Pressable>
-        ))}
-      </View>
+      <DayPicker offset={offset} label={label} onChange={changeDay} />
 
       {devices.length > 1 ? (
         <View style={styles.filters}>
@@ -115,6 +165,7 @@ export function HistoryScreen() {
               key={device.id}
               accessibilityRole="button"
               accessibilityState={{ selected: device.id === activeDevice }}
+              accessibilityLabel={`Show the track of ${device.name}`}
               onPress={() => setDeviceId(device.id)}
               style={[styles.filterChip, device.id === activeDevice && styles.filterChipActive]}
             >
@@ -126,52 +177,63 @@ export function HistoryScreen() {
         </View>
       ) : null}
 
-      <Txt variant="label" color={color.textSubtle} style={styles.timelineSubtitle}>
-        {formatDayLabel(data?.from)} · trips &amp; stops
-      </Txt>
-
-      {isLoading ? (
-        <Txt variant="small" color={color.textMuted}>
-          Reading your history…
-        </Txt>
-      ) : error ? (
+      {activity.isLoading ? (
+        <View style={styles.loading}>
+          <ActivityIndicator color={palette.accent} />
+          <Txt variant="small" color={color.textMuted}>
+            Reading your day…
+          </Txt>
+        </View>
+      ) : activity.error ? (
         <Card>
           <EmptyState
-            title="Could not load history"
-            body={error instanceof Error ? error.message : undefined}
+            title="Could not load the activity"
+            body={activity.error instanceof Error ? activity.error.message : undefined}
+            action={<Button label="Try again" variant="secondary" small onPress={() => void activity.refetch()} />}
           />
         </Card>
-      ) : segments.length === 0 ? (
+      ) : rows.length === 0 ? (
         <Card>
           <EmptyState
-            title="No trips in this window"
-            body="History is derived from position fixes. Publish a device's location, or widen the range."
+            title={offset === 0 ? 'Nothing yet today' : `Nothing on ${label}`}
+            body="Trips, stops, arrivals, reminders and changes to your connections appear here as they happen."
           />
         </Card>
       ) : (
-        <View>
-          {segments.map((segment, index) => (
-            <TimelineRow key={segment.id} segment={segment} last={index === segments.length - 1} />
-          ))}
-        </View>
+        sections.map((section) => (
+          <View key={section.key} style={styles.section}>
+            <Mono heading color={color.textFaint} style={styles.sectionTitle}>
+              {section.title}
+            </Mono>
+            {section.rows.map((row, index) => (
+              <TimelineRow
+                key={`${row.type}:${row.id}`}
+                row={row}
+                last={index === section.rows.length - 1}
+                selected={focus?.id === row.id}
+                onPress={row.focus ? () => select(row) : undefined}
+              />
+            ))}
+          </View>
+        ))
       )}
     </View>
   );
 
   return (
-    <View style={styles.root}>
-      <View style={styles.mapWrap}>
+    <View style={[styles.root, !isDesktop && styles.rootStacked]}>
+      <View style={[styles.mapWrap, !isDesktop && styles.mapWrapStacked]}>
         <MapView
           center={view?.center ?? { lat: 12.9716, lon: 77.5946 }}
           zoom={view?.zoom ?? 13}
           tracks={tracks}
-          markers={stopMarkers}
+          markers={markers}
           styleUrl={overview?.server.mapStyleUrl}
           basemap={basemap}
           provider={overview?.server.mapProvider}
           mapplsKey={overview?.server.mapplsWebKey}
           offline={offline}
-          recenterKey={track.length}
+          recenterKey={(focus?.seq ?? 0) * 1_000_000 + track.length + offset * 7}
         />
 
         {/* Airgap draws the local basemap only, so there is nothing to choose. */}
@@ -182,13 +244,20 @@ export function HistoryScreen() {
         ) : null}
 
         <View style={styles.summaryPill} pointerEvents="none">
-          <Txt variant="bodySemi">
-            {RANGES.find((r) => r.key === range)?.label ?? 'Range'} ·{' '}
+          <Txt variant="bodySemi" numberOfLines={1}>
+            {label} ·{' '}
             <Mono size={size.monoSm} color={color.textSubtle}>
-              {formatKm(data?.distanceM ?? 0)} · {data?.trips ?? 0} trips · {data?.stops ?? 0} stops
+              {formatKm(history.data?.distanceM ?? 0)} · {history.data?.trips ?? 0} trips · {history.data?.stops ?? 0}{' '}
+              stops
             </Mono>
           </Txt>
         </View>
+
+        {loading ? (
+          <View style={styles.mapLoading} pointerEvents="none">
+            <ActivityIndicator size="small" color={palette.accent} />
+          </View>
+        ) : null}
 
         <View style={styles.attribution} pointerEvents="none">
           <Mono size={size.monoTiny} color={color.textSubtle}>
@@ -204,64 +273,140 @@ export function HistoryScreen() {
         </View>
       </View>
 
-      {isDesktop ? (
-        <ScrollView style={styles.rail} contentContainerStyle={styles.railInner}>
-          {timeline}
-        </ScrollView>
-      ) : (
-        <ScrollView style={styles.stackedRail} contentContainerStyle={styles.railInner}>
-          {timeline}
-        </ScrollView>
-      )}
+      <ScrollView style={isDesktop ? styles.rail : styles.stackedRail} contentContainerStyle={styles.railInner}>
+        {timeline}
+      </ScrollView>
     </View>
   );
 }
 
-function TimelineRow({ segment, last }: { segment: Segment; last: boolean }) {
-  const stop = segment.kind === 'stop';
-  const duration = formatDuration(segment.startTs, segment.endTs);
-
+function DayPicker({ offset, label, onChange }: { offset: number; label: string; onChange: (next: number) => void }) {
+  const atToday = offset === 0;
+  const atLimit = offset >= MAX_DAYS_BACK;
   return (
-    <View style={styles.row}>
-      <View style={styles.gutter}>
-        <View style={[styles.node, stop ? styles.nodeStop : styles.nodeMove]} />
-        {!last ? <View style={styles.spine} /> : null}
+    <View style={styles.dayPicker}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Previous day"
+        accessibilityState={{ disabled: atLimit }}
+        onPress={atLimit ? undefined : () => onChange(offset + 1)}
+        style={({ pressed }) => [styles.dayArrow, pressed && styles.pressed, atLimit && styles.disabled]}
+      >
+        <View style={styles.rotateLeft}>
+          <Icon name="chevron-up" size={15} color={color.textBody} />
+        </View>
+      </Pressable>
+      <View style={styles.dayLabel} accessibilityRole="header" accessibilityLiveRegion="polite">
+        <Txt variant="bodySemi">{label}</Txt>
       </View>
-
-      <View style={[ui.flex, styles.rowBody]}>
-        {stop ? (
-          <>
-            <Txt variant="bodySemi" color={color.textMuted}>
-              Stopped at {segment.atPlace || 'an unnamed spot'}
-            </Txt>
-            <Txt variant="tiny" color={color.textFaint}>
-              {duration} · {formatRange(segment.startTs, segment.endTs)}
-            </Txt>
-          </>
-        ) : (
-          <>
-            <Txt variant="bodySemi">
-              {segment.fromPlace || 'Somewhere'} → {segment.toPlace || 'somewhere'}
-            </Txt>
-            <View style={styles.moveMeta}>
-              <Txt variant="tiny" color={palette.accentMode}>
-                {segment.mode}
-              </Txt>
-              <Txt variant="tiny" color={color.textSubtle}>
-                {duration}
-              </Txt>
-              <Txt variant="tiny" color={color.textSubtle}>
-                {formatKm(segment.distanceM)}
-              </Txt>
-            </View>
-            <Mono size={size.monoTiny} color={color.textFaint}>
-              {formatRange(segment.startTs, segment.endTs)}
-            </Mono>
-          </>
-        )}
-      </View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Next day"
+        accessibilityState={{ disabled: atToday }}
+        onPress={atToday ? undefined : () => onChange(offset - 1)}
+        style={({ pressed }) => [styles.dayArrow, pressed && styles.pressed, atToday && styles.disabled]}
+      >
+        <View style={styles.rotateRight}>
+          <Icon name="chevron-up" size={15} color={color.textBody} />
+        </View>
+      </Pressable>
+      {!atToday ? (
+        <Pressable accessibilityRole="button" onPress={() => onChange(0)} hitSlop={6} style={styles.todayLink}>
+          <Txt variant="small" color={palette.accentDark} style={styles.link}>
+            Today
+          </Txt>
+        </Pressable>
+      ) : null}
     </View>
   );
+}
+
+const ICON_TINT: Partial<Record<ActivityRow['icon'], string>> = {
+  passby: palette.amberDark,
+  bell: palette.amberDark,
+  sharing: palette.amberDark,
+};
+
+function TimelineRow({
+  row,
+  last,
+  selected,
+  onPress,
+}: {
+  row: ActivityRow;
+  last: boolean;
+  selected: boolean;
+  onPress?: () => void;
+}) {
+  const tint = row.personId ? personColor(row.personId) : (ICON_TINT[row.icon] ?? palette.accent);
+  const pending = row.status === 'pending';
+
+  const body = (
+    <>
+      <View style={styles.gutter}>
+        <View style={[styles.node, { backgroundColor: withAlpha(tint, 0.14) }]}>
+          <Icon name={row.icon} size={13} color={tint} strokeWidth={1.9} />
+        </View>
+        {!last ? <View style={styles.spine} /> : null}
+      </View>
+      <View style={[ui.flex, styles.rowBody]}>
+        <View style={styles.rowTop}>
+          <Mono size={size.monoSm} color={color.textSubtle} style={styles.rowTime}>
+            {row.time}
+          </Mono>
+          <Txt variant="bodySemi" style={ui.flex} numberOfLines={3}>
+            {row.title}
+          </Txt>
+        </View>
+        {row.detail || pending ? (
+          <View style={styles.rowDetail}>
+            {pending ? (
+              <View style={styles.pendingChip}>
+                <Mono size={size.monoTiny} medium color={palette.amberInk}>
+                  PENDING
+                </Mono>
+              </View>
+            ) : null}
+            {row.detail ? (
+              <Txt variant="tiny" color={color.textSubtle} style={ui.flex}>
+                {row.detail}
+              </Txt>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+    </>
+  );
+
+  if (!onPress) return <View style={styles.row}>{body}</View>;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      accessibilityLabel={`${row.time} ${row.title}${row.detail ? `, ${row.detail}` : ''}. Show on the map.`}
+      onPress={onPress}
+      style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+        styles.row,
+        (hovered || pressed) && styles.rowHover,
+        selected && styles.rowSelected,
+      ]}
+    >
+      {body}
+    </Pressable>
+  );
+}
+
+/** resolveFocus turns an entry's focus into map points: a path, a point, or a place's centre. */
+function resolveFocus(f: ActivityFocus, places: Place[]): { points: Point[]; label?: string } | undefined {
+  if (f.path && f.path.length > 0) return { points: f.path };
+  if (f.point) return { points: [f.point], label: f.placeName };
+  const place =
+    (f.placeId ? places.find((p) => p.id === f.placeId) : undefined) ??
+    (f.placeName ? places.find((p) => p.name === f.placeName) : undefined);
+  if (!place) return undefined;
+  // A polygon is framed whole; a circle by its centre.
+  if (place.shape === 'polygon' && place.polygon.length >= 3) return { points: place.polygon, label: place.name };
+  return { points: [place.center], label: place.name };
 }
 
 /**
@@ -272,8 +417,12 @@ function TimelineRow({ segment, last }: { segment: Segment; last: boolean }) {
  * allows on read-only endpoints — and the reason the token is refreshed first: a
  * download that opens in a new tab has no way to retry a 401.
  */
-async function exportHistory(format: 'gpx' | 'geojson', deviceId: string | undefined, from: string) {
-  const params = new URLSearchParams({ format, from });
+async function exportHistory(
+  format: 'gpx' | 'geojson',
+  deviceId: string | undefined,
+  range: { from: string; to: string },
+) {
+  const params = new URLSearchParams({ format, from: range.from, to: range.to });
   if (deviceId) params.set('deviceId', deviceId);
   const url = await downloadUrlFresh(`/api/v1/history/export?${params.toString()}`);
 
@@ -284,49 +433,35 @@ async function exportHistory(format: 'gpx' | 'geojson', deviceId: string | undef
   void Linking.openURL(url);
 }
 
-function formatKm(metres: number): string {
-  if (metres < 1000) return `${Math.round(metres)} m`;
-  return `${(metres / 1000).toFixed(1)} km`;
-}
-
-function formatDuration(startTs: string, endTs: string): string {
-  const ms = new Date(endTs).getTime() - new Date(startTs).getTime();
-  if (!Number.isFinite(ms) || ms <= 0) return '—';
-  const minutes = Math.round(ms / 60_000);
-  if (minutes < 60) return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ${minutes % 60}m`;
-}
-
-function formatRange(startTs: string, endTs: string): string {
-  const opts: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
-  const start = new Date(startTs);
-  const end = new Date(endTs);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return '';
-  return `${start.toLocaleTimeString(undefined, opts)} – ${end.toLocaleTimeString(undefined, opts)}`;
-}
-
-function formatDayLabel(from?: string): string {
-  if (!from) return 'Recent';
-  const date = new Date(from);
-  if (Number.isNaN(date.getTime())) return 'Recent';
-  return date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-}
-
 const styles = StyleSheet.create({
   root: { flex: 1, flexDirection: 'row', minHeight: 0 },
+  rootStacked: { flexDirection: 'column' },
   mapWrap: { flex: 1, backgroundColor: color.mapBg, overflow: 'hidden' },
+  // On a phone the map is a band at the top and the timeline scrolls below it.
+  mapWrapStacked: { flex: 0, height: '40%', minHeight: 220 },
+  pressed: { opacity: 0.85 },
+  disabled: { opacity: 0.35 },
 
   summaryPill: {
     position: 'absolute',
     top: 16,
     left: 16,
+    maxWidth: '70%',
     backgroundColor: color.surface,
     borderWidth: 1,
     borderColor: color.border,
     borderRadius: radius.lg,
     paddingVertical: 9,
     paddingHorizontal: 14,
+    ...shadow('float'),
+  },
+  mapLoading: {
+    position: 'absolute',
+    top: 64,
+    left: 16,
+    backgroundColor: color.surface,
+    borderRadius: radius.pill,
+    padding: 6,
     ...shadow('float'),
   },
   attribution: {
@@ -350,18 +485,16 @@ const styles = StyleSheet.create({
     borderLeftColor: color.hairline,
   },
   stackedRail: {
-    // On a phone the map is a band at the top and the timeline scrolls below it.
-    maxHeight: '58%',
+    flex: 1,
     backgroundColor: color.surface,
     borderTopWidth: 1,
     borderTopColor: color.hairline,
   },
-  railInner: { padding: space.xxl + 2 },
+  railInner: { padding: space.xxl, paddingBottom: space.page * 3 },
 
   timeline: { gap: space.lg },
   timelineHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   exportRow: { flexDirection: 'row', gap: space.sm },
-  timelineSubtitle: { marginTop: -4 },
   filters: { flexDirection: 'row', gap: space.sm, flexWrap: 'wrap' },
   filterChip: {
     paddingHorizontal: 11,
@@ -371,12 +504,45 @@ const styles = StyleSheet.create({
   },
   filterChipActive: { backgroundColor: color.accentSoft },
 
-  row: { flexDirection: 'row', gap: 13 },
-  gutter: { width: 14, alignItems: 'center' },
-  node: { width: 11, height: 11, borderRadius: 6, marginTop: 4 },
-  nodeMove: { backgroundColor: palette.accent },
-  nodeStop: { backgroundColor: color.surface, borderWidth: 2, borderColor: color.timelineNode },
-  spine: { flex: 1, width: 2, backgroundColor: color.hairline, marginTop: 3 },
-  rowBody: { paddingBottom: space.xl, gap: 2 },
-  moveMeta: { flexDirection: 'row', gap: 12, marginTop: 1 },
+  dayPicker: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  dayArrow: {
+    width: 34,
+    height: 34,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: color.borderInput,
+    backgroundColor: color.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rotateLeft: { transform: [{ rotate: '-90deg' }] },
+  rotateRight: { transform: [{ rotate: '90deg' }] },
+  dayLabel: {
+    flex: 1,
+    minWidth: 0,
+    height: 34,
+    borderRadius: radius.md,
+    backgroundColor: color.surfaceMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: space.md,
+  },
+  todayLink: { paddingHorizontal: 4 },
+  link: { fontFamily: font.sansMedium },
+
+  loading: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.lg },
+
+  section: { gap: 0 },
+  sectionTitle: { letterSpacing: 0.85, marginBottom: space.sm },
+  row: { flexDirection: 'row', gap: 11, borderRadius: radius.lg, paddingHorizontal: 4 },
+  rowHover: { backgroundColor: color.surfaceHover },
+  rowSelected: { backgroundColor: color.amberSofter },
+  gutter: { width: 24, alignItems: 'center', paddingTop: 2 },
+  node: { width: 24, height: 24, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  spine: { flex: 1, width: 2, backgroundColor: color.hairline, marginTop: 3, minHeight: 8 },
+  rowBody: { paddingTop: 4, paddingBottom: space.lg, gap: 3 },
+  rowTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 9 },
+  rowTime: { marginTop: 2, minWidth: 36 },
+  rowDetail: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: 45 },
+  pendingChip: { backgroundColor: color.amberSoft, borderRadius: radius.sm, paddingHorizontal: 5, paddingVertical: 1 },
 });
