@@ -47,9 +47,11 @@ const (
 	FrameGeo      = "geo"
 	FrameNotify   = "notify"
 	FrameACL      = "acl"
-	FrameError    = "error"
-	FramePong     = "pong"
-	FrameClosing  = "closing"
+	// FrameReminderAck clears an acknowledged reminder in every session.
+	FrameReminderAck = "reminder_ack"
+	FrameError       = "error"
+	FramePong        = "pong"
+	FrameClosing     = "closing"
 )
 
 // SubjectResolver returns the subjects a viewer may currently see. It is called
@@ -371,6 +373,8 @@ func frameTypeFor(subject string) string {
 		return FrameGeo
 	case strings.HasPrefix(subject, "notify."):
 		return FrameNotify
+	case strings.HasPrefix(subject, "remack."):
+		return FrameReminderAck
 	case strings.HasPrefix(subject, "acl."):
 		return FrameACL
 	default:

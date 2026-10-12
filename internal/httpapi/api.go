@@ -11,7 +11,8 @@
 //	/ws                   live updates for an authenticated user
 //	/s/{token}            public share view (no account)
 //	/s/{token}/ws         public share live stream
-//	/api/v1/…             the control plane (bearer token)
+//	/api/v1/…             the control plane (bearer token), including
+//	                      /reminders (+ /{id}/ack) and /activity
 //	/healthz /readyz /metrics /version
 //
 // The HLD lists the control-plane paths at the root (`/places`, `/notes`, …).
@@ -28,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HarshSingh21/locnot/internal/activity"
 	"github.com/HarshSingh21/locnot/internal/ai"
 	"github.com/HarshSingh21/locnot/internal/auth"
 	"github.com/HarshSingh21/locnot/internal/bus"
@@ -61,6 +63,7 @@ type Deps struct {
 	Shares   *share.Service
 	Connect  *connect.Service
 	History  *history.Service
+	Activity *activity.Service
 	AI       ai.Suggester
 	Auth     auth.Authenticator
 	Devices  auth.Authenticator
@@ -90,6 +93,9 @@ func New(d Deps) *Server {
 	}
 	if d.Started.IsZero() {
 		d.Started = time.Now()
+	}
+	if d.Activity == nil && d.Store != nil {
+		d.Activity = activity.New(d.Store, d.History)
 	}
 	s := &Server{deps: d, log: log}
 	s.provisi = newProvisioner(s)
@@ -202,6 +208,13 @@ func (s *Server) routes() {
 			r.Patch("/{id}", s.handleUpdateChannel)
 			r.Delete("/{id}", s.handleDeleteChannel)
 		})
+
+		// Reminders wait for an acknowledgement; the activity feed is history.
+		r.Route("/reminders", func(r chi.Router) {
+			r.Get("/", s.handleListReminders)
+			r.Post("/{id}/ack", s.handleAckReminder)
+		})
+		r.Get("/activity", s.handleActivity)
 
 		r.Route("/history", func(r chi.Router) {
 			r.Get("/", s.handleHistory)

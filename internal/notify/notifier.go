@@ -46,6 +46,19 @@ type Message struct {
 	// the recipient — Harsh's note delivered to Nishtha.
 	FromUserID string `json:"fromUserId,omitempty"`
 	FromName   string `json:"fromName,omitempty"`
+
+	// The stored domain.ReminderRecord this message delivers, so the live
+	// frame and GET /api/v1/reminders describe one thing. Empty only for the
+	// owner's own crossing with no note: a live toast, nothing to acknowledge.
+	ID            string                `json:"id,omitempty"`
+	Status        domain.ReminderStatus `json:"status,omitempty"`
+	OwnerID       string                `json:"ownerId,omitempty"`
+	EventID       string                `json:"eventId,omitempty"`
+	CreatedAt     *time.Time            `json:"createdAt,omitempty"`
+	SubjectUserID string                `json:"subjectUserId,omitempty"`
+	SubjectName   string                `json:"subjectName,omitempty"`
+	AckedAt       *time.Time            `json:"ackedAt,omitempty"`
+	AckedBy       string                `json:"ackedBy,omitempty"`
 }
 
 // Notifier delivers a Message over one channel.

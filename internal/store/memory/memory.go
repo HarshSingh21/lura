@@ -43,6 +43,8 @@ type Store struct {
 	conns     map[string]domain.Connection // keyed by userID|peerID
 	events    []domain.TriggerEvent
 	dwells    map[string]domain.PendingDwell
+	reminders map[string]domain.ReminderRecord
+	connEvts  []domain.ConnectionEvent
 
 	// maxPositionsPerDevice bounds memory use; oldest fixes are dropped, which
 	// is the in-memory analogue of Timescale retention.
@@ -64,6 +66,7 @@ func New() *Store {
 		channels:              map[string]domain.Channel{},
 		conns:                 map[string]domain.Connection{},
 		dwells:                map[string]domain.PendingDwell{},
+		reminders:             map[string]domain.ReminderRecord{},
 		maxPositionsPerDevice: 200_000,
 	}
 }

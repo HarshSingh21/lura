@@ -68,6 +68,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			bus.PosUserWildcard(uid),
 			bus.GeoSubject(uid),
 			bus.NotifySubject(uid),
+			bus.ReminderAckSubject(uid),
 		}, nil
 	})
 	if err != nil {
