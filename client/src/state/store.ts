@@ -91,6 +91,12 @@ export type Store = LiveState &
   connection: ConnectionState;
 
   applyPosition: (p: Position) => void;
+  /**
+   * forgetDevices drops the live positions of devices the server no longer
+   * lists (deleted, or no longer shared with me) whose last fix predates
+   * `before` — so a removed phone does not haunt the map as a "new device".
+   */
+  forgetDevices: (known: ReadonlySet<string>, before: number) => void;
   applyGeoEvent: (e: GeoEvent) => void;
   applyReminder: (r: Reminder) => void;
   setViewer: (viewerId: string) => void;
@@ -201,6 +207,18 @@ export const useStore = create<Store>((set, get) => ({
         return state;
       }
       return { positions: { ...state.positions, [p.deviceId]: p } };
+    }),
+
+  forgetDevices: (known, before) =>
+    set((state) => {
+      const gone = Object.keys(state.positions).filter((id) => {
+        const p = state.positions[id];
+        return !known.has(id) && p !== undefined && new Date(p.recvTs).getTime() < before;
+      });
+      if (gone.length === 0) return state;
+      const positions = { ...state.positions };
+      for (const id of gone) delete positions[id];
+      return { positions };
     }),
 
   // Every crossing and every reminder goes through notify(), which dedupes the

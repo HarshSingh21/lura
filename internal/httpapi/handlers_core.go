@@ -252,6 +252,10 @@ type overviewResponse struct {
 	Shares  []domain.Share        `json:"shares"`
 	Events  []domain.TriggerEvent `json:"events"`
 	Dwells  []domain.PendingDwell `json:"pendingDwells"`
+	// AsOf is when the server began reading this snapshot. A client compares
+	// live fixes against it (both on the server clock): a device the snapshot
+	// does not list, whose last fix is older than this, no longer exists.
+	AsOf time.Time `json:"asOf"`
 }
 
 // handleOverview is one round trip for the whole control center: the live map's
@@ -261,6 +265,7 @@ type overviewResponse struct {
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	uid := userID(r)
+	asOf := time.Now().UTC()
 
 	user, err := s.deps.Store.GetUser(ctx, uid)
 	if err != nil {
@@ -320,6 +325,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := overviewResponse{
+		AsOf:   asOf,
 		People: people,
 		User:   user,
 		Server: s.serverInfo(),
@@ -476,6 +482,9 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.deps.Geofence != nil {
 		s.deps.Geofence.Forget(id)
+	}
+	if s.deps.Connect != nil {
+		s.deps.Connect.DevicesChanged(r.Context(), userID(r))
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

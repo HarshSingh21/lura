@@ -221,6 +221,8 @@ export type Overview = {
   shares: Share[];
   events: TriggerEvent[];
   pendingDwells: PendingDwell[];
+  /** Server time the snapshot was read at (older servers omit it). */
+  asOf?: string;
 };
 
 export type Segment = {

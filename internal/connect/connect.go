@@ -372,6 +372,24 @@ func (s *Service) Watchers(ctx context.Context, userID string) ([]domain.Connect
 	return out, nil
 }
 
+// DevicesChanged tells everyone who can see this user — and the user's own
+// other sessions — that the user's device list changed (a phone deleted), so
+// their maps re-read it instead of keeping the removed device's last fix.
+func (s *Service) DevicesChanged(ctx context.Context, userID string) {
+	viewers := []string{userID}
+	if conns, err := s.Watchers(ctx, userID); err == nil {
+		for _, c := range conns {
+			viewers = append(viewers, c.PeerID)
+		}
+	}
+	payload := map[string]any{"action": "devices", "userId": userID}
+	for _, viewer := range viewers {
+		if err := bus.PublishJSON(s.b, bus.ACLSubject(viewer), payload); err != nil {
+			s.log.Warn("connect: publish devices change failed", "viewer", viewer, "error", err)
+		}
+	}
+}
+
 // notify tells both sides to re-evaluate their subscriptions.
 func (s *Service) notify(userID, peerID, action string) {
 	payload := map[string]any{"action": action, "peerId": peerID, "userId": userID}

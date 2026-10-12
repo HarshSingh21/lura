@@ -177,6 +177,18 @@ export function LiveScreen() {
   // (to match live frames) and their last known points (to paint before one
   // arrives). A peer with a paused switch has no devices here at all.
   const people = useMemo(() => peopleOf(data), [data]);
+  // A device the overview no longer names — deleted, or its owner stopped
+  // sharing — loses its live position once that position is older than the
+  // overview itself (both on the server's clock). A fix that arrived after it
+  // (a phone that registered a moment ago) is kept: the overview has not
+  // caught up yet.
+  useEffect(() => {
+    const asOf = data?.asOf ? new Date(data.asOf).getTime() : Number.NaN;
+    if (!data || !Number.isFinite(asOf)) return;
+    const known = new Set<string>(data.devices.map((d) => d.id));
+    for (const p of people) for (const d of p.devices ?? []) known.add(d.id);
+    useStore.getState().forgetDevices(known, asOf);
+  }, [data, people]);
   const seenBy = useMemo(() => watchers(people), [people]);
   // Connected people whose own switch is off: they paused sharing with me. The
   // map says so in words — their marker is gone, and "gone" must not read as
