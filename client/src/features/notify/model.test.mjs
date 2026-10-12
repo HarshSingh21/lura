@@ -94,6 +94,25 @@ test('one crossing is one entry even when both frames arrive, in either order', 
   }
 });
 
+test('a watch reminder re-titles nothing and does not repeat its title as the body', () => {
+  // The server words a watch reminder exactly like the client words the geo
+  // frame (internal/notify/worker.go peerVerbFor), and sends the title again as
+  // the body for push channels. On screen the toast must not change or stutter.
+  for (const trigger of ['arrive', 'leave', 'passby']) {
+    const crossing = geo({ trigger });
+    const first = ingest([], fromGeo(crossing, HARSH));
+    const title = first.item.title;
+    const second = ingest(
+      first.items,
+      fromReminder(reminder({ kind: 'watch', trigger, title, body: title, noteIds: [], event: crossing }), HARSH),
+    );
+    assert.equal(second.announce, false, trigger);
+    assert.equal(second.item.title, title, trigger);
+    assert.equal(second.item.body, undefined, trigger);
+  }
+  assert.equal(fromGeo(geo({ trigger: 'passby' }), HARSH).title, 'Nishtha passed by Grocery');
+});
+
 test('my own bare crossing is filed quietly, and its reminder is then announced', () => {
   const own = geo({ subjectUserId: HARSH, subjectName: 'Harsh' });
   const first = ingest([], fromGeo(own, HARSH));

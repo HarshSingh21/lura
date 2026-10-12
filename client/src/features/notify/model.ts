@@ -108,13 +108,17 @@ export function fromReminder(r: Reminder, viewerId?: string, now = Date.now()): 
   const e = r.event;
   const peer = e ? isPeerCrossing(e, viewerId) : false;
   const id = e?.id || `notify:${r.placeId}:${r.trigger}:${r.ts}`;
+  const title = r.title?.trim() || (e ? fromGeo(e, viewerId, now).title : 'Reminder');
+  // A watch reminder repeats its title as the body, which push channels need (a
+  // phone banner may show only one of them); on screen it would say it twice.
+  const body = r.body?.trim();
   return {
     id,
     kind: r.kind === 'watch' ? 'watch' : 'note',
     source: 'notify',
     trigger: r.trigger,
-    title: r.title?.trim() || (e ? fromGeo(e, viewerId, now).title : 'Reminder'),
-    body: r.body?.trim() || undefined,
+    title,
+    body: body && body !== title ? body : undefined,
     placeId: r.placeId || e?.placeId || undefined,
     placeName: r.placeName || e?.placeName || undefined,
     subjectUserId: peer ? e?.subjectUserId : undefined,

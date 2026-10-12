@@ -5,7 +5,7 @@ import { Icon } from '@/components/ui/Icon';
 import { Dot } from '@/components/ui/primitives';
 import { NotificationGlyph, NotificationMeta, tintFor, useOpenNotification } from '@/features/notify/ui';
 import { Txt } from '@/theme/text';
-import { color, palette, radius, shadow, space } from '@/theme/tokens';
+import { color, layout, palette, radius, shadow, space } from '@/theme/tokens';
 import { useLayoutMode } from '@/theme/useLayout';
 import { useStore, type Toast } from '@/state/store';
 
@@ -28,10 +28,14 @@ export function Toasts() {
 
   if (toasts.length === 0) return null;
 
+  // Wide: under the bell, where the notification centre opens, so a toast reads
+  // as "new in there" and never sits on the map's zoom and locate controls.
+  // Phone: above the tab bar, within reach of a thumb.
+
   return (
     <View style={[styles.stack, !isWide && styles.stackPhone]} pointerEvents="box-none">
       {toasts.map((toast) => (
-        <ToastCard key={toast.id} toast={toast} />
+        <ToastCard key={toast.id} toast={toast} fromTop={isWide} />
       ))}
     </View>
   );
@@ -39,7 +43,7 @@ export function Toasts() {
 
 const native = Platform.OS !== 'web';
 
-function ToastCard({ toast }: { toast: Toast }) {
+function ToastCard({ toast, fromTop }: { toast: Toast; fromTop: boolean }) {
   // A stable callback, so a new toast arriving does not restart this one's timer.
   const id = toast.id;
   const onDismiss = useCallback(() => useStore.getState().dismissToast(id), [id]);
@@ -55,7 +59,9 @@ function ToastCard({ toast }: { toast: Toast }) {
   const [progress] = useState(() => new Animated.Value(1));
 
   useEffect(() => {
-    Animated.spring(enter, { toValue: 1, useNativeDriver: native, friction: 8, tension: 70 }).start();
+    // A quick ease-out rather than a spring: a soft spring spends most of a
+    // second near-transparent, which is exactly when someone glances at it.
+    Animated.timing(enter, { toValue: 1, duration: 220, easing: Easing.out(Easing.cubic), useNativeDriver: native }).start();
   }, [enter]);
 
   useEffect(() => {
@@ -81,7 +87,7 @@ function ToastCard({ toast }: { toast: Toast }) {
 
   const animated = {
     opacity: enter,
-    transform: [{ translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) }],
+    transform: [{ translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [fromTop ? -14 : 16, 0] }) }],
   };
 
   if (item) {
@@ -168,14 +174,14 @@ function Progress({ progress, tint }: { progress: Animated.Value; tint: string }
 const styles = StyleSheet.create({
   stack: {
     position: 'absolute',
+    top: layout.topBarHeight + space.md,
     right: space.xxl,
-    bottom: space.xxl,
     gap: space.md,
     width: 380,
     maxWidth: '92%',
     zIndex: 60,
   },
-  stackPhone: { left: space.lg, right: space.lg, width: undefined, maxWidth: undefined, bottom: 84 },
+  stackPhone: { top: undefined, left: space.lg, right: space.lg, width: undefined, maxWidth: undefined, bottom: 84 },
   toast: {
     flexDirection: 'row',
     alignItems: 'flex-start',
