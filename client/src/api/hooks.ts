@@ -123,6 +123,8 @@ export type PlaceInput = {
   radiusM: number;
   triggers: Trigger[];
   dwellMins?: number;
+  /** Accepted connections whose crossings of this place notify me. */
+  watchUserIds?: string[];
 };
 
 export function usePlaces() {
@@ -181,6 +183,10 @@ export type NoteInput = {
   tags?: string[];
   channel?: string;
   autoSuggest?: boolean;
+  /** '' = my own movement fires it; otherwise a connected person who shares with me. */
+  watchUserId?: string;
+  /** Who receives the reminder: me and/or accepted connections. Empty means me. */
+  notifyUserIds?: string[];
 };
 
 export function useCreateNote() {

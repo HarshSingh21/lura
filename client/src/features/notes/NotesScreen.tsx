@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 
 import { useCreateNote, useDeleteNote, useOverview, useSuggest, useUpdateNote } from '@/api/hooks';
-import type { Note, Place, Suggestion } from '@/api/types';
+import type { Note, Place, Suggestion, Trigger } from '@/api/types';
+import { TRIGGERS } from '@/api/types';
 import { Icon } from '@/components/ui/Icon';
 import {
   Button,
@@ -13,8 +15,13 @@ import {
   TriggerBadge,
   styles as ui,
 } from '@/components/ui/primitives';
+import { usePeople } from '@/features/people/api';
+import { firstName, partitionPeople } from '@/features/people/peer';
+import { PersonPicker, peerOption, type PersonOption } from '@/features/people/PersonPicker';
 import { Mono, Txt } from '@/theme/text';
 import { color, font, palette, radius, size, space } from '@/theme/tokens';
+
+import { describeAudience, type NameOf } from './describe';
 
 /**
  * Notes: the AI-assisted composer plus the list.
@@ -27,6 +34,14 @@ import { color, font, palette, radius, size, space } from '@/theme/tokens';
  *     user can tell a guess from a certainty and can see that nothing left the box.
  *   - Suggesting never blocks saving. A dead AI Brain degrades to a plain note
  *     (HLD §10), and the composer says so instead of failing.
+ *
+ * Below the suggestion sits the note's routing: where and when (the suggestion,
+ * overridable), whose movement fires it, and who hears about it. Both people
+ * fields default to "me", so a plain note stays a one-line affair; picking
+ * Nishtha turns it into "when Nishtha passes Grocery, tell both of us". Only
+ * people who share their location with me can be watched — the server could not
+ * see them cross otherwise — and a note sent to someone else reaches them as a
+ * reminder, never as a note in their own list.
  */
 export function NotesScreen() {
   const { data } = useOverview();
@@ -40,8 +55,55 @@ export function NotesScreen() {
   const [suggestFailed, setSuggestFailed] = useState(false);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Manual choices override the suggestion; undefined means "use the suggestion"
+  // and '' (place only) means "no place".
+  const [placeChoice, setPlaceChoice] = useState<string | undefined>();
+  const [triggerChoice, setTriggerChoice] = useState<Trigger | undefined>();
+  const [watchUserId, setWatchUserId] = useState('');
+  const [notifyIds, setNotifyIds] = useState<string[]>([]);
+
   const places = data?.places ?? [];
   const notes = data?.notes ?? [];
+  const meId = data?.user.id ?? '';
+
+  const peopleQuery = usePeople();
+  const accepted = useMemo(() => partitionPeople(peopleQuery.data?.people ?? []).accepted, [peopleQuery.data]);
+  const nameOf = useMemo<NameOf>(() => {
+    const names = new Map(accepted.map((p) => [p.peerId, firstName(p)]));
+    return (id) => names.get(id);
+  }, [accepted]);
+
+  // "Remind me when they arrive somewhere" on People lands here with ?watch=<id>.
+  // Adopted during render so the composer never paints once with "Me" selected.
+  const params = useLocalSearchParams<{ watch?: string }>();
+  const [presetSeen, setPresetSeen] = useState<string | undefined>();
+  if (params.watch && params.watch !== presetSeen) {
+    setPresetSeen(params.watch);
+    setWatchUserId(params.watch);
+    setTriggerChoice('arrive');
+  }
+
+  // "Me" is always the first option. In the notify list its id is the owner's,
+  // so what is sent is explicit rather than relying on [] meaning me.
+  const watchOptions: PersonOption[] = [
+    { id: '', label: 'Me' },
+    ...accepted.map((p) => peerOption(p, { requireSharing: true })),
+  ];
+  const notifyOptions: PersonOption[] = [{ id: meId, label: 'Me' }, ...accepted.map((p) => peerOption(p))];
+  const notifySelected = notifyIds.length > 0 ? notifyIds : [meId];
+
+  const effectivePlaceId = placeChoice !== undefined ? placeChoice || undefined : suggestion?.placeId;
+  const effectiveTrigger: Trigger = triggerChoice ?? suggestion?.trigger ?? 'arrive';
+  const effectivePlace = places.find((p) => p.id === effectivePlaceId);
+  const preview = describeAudience({
+    ownerId: meId,
+    watchUserId,
+    notifyUserIds: notifySelected,
+    trigger: effectiveTrigger,
+    placeName: effectivePlace?.name,
+    nameOf,
+  });
+  const watchedPeer = accepted.find((p) => p.peerId === watchUserId);
 
   // Debounced suggestion: a request per keystroke would be rude to a CPU-bound
   // embedding service, and 350 ms is below the threshold where typing feels laggy.
@@ -80,14 +142,20 @@ export function NotesScreen() {
         text: trimmed,
         // Send the accepted suggestion explicitly rather than relying on the
         // server to re-derive it: what the user saw is what gets saved.
-        placeId: suggestion?.placeId,
-        trigger: suggestion?.trigger,
+        placeId: effectivePlaceId,
+        trigger: triggerChoice ?? suggestion?.trigger,
         tags: suggestion?.tags,
+        watchUserId,
+        notifyUserIds: meId ? notifySelected : [],
       },
       {
         onSuccess: () => {
           setText('');
           setSuggestion(null);
+          setPlaceChoice(undefined);
+          setTriggerChoice(undefined);
+          setWatchUserId('');
+          setNotifyIds([]);
         },
       },
     );
@@ -155,6 +223,87 @@ export function NotesScreen() {
           <Button label="Add note" small onPress={submit} loading={createNote.isPending} />
         </View>
 
+        <View style={styles.routing}>
+          <RoutingRow label="WHERE">
+            <View style={styles.choiceRow}>
+              {places.length === 0 ? (
+                <Txt variant="micro" color={color.textFaint}>
+                  No places yet — draw one on the Live map.
+                </Txt>
+              ) : (
+                places.map((place) => (
+                  <ChoicePill
+                    key={place.id}
+                    label={place.name}
+                    selected={place.id === effectivePlaceId}
+                    suggested={placeChoice === undefined && place.id === suggestion?.placeId}
+                    onPress={() => setPlaceChoice(place.id === effectivePlaceId ? '' : place.id)}
+                  />
+                ))
+              )}
+            </View>
+          </RoutingRow>
+
+          <RoutingRow label="WHEN">
+            <View style={styles.choiceRow}>
+              {TRIGGERS.map((trigger) => (
+                <ChoicePill
+                  key={trigger}
+                  label={trigger === 'passby' ? 'Pass-by' : trigger.charAt(0).toUpperCase() + trigger.slice(1)}
+                  selected={trigger === effectiveTrigger}
+                  suggested={!triggerChoice && trigger === suggestion?.trigger}
+                  onPress={() => setTriggerChoice(trigger)}
+                />
+              ))}
+            </View>
+          </RoutingRow>
+
+          <RoutingRow label="WHOSE MOVEMENT">
+            <PersonPicker
+              accessibilityLabel="Whose movement fires this note"
+              options={watchOptions}
+              selected={[watchUserId]}
+              onToggle={setWatchUserId}
+            />
+          </RoutingRow>
+
+          <RoutingRow label="NOTIFY">
+            <PersonPicker
+              multiple
+              accessibilityLabel="Who is notified"
+              options={notifyOptions}
+              selected={notifySelected}
+              onToggle={(id) => {
+                const next = notifySelected.includes(id)
+                  ? notifySelected.filter((x) => x !== id)
+                  : [...notifySelected, id];
+                // Someone has to hear about it: deselecting the last person
+                // falls back to me rather than saving a reminder for nobody.
+                setNotifyIds(next.length > 0 ? next : [meId]);
+              }}
+            />
+          </RoutingRow>
+
+          <View style={styles.preview}>
+            <Txt variant="small" color={color.textBody}>
+              {preview.when}
+              <Txt variant="small" color={color.textFaint}>
+                {'  →  '}
+              </Txt>
+              {preview.notify}
+            </Txt>
+            {watchedPeer && !watchedPeer.sharingWithMe ? (
+              <Txt variant="micro" color={palette.amberInk}>
+                {firstName(watchedPeer)} is not sharing with you, so this cannot fire until they turn sharing back on.
+              </Txt>
+            ) : !effectivePlace ? (
+              <Txt variant="micro" color={palette.amberInk}>
+                Pick a place — a note with no place never fires.
+              </Txt>
+            ) : null}
+          </View>
+        </View>
+
         {createNote.error ? (
           <Txt variant="micro" color={palette.dangerInk} style={styles.composerError}>
             {createNote.error instanceof Error ? createNote.error.message : 'Could not save the note'}
@@ -177,6 +326,7 @@ export function NotesScreen() {
                 key={note.id}
                 note={note}
                 places={places}
+                nameOf={nameOf}
                 onToggle={() => updateNote.mutate({ id: note.id, done: !note.done })}
                 onDelete={() => deleteNote.mutate(note.id)}
               />
@@ -192,6 +342,7 @@ export function NotesScreen() {
                     key={note.id}
                     note={note}
                     places={places}
+                    nameOf={nameOf}
                     onToggle={() => updateNote.mutate({ id: note.id, done: !note.done })}
                     onDelete={() => deleteNote.mutate(note.id)}
                   />
@@ -208,15 +359,26 @@ export function NotesScreen() {
 function NoteRow({
   note,
   places,
+  nameOf,
   onToggle,
   onDelete,
 }: {
   note: Note;
   places: Place[];
+  nameOf: NameOf;
   onToggle: () => void;
   onDelete: () => void;
 }) {
   const place = places.find((p) => p.id === note.placeId);
+  // An older server omits the people fields; read them defensively.
+  const audience = describeAudience({
+    ownerId: note.userId,
+    watchUserId: note.watchUserId ?? '',
+    notifyUserIds: note.notifyUserIds ?? [],
+    trigger: note.trigger,
+    placeName: place?.name,
+    nameOf,
+  });
 
   return (
     <Card style={styles.noteCard}>
@@ -235,6 +397,11 @@ function NoteRow({
           <Txt variant="micro" color={color.textSubtle}>
             {place ? place.name : 'no place bound — it will not fire'}
           </Txt>
+          {place && !audience.isDefault ? (
+            <Txt variant="micro" color={color.textBody}>
+              {audience.when} → {audience.notify}
+            </Txt>
+          ) : null}
           {note.firedAt ? (
             <Mono size={size.monoTiny} color={color.textFaint}>
               fired {new Date(note.firedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
@@ -258,6 +425,49 @@ function NoteRow({
   );
 }
 
+function RoutingRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <View style={styles.routingRow}>
+      <Mono size={size.monoTiny} color={color.textFaint} style={styles.routingLabel}>
+        {label}
+      </Mono>
+      <View style={styles.routingBody}>{children}</View>
+    </View>
+  );
+}
+
+/** ChoicePill is a single-choice pill; a dashed border marks the AI's pick until you choose. */
+function ChoicePill({
+  label,
+  selected,
+  suggested,
+  onPress,
+}: {
+  label: string;
+  selected: boolean;
+  suggested?: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityState={{ selected }}
+      accessibilityLabel={suggested ? `${label}, suggested` : label}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.choice,
+        selected && styles.choiceOn,
+        selected && suggested && styles.choiceSuggested,
+        pressed && styles.pressed,
+      ]}
+    >
+      <Txt variant="small" color={selected ? palette.accentInk : color.textBody} style={styles.choiceLabel}>
+        {label}
+      </Txt>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: color.bg },
   content: { padding: space.page, paddingHorizontal: space.pageX, gap: space.xxl, maxWidth: 780 },
@@ -275,6 +485,30 @@ const styles = StyleSheet.create({
   suggestRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, flexWrap: 'wrap' },
   suggestLabel: { letterSpacing: 0.6 },
   composerError: { marginTop: 2 },
+
+  routing: { gap: 10, borderTopWidth: 1, borderTopColor: color.hairline, paddingTop: 12 },
+  routingRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space.lg, flexWrap: 'wrap' },
+  routingLabel: { width: 112, letterSpacing: 0.6, paddingTop: 7 },
+  routingBody: { flex: 1, minWidth: 220 },
+  choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  choice: {
+    borderWidth: 1,
+    borderColor: color.borderInput,
+    borderRadius: radius.pill,
+    paddingVertical: 5,
+    paddingHorizontal: 11,
+  },
+  choiceOn: { borderColor: palette.accent, backgroundColor: color.accentSoft },
+  choiceSuggested: { borderStyle: 'dashed' },
+  choiceLabel: { fontFamily: font.sansMedium },
+  pressed: { opacity: 0.85 },
+  preview: {
+    gap: 3,
+    backgroundColor: color.surfaceMuted,
+    borderRadius: radius.md,
+    paddingVertical: 8,
+    paddingHorizontal: 11,
+  },
 
   list: { gap: 9 },
   noteCard: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14, paddingHorizontal: 16 },
