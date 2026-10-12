@@ -16,6 +16,8 @@
 //   E2E_PROVIDER  maplibre | mappls, for the report
 //   E2E_OUT       where screenshots and results.json go
 //   E2E_LURASIM   a built cmd/lurasim
+//   E2E_STORE     memory | postgres; on postgres step 5 also restarts Lura
+//   E2E_RESTART   the restart script (lib/server.mjs)
 //   E2E_HEADED=1  watch it happen
 
 import { spawn } from 'node:child_process';
@@ -24,6 +26,7 @@ import { chromium } from 'playwright-core';
 
 import { CHROME, Person, chimes, sleep, waitFor } from './lib/browser.mjs';
 import { haversineM, lerp, metresPerPixel, pointInPolygon, project } from './lib/geo.mjs';
+import { canKeepData, duringRestart, restartServer } from './lib/server.mjs';
 
 const BASE = process.env.E2E_BASE ?? 'http://localhost:8080';
 const PROVIDER = process.env.E2E_PROVIDER ?? 'maplibre';
@@ -786,6 +789,50 @@ try {
   });
 
   // ---------------------------------------------------------------- 5
+  /**
+   * survivesRestart restarts Lura (E2E_STORE=postgres, lib/server.mjs) with both
+   * browsers open, then checks that nothing was lost — the edited fences, the
+   * note, the connection, the devices — and that both apps reconnect on their
+   * own: the live banner clears and a fix Nishtha sends after the restart
+   * reaches Harsh's map.
+   */
+  async function survivesRestart({ pharmacy, grocery }) {
+    const before = {
+      people: await Promise.all(people.map(async (p) => (await p.api('GET', '/api/v1/people')).people.map((r) => [r.peerId, r.status, r.sharing]))),
+      notes: (await harsh.api('GET', '/api/v1/notes')).notes.map((n) => n.id).sort(),
+      devices: (await nishtha.api('GET', '/api/v1/devices')).devices.map((d) => d.id).sort(),
+    };
+    const r = await restartServer({ downMs: 1500 });
+    const back = Date.now();
+    // Both apps notice and reconnect without a reload.
+    for (const p of people) {
+      await waitFor(`${p.name}’s live banner to clear after the restart`, async () =>
+        (await p.page.getByTestId('lura-live-banner').count()) === 0, { timeout: 30000, every: 250 });
+    }
+    const reconnectMs = Date.now() - back;
+    const after = {
+      people: await Promise.all(people.map(async (p) => (await p.api('GET', '/api/v1/people')).people.map((x) => [x.peerId, x.status, x.sharing]))),
+      notes: (await harsh.api('GET', '/api/v1/notes')).notes.map((n) => n.id).sort(),
+      devices: (await nishtha.api('GET', '/api/v1/devices')).devices.map((d) => d.id).sort(),
+    };
+    check(JSON.stringify(after) === JSON.stringify(before), `the restart lost data: ${JSON.stringify({ before, after })}`);
+    const p2 = await placeNamed(harsh, 'Pharmacy');
+    const g2 = await placeNamed(harsh, 'Grocery');
+    check(p2 && haversineM(p2.center, pharmacy.center) < 0.01 && p2.radiusM === pharmacy.radiusM, `the circle changed across the restart: ${JSON.stringify(p2)}`);
+    check(g2 && g2.polygon.length === grocery.polygon.length && g2.polygon.every((q, i) => haversineM(q, grocery.polygon[i]) < 0.01), 'the polygon changed across the restart');
+    // A fix sent after the restart goes all the way to the other browser.
+    const nMarker = `peer_${facts.nDevice.id}`;
+    const target = NISHTHA_LOOP[1];
+    const run = sim(facts.nDevice, [NISHTHA_START, target], { interval: '700ms', scale: 2 });
+    await run.done;
+    const seen = await waitFor('Nishtha’s post-restart fix on Harsh’s map', async () => {
+      const m = await harsh.marker(nMarker);
+      return m && haversineM(m, target) < 10 ? m : null;
+    }, { timeout: 20000 });
+    const shots = [await harsh.shot(OUT, '05-after-restart'), await nishtha.shot(OUT, '05-after-restart')];
+    return { downMs: r.readyAt - r.stoppedAt, reconnectMs, kept: { people: after.people.map((x) => x.length), notes: after.notes.length, devices: after.devices.length }, markerErrM: Math.round(haversineM(seen, target) * 10) / 10, shots };
+  }
+
   await step('5', 'Harsh moves and resizes the circle, reshapes the polygon; both persist', async () => {
     const page = harsh.page;
     await harsh.stableViewport();
@@ -902,12 +949,17 @@ try {
     await page.getByRole('button', { name: 'Deselect place' }).click();
     facts.grocery = grocery;
     facts.pharmacy = pharmacy;
+    const afterReloadShot = await harsh.shot(OUT, '05-after-reload');
+    // On Postgres, the edits must outlive the server too, and both open apps
+    // must come back to life without a reload.
+    const restart = canKeepData() ? await survivesRestart({ pharmacy, grocery }) : undefined;
     return {
       circle: { movedM: Math.round(moved), centreErrM: Math.round(centerErr * 100) / 100, radiusM: pharmacy.radiusM, expectedRadiusM: Math.round(expectRadius) },
       polygon: { cornerErrM: Math.round(cornerErr * 100) / 100 },
       liveRadiusLabel: midLabel,
       reshapedCornerClick: redrawn,
-      shots: [resizingShot, editShot, reshapeShot, await harsh.shot(OUT, '05-after-reload')],
+      restart,
+      shots: [resizingShot, editShot, reshapeShot, afterReloadShot, ...(restart?.shots ?? [])],
     };
   });
 
@@ -1383,14 +1435,21 @@ try {
   // ---------------------------------------------------------------- 9
   await step('9', 'No page errors, console errors or failed requests in either browser', async () => {
     const report = {};
+    // The outage a deliberate restart causes (step 5 on Postgres) is the
+    // browser reporting a server that is not there — a refused socket or
+    // request — not the app failing; anything else in that window still counts.
+    const outage = (e) => duringRestart(e.at) && /WebSocket|ERR_CONNECTION_REFUSED|Failed to fetch|NetworkError|net::ERR_/i.test(`${e.text ?? ''} ${e.status ?? ''}`);
+    const restartNoise = {};
     for (const p of people) {
       // A 401 from Keycloak's token endpoint during sign-in is not the app's.
-      const bad = p.badResponses.filter((r) => !/\/favicon\.ico$/.test(r.url));
-      report[p.name] = { errors: p.errors, badResponses: bad };
+      const bad = p.badResponses.filter((r) => !/\/favicon\.ico$/.test(r.url) && !(duringRestart(r.at) && r.status >= 502));
+      const errors = p.errors.filter((e) => !outage(e));
+      restartNoise[p.name] = p.errors.length - errors.length;
+      report[p.name] = { errors, badResponses: bad };
     }
     const problems = people.flatMap((p) => [...report[p.name].errors, ...report[p.name].badResponses]);
     check(problems.length === 0, `problems: ${JSON.stringify(report, null, 1)}`);
-    return report;
+    return { ...report, restartNoise };
   });
 } catch {
   // The failing step has been recorded; the rest are skipped.

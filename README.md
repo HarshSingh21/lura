@@ -291,6 +291,9 @@ e2e/run.sh                                  # MapLibre on localhost, then Mappls
 E2E_PHASES=maplibre e2e/run.sh              # one phase only
 E2E_STEPS=6,8 E2E_SEED=1 e2e/run.sh         # steps 1–3 plus these; step 4's fences come from the API
 E2E_KEEP_RUNNING=1 e2e/run.sh               # leave Lura serving the build afterwards
+E2E_STORE=postgres E2E_PORT=8091 e2e/run.sh # on a throwaway PostGIS, with a restart in step 5
+e2e/edge.sh sync                            # the sync edge cases, on :8096
+e2e/edge.sh fences-ui                       # fences, notifications and every screen, on :8097
 ```
 
 | Switch | Meaning |
@@ -301,7 +304,39 @@ E2E_KEEP_RUNNING=1 e2e/run.sh               # leave Lura serving the build after
 | `E2E_SEED` | `1` creates step 4's fences and note through the API instead of drawing them |
 | `E2E_KEEP_RUNNING` | `1` leaves Lura running on `E2E_PORT` when the run ends |
 | `E2E_OUT` | where results go (default a fresh temp dir) |
-| `E2E_SKIP_BUILD` / `E2E_COOLOFF` / `E2E_HEADED` | skip the web build / the cool-off for the run (`15s`) / show the browsers |
+| `E2E_SUITE` | `scenario` (default), `edge-sync` or `edge-fences-ui` — what `e2e/edge.sh` sets |
+| `E2E_STORE` | `memory` (default) or `postgres`: a PostGIS container of the run's own (below) |
+| `E2E_KEEP_DB` | `1` leaves the PostGIS container running after the run |
+| `E2E_WEB_DIR` | where the web build goes (default `$E2E_OUT/web`, so parallel runs never share one) |
+| `E2E_SKIP_BUILD` / `E2E_COOLOFF` / `E2E_HEADED` | reuse the build in `E2E_WEB_DIR` / the cool-off for the run (`15s`) / show the browsers |
+
+**On Postgres.** `E2E_STORE=postgres` starts `lura-e2e-pg-<port>`
+(`ghcr.io/baosystems/postgis:17-3.5`, or `E2E_PG_IMAGE`) on
+`127.0.0.1:5<port>` — 58091 for port 8091 — waits until PostGIS answers over
+TCP, and gives each phase a fresh database (`lura_maplibre`, `lura_mappls`) that
+Lura migrates on boot. A container left by an earlier run on the same port is
+replaced; the container is removed at the end unless `E2E_KEEP_DB=1`. It works
+for the edge suites too (`E2E_STORE=postgres e2e/edge.sh sync`).
+
+**Restarting Lura mid-run.** Each phase writes `$E2E_OUT/<phase>/restart.sh`
+and passes its path to the suite as `E2E_RESTART`; it is also what starts the
+server the first time, so a restart is the same launch. Suites call it through
+[`e2e/lib/server.mjs`](e2e/lib/server.mjs):
+
+```js
+import { canKeepData, duringRestart, restartServer } from './lib/server.mjs';
+
+if (canKeepData()) {                      // E2E_STORE=postgres and run through run.sh
+  const { stoppedAt, readyAt } = await restartServer({ downMs: 1500 });
+  // SIGTERM (Lura says "closing" on every socket), 1.5 s down, same env and
+  // database, resolved once /readyz answers.
+}
+duringRestart(errorWallClockMs);          // was this console error the outage we caused?
+```
+
+On Postgres, step 5 restarts Lura with both browsers open and checks that the
+fences, note, connection and devices survive and that both apps reconnect on
+their own.
 
 Each phase writes `results.json`, screenshots and `server.log` to
 `$E2E_OUT/<phase>/`; nothing is written inside the repository. The exit status
@@ -316,9 +351,10 @@ to open the same build yourself, add one:
 echo '127.0.0.1 lura.com' | sudo tee -a /etc/hosts     # then http://lura.com:8080
 ```
 
-The realm accepts redirects on port 8080 only (`localhost` and `lura.com`). With
-another `E2E_PORT`, add that origin to the `lura-app` client first, or sign-in
-stops at Keycloak with "Invalid redirect uri" — see
+The imported realm accepts redirects on port 8080 only (`localhost` and
+`lura.com`). `run.sh` adds the run's port to the `lura-app` client (and to
+`lura-app-edge`, the edge-sync suite's 60 s-token twin) before it starts, so any
+`E2E_PORT` signs in; to do it by hand, see
 [`deploy/keycloak/README.md`](deploy/keycloak/README.md#changing-a-running-realm).
 
 ---

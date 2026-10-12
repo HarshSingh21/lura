@@ -8,6 +8,23 @@
 #   E2E_KEEP_RUNNING=1 e2e/run.sh   # leave Lura on :$E2E_PORT (default 8080) serving the build afterwards
 #   E2E_SUITE=edge-sync E2E_PORT=8096 e2e/run.sh        # the sync edge cases (or: e2e/edge.sh sync)
 #   E2E_SUITE=edge-fences-ui E2E_PORT=8097 e2e/run.sh   # fences, notifications, screens (e2e/edge.sh fences-ui)
+#   E2E_STORE=postgres E2E_PORT=8091 e2e/run.sh   # against a throwaway PostGIS instead of memory
+#   E2E_STORE=postgres E2E_KEEP_DB=1 e2e/run.sh   # ... and leave the database container afterwards
+#   E2E_SKIP_BUILD=1 E2E_WEB_DIR=/tmp/web e2e/run.sh   # serve a web build made earlier
+#
+# Postgres (E2E_STORE=postgres): the run starts its own PostGIS container,
+# lura-e2e-pg-$E2E_PORT (ghcr.io/baosystems/postgis:17-3.5, or $E2E_PG_IMAGE),
+# on 127.0.0.1:5$E2E_PORT (58091 for 8091), waits until PostGIS answers, and
+# gives each phase a fresh database of its own (lura_maplibre, lura_mappls) that
+# Lura migrates on boot. The container is removed at the end unless
+# E2E_KEEP_DB=1; one left over from an earlier run on the same port is replaced.
+#
+# Restarting Lura mid-run: each phase writes $E2E_OUT/<phase>/restart.sh and
+# hands its path to the suite as E2E_RESTART. Running it stops this phase's
+# Lura (gracefully, as a deploy would), optionally waits E2E_DOWN_MS, starts it
+# again with the same environment — and, with Postgres, the same database — and
+# returns once /readyz answers. Suites call it through restartServer() in
+# e2e/lib/server.mjs; E2E_STORE tells them whether data survives it.
 #
 # Requirements: Docker with the `lura-keycloak` container running (see
 # deploy/keycloak/README.md), Go, Node 20+, Google Chrome. For the Mappls phase,
@@ -31,10 +48,18 @@ case "$SUITE" in
   edge-sync | edge-fences-ui) PHASES="maplibre" ;; # edge cases, not basemaps
   *) echo "e2e: unknown E2E_SUITE=$SUITE (scenario | edge-sync | edge-fences-ui)"; exit 2 ;;
 esac
-# The web build the server serves. The edge suite builds its own, against its
-# own Keycloak client, so it never overwrites client/dist under another run.
-WEB_DIR="$ROOT/client/dist"
-[ "$SUITE" = "edge-sync" ] && WEB_DIR="${E2E_WEB_DIR:-$OUT/web}"
+STORE="${E2E_STORE:-memory}"
+case "$STORE" in
+  memory | postgres) ;;
+  *) echo "e2e: unknown E2E_STORE=$STORE (memory | postgres)"; exit 2 ;;
+esac
+# The web build the server serves: every run builds its own (the edge-sync one
+# against its own Keycloak client), so runs on different ports never overwrite
+# each other's bundle mid-run.
+WEB_DIR="${E2E_WEB_DIR:-$OUT/web}"
+PG_CONTAINER="lura-e2e-pg-$PORT"
+PG_PORT="5$PORT"
+PG_IMAGE="${E2E_PG_IMAGE:-ghcr.io/baosystems/postgis:17-3.5}"
 mkdir -p "$OUT"
 echo "e2e: output in $OUT"
 
@@ -129,15 +154,16 @@ ensure_edge_client() {
 
 # ---------------------------------------------------------------- build
 build() {
-  if [ "$SUITE" = "edge-sync" ] && { [ "${E2E_SKIP_BUILD:-0}" != "1" ] || [ ! -f "$WEB_DIR/index.html" ]; }; then
-    log "build: web client for lura-app-edge → $WEB_DIR"
+  local client_id=""
+  [ "$SUITE" = "edge-sync" ] && client_id="lura-app-edge"
+  if [ "${E2E_SKIP_BUILD:-0}" != "1" ] || [ ! -f "$WEB_DIR/index.html" ]; then
+    log "build: web client${client_id:+ for $client_id} → $WEB_DIR"
     (cd "$ROOT/client" && node scripts/copy-maplibre-worker.mjs >/dev/null &&
-      EXPO_PUBLIC_KEYCLOAK_CLIENT_ID=lura-app-edge npx expo export --platform web --output-dir "$WEB_DIR" \
+      env ${client_id:+EXPO_PUBLIC_KEYCLOAK_CLIENT_ID=$client_id} npx expo export --platform web --output-dir "$WEB_DIR" \
         >"$OUT/build-web.log" 2>&1) || { tail -40 "$OUT/build-web.log"; exit 1; }
-    grep -rlq lura-app-edge "$WEB_DIR/_expo" || { echo "e2e: the web build does not use lura-app-edge"; exit 1; }
-  elif [ "${E2E_SKIP_BUILD:-0}" != "1" ]; then
-    log "build: web client"
-    (cd "$ROOT/client" && npm run build:web >"$OUT/build-web.log" 2>&1) || { tail -40 "$OUT/build-web.log"; exit 1; }
+    if [ -n "$client_id" ]; then
+      grep -rlq "$client_id" "$WEB_DIR/_expo" || { echo "e2e: the web build does not use $client_id"; exit 1; }
+    fi
   fi
   log "build: server and simulator"
   (cd "$ROOT" && go build -o "$OUT/lura" ./cmd/lura && go build -o "$OUT/lurasim" ./cmd/lurasim)
@@ -146,8 +172,46 @@ build() {
   fi
 }
 
+# ---------------------------------------------------------------- database
+pg() { docker exec -i "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -U lura -d postgres -tAq "$@"; }
+
+# start_db starts this port's PostGIS container and waits until it serves TCP
+# with the extension available. pg_isready over the socket says yes during the
+# image's init pass, which then restarts the server; over TCP it does not.
+start_db() {
+  log "postgres: $PG_CONTAINER on 127.0.0.1:$PG_PORT ($PG_IMAGE)"
+  docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+  docker run -d --name "$PG_CONTAINER" --label lura-e2e=1 \
+    -e POSTGRES_USER=lura -e POSTGRES_PASSWORD=lura -e POSTGRES_DB=lura \
+    -p "127.0.0.1:$PG_PORT:5432" "$PG_IMAGE" >/dev/null
+  for _ in $(seq 1 120); do
+    if docker exec "$PG_CONTAINER" pg_isready -h 127.0.0.1 -U lura -d lura >/dev/null 2>&1 &&
+      [ "$(pg -c "SELECT count(*) FROM pg_available_extensions WHERE name = 'postgis'" 2>/dev/null)" = "1" ]; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "e2e: postgres did not become ready"; docker logs --tail 40 "$PG_CONTAINER"; exit 1
+}
+
+# fresh_db gives a phase an empty database of its own.
+fresh_db() {
+  local db="$1"
+  pg -c "DROP DATABASE IF EXISTS $db WITH (FORCE)" >/dev/null
+  pg -c "CREATE DATABASE $db OWNER lura" >/dev/null
+}
+
+stop_db() {
+  [ "$STORE" = "postgres" ] || return 0
+  # A server left running (E2E_KEEP_RUNNING) needs its database too.
+  if [ "${E2E_KEEP_DB:-0}" = "1" ] || [ "${E2E_KEEP_RUNNING:-0}" = "1" ]; then
+    log "postgres: keeping $PG_CONTAINER (127.0.0.1:$PG_PORT; docker rm -f $PG_CONTAINER when done)"
+  else
+    docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+  fi
+}
+
 # ---------------------------------------------------------------- server
-SERVER_PID=""
 stop_port() {
   local pids
   pids="$(lsof -nP -iTCP:$PORT -sTCP:LISTEN -t 2>/dev/null || true)"
@@ -159,11 +223,12 @@ stop_port() {
   fi
 }
 
-# server_env prints the environment for one provider. The geofence cool-off is
-# shortened so the pause/resume step can watch the same fence fire twice in one
-# run; everything else is the product default.
+# server_env prints the environment for one provider (and, with Postgres, the
+# database it uses). The geofence cool-off is shortened so the pause/resume step
+# can watch the same fence fire twice in one run; everything else is the
+# product default.
 server_env() {
-  local provider="$1"
+  local provider="$1" db="${2:-}"
   echo "LURA_HTTP_ADDR=:$PORT"
   echo "LURA_OIDC_ISSUER=$KC_URL/realms/lura"
   echo "LURA_OIDC_AUDIENCE=lura-api"
@@ -171,6 +236,10 @@ server_env() {
   echo "LURA_ALLOWED_ORIGINS=http://localhost:$PORT,http://lura.com:$PORT"
   echo "LURA_COOLOFF=${E2E_COOLOFF:-15s}"
   echo "LURA_LOG_LEVEL=debug"
+  if [ "$STORE" = "postgres" ]; then
+    echo "LURA_STORE=postgres"
+    echo "LURA_DATABASE_URL=postgres://lura:lura@127.0.0.1:$PG_PORT/$db?sslmode=disable"
+  fi
   if [ "$SUITE" = "edge-sync" ]; then
     # Short, so the stale-fix case can post a fix older than it.
     echo "LURA_FRESH_WINDOW=${E2E_FRESH_WINDOW:-2m}"
@@ -183,28 +252,69 @@ server_env() {
   fi
 }
 
+# write_restart writes the phase's restart.sh: the one place that starts Lura,
+# used for the first start too, so a restart is exactly the same launch. It
+# keeps the pid in server.pid and appends to server.log.
+write_restart() {
+  local dir="$1" provider="$2" db="$3" script="$1/restart.sh"
+  {
+    echo '#!/usr/bin/env bash'
+    echo '# Written by e2e/run.sh: (re)start this phase'"'"'s Lura with the same environment.'
+    echo 'set -euo pipefail'
+    printf 'DIR=%q PORT=%q BIN=%q\n' "$dir" "$PORT" "$OUT/lura"
+    printf 'ENVS=('; server_env "$provider" "$db" | while IFS= read -r line; do printf '%q ' "$line"; done; echo ')'
+    cat <<'SCRIPT'
+if [ -f "$DIR/server.pid" ]; then
+  pid="$(cat "$DIR/server.pid")"
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  rm -f "$DIR/server.pid"
+fi
+for _ in $(seq 1 50); do lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t >/dev/null 2>&1 || break; sleep 0.1; done
+[ "${E2E_DOWN_MS:-0}" -gt 0 ] && sleep "$(awk "BEGIN { print ${E2E_DOWN_MS} / 1000 }")"
+[ "${1:-}" = "stop" ] && exit 0
+echo "== restart: $(date -u +%H:%M:%S)" >>"$DIR/server.log"
+nohup env "${ENVS[@]}" "$BIN" >>"$DIR/server.log" 2>&1 &
+echo $! >"$DIR/server.pid"
+for _ in $(seq 1 150); do
+  if curl -fsS "http://localhost:$PORT/readyz" >/dev/null 2>&1; then exit 0; fi
+  kill -0 "$(cat "$DIR/server.pid")" 2>/dev/null || break
+  sleep 0.2
+done
+echo "e2e: server did not become ready" >&2; tail -40 "$DIR/server.log" >&2; exit 1
+SCRIPT
+  } >"$script"
+  chmod +x "$script"
+  RESTART="$script"
+}
+
+PHASE_DIR=""
 start_server() {
-  local provider="$1" logfile="$2"
+  local provider="$1" dir="$2" db=""
   stop_port
-  # shellcheck disable=SC2046
-  env $(server_env "$provider" | tr '\n' ' ') "$OUT/lura" >"$logfile" 2>&1 &
-  SERVER_PID=$!
-  for _ in $(seq 1 100); do
-    if curl -fsS "http://localhost:$PORT/readyz" >/dev/null 2>&1; then return 0; fi
-    sleep 0.2
-  done
-  echo "e2e: server did not become ready"; tail -40 "$logfile"; exit 1
+  if [ "$STORE" = "postgres" ]; then
+    db="lura_$provider"
+    fresh_db "$db"
+  fi
+  : >"$dir/server.log"
+  write_restart "$dir" "$provider" "$db"
+  PHASE_DIR="$dir"
+  "$RESTART"
 }
 
 stop_server() {
-  if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true; fi
-  SERVER_PID=""
+  if [ -n "$PHASE_DIR" ] && [ -x "$PHASE_DIR/restart.sh" ]; then "$PHASE_DIR/restart.sh" stop || true; fi
+  PHASE_DIR=""
 }
-trap stop_server EXIT
+trap 'stop_server; stop_db' EXIT
 
 # ---------------------------------------------------------------- run
 ensure_keycloak
 build
+[ "$STORE" = "postgres" ] && start_db
 
 status=0
 for phase in $PHASES; do
@@ -218,9 +328,9 @@ for phase in $PHASES; do
   fi
   log "phase $phase: $base"
   mkdir -p "$OUT/$phase"
-  start_server "$phase" "$OUT/$phase/server.log"
+  start_server "$phase" "$OUT/$phase"
   if ! E2E_BASE="$base" E2E_API="http://localhost:$PORT" E2E_PORT="$PORT" E2E_PROVIDER="$phase" E2E_OUT="$OUT/$phase" E2E_LURASIM="$OUT/lurasim" \
-    node "$ROOT/e2e/$SUITE.mjs"; then
+    E2E_STORE="$STORE" E2E_RESTART="$RESTART" node "$ROOT/e2e/$SUITE.mjs"; then
     status=1
   fi
   stop_server
@@ -232,7 +342,7 @@ if [ "${E2E_KEEP_RUNNING:-0}" = "1" ]; then
   log "leaving Lura running on :$PORT ($provider)"
   stop_port
   # shellcheck disable=SC2046
-  nohup env $(server_env "$provider" | grep -v LURA_COOLOFF | grep -v LURA_LOG_LEVEL | tr '\n' ' ') \
+  nohup env $(server_env "$provider" "lura_$provider" | grep -v LURA_COOLOFF | grep -v LURA_LOG_LEVEL | tr '\n' ' ') \
     "$OUT/lura" >"$OUT/server-final.log" 2>&1 &
   disown || true
 fi

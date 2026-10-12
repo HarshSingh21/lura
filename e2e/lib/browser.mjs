@@ -55,9 +55,11 @@ export class Person {
   }
 
   watch(page) {
-    page.on('pageerror', (err) => this.errors.push({ kind: 'pageerror', text: err.message }));
+    // Each entry carries its wall-clock time, so a suite that restarts the
+    // server (lib/server.mjs) can tell the outage it caused from the app's own faults.
+    page.on('pageerror', (err) => this.errors.push({ kind: 'pageerror', text: err.message, at: Date.now() }));
     page.on('console', (msg) => {
-      if (msg.type() === 'error') this.errors.push({ kind: 'console', text: msg.text(), url: msg.location()?.url });
+      if (msg.type() === 'error') this.errors.push({ kind: 'console', text: msg.text(), url: msg.location()?.url, at: Date.now() });
     });
     page.on('response', (res) => {
       const url = res.url();
@@ -65,7 +67,7 @@ export class Person {
       if (/\/(\d+)\/(\d+)\/(\d+)(\.\w+)?(\?|$)|tile|MapServer/i.test(url) && res.request().resourceType() !== 'document') {
         this.tiles.push({ at: Date.now(), url, status });
       }
-      if (status >= 400) this.badResponses.push({ url, status, method: res.request().method() });
+      if (status >= 400) this.badResponses.push({ url, status, method: res.request().method(), at: Date.now() });
     });
   }
 
