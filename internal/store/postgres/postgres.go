@@ -106,6 +106,13 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 // services (RDS, Cloud SQL) do not offer it, so Lura must run correctly on plain
 // PostGIS and simply gain compression and retention when Timescale is present.
 func (s *Store) Migrate(ctx context.Context) error {
+	return s.migrateThrough(ctx, "")
+}
+
+// migrateThrough applies pending migrations up to and including the named one
+// ("" = all of them). Stopping part-way is how the upgrade-path test builds a
+// database exactly as an earlier release left it.
+func (s *Store) migrateThrough(ctx context.Context, last string) error {
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire migration conn: %w", err)
@@ -160,6 +167,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 	sort.Strings(names) // 0001_, 0002_, … lexical order is intentional
 
 	for _, name := range names {
+		if last != "" && name > last {
+			break
+		}
 		if applied[name] {
 			continue
 		}
@@ -188,7 +198,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 		s.log.Info("migration applied", "version", name)
 	}
 
-	s.enableTimescale(ctx, conn.Conn())
+	if last == "" {
+		s.enableTimescale(ctx, conn.Conn())
+	}
 	return nil
 }
 
