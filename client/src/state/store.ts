@@ -372,7 +372,10 @@ export const useStore = create<Store>((set, get) => ({
     }
     set({ reminders: res.state, notifications });
     // Pending reminders read from the server also get their notification-centre
-    // entry; ingest dedupes against the frames, so a reload rings each once.
+    // entry; ingest dedupes against the frames and the saved centre, so a
+    // reminder rings once, not again on every reload. Until the viewer is known
+    // the saved centre is not loaded and every entry would look new.
+    if (!viewerId) return;
     const live = new Set(res.state.cards.map((c) => c.id));
     for (const r of records) if (live.has(r.id)) get().notify(fromReminder(r, viewerId));
   },

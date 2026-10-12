@@ -88,10 +88,15 @@ function recordChime(card: ReminderCard, how: 'sound' | 'desktop' | 'muted' | 'q
  */
 export function useReminders(enabled = true) {
   const pending = useStore((s) => s.reminders.cards.length);
+  // Read the list once the viewer is known (the socket's hello says who "me"
+  // is, and re-reads it on every connect): before that, the saved notification
+  // centre is not loaded, so every pending reminder looked new and a reload
+  // rang and re-toasted each of them.
+  const viewerId = useStore((s) => s.viewerId);
 
   useEffect(() => {
-    if (enabled) void syncPendingReminders();
-  }, [enabled]);
+    if (enabled && viewerId) void syncPendingReminders();
+  }, [enabled, viewerId]);
 
   useEffect(() => {
     if (!enabled || pending === 0) return;
