@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
 
-import { useCreatePlace, useOverview, useRevokeShare } from '@/api/hooks';
+import { keys, useCreatePlace, useOverview, useRevokeShare } from '@/api/hooks';
 import type { Point } from '@/api/types';
 import { attribution } from '@/components/map/basemaps';
 import { BasemapPicker } from '@/components/map/BasemapPicker';
@@ -81,7 +82,17 @@ export function LiveScreen() {
   // This device publishes as the first device in the workspace. A real
   // multi-device setup would pick explicitly; Phase 1 has one phone.
   const primaryDevice = data?.devices[0];
-  const gps = useTracking({ deviceId: primaryDevice?.id ?? '' });
+  const qc = useQueryClient();
+  const gps = useTracking({
+    deviceId: primaryDevice?.id ?? '',
+    userId: data?.user.id,
+    // A signed-in browser registers a device of its own on its first fix; the
+    // overview has to be re-read for that device's marker to appear.
+    onRegistered: () => {
+      void qc.invalidateQueries({ queryKey: keys.overview });
+      void qc.invalidateQueries({ queryKey: keys.devices });
+    },
+  });
   // A coarse clock for "is this ping still live": a marker stops pulsing within
   // ~15 s of its device going quiet, without re-rendering the map every second.
   const pulseNow = useNow(15_000);
@@ -326,10 +337,12 @@ export function LiveScreen() {
           router.push('/people');
         }}
       />
-      {isPhone || tracking ? (
+      {/* Every screen can publish: a laptop on the move is a tracked device too,
+          and two people watching each other from two browsers is the point. */}
+      {data ? (
         <DeviceTracking
           enabled={tracking}
-          deviceName={primaryDevice?.name}
+          deviceName={devices.find((d) => d.id === gps.deviceId)?.name ?? primaryDevice?.name}
           status={gps}
           onToggle={() => setTracking(!tracking)}
         />
@@ -619,7 +632,15 @@ const styles = StyleSheet.create({
   zoomButton: { width: 38, height: 36, alignItems: 'center', justifyContent: 'center' },
   zoomButtonTop: { borderBottomWidth: 1, borderBottomColor: color.hairlineSoft },
 
-  attribution: { position: 'absolute', left: 14, bottom: 10 },
+  attribution: {
+    position: 'absolute',
+    left: 10,
+    bottom: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.78)',
+    borderRadius: radius.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
   attributionPhone: { bottom: 84 },
 
   statusOverlay: {

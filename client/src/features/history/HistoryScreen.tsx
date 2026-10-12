@@ -328,7 +328,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     ...shadow('float'),
   },
-  attribution: { position: 'absolute', left: 14, bottom: 10, gap: 2 },
+  attribution: {
+    position: 'absolute',
+    left: 10,
+    bottom: 8,
+    gap: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.78)',
+    borderRadius: radius.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
   basemapPicker: { position: 'absolute', top: 16, right: 16 },
 
   rail: {

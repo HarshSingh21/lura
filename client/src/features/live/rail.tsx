@@ -225,7 +225,7 @@ export function PeopleList({
                     <Txt variant="bodySemi" numberOfLines={1}>
                       {name}
                     </Txt>
-                    <Txt variant="micro" color={color.textSubtle} numberOfLines={1}>
+                    <Txt variant="micro" color={color.textSubtle} numberOfLines={2}>
                       {fix
                         ? pingLine({
                             speed: trail && trail.length > 0 ? speedOf(trail) : fix.speedMps,
@@ -348,7 +348,7 @@ export function DeviceList({
                     <Txt variant="bodySemi" numberOfLines={1}>
                       {device.name}
                     </Txt>
-                    <Txt variant="micro" color={color.textSubtle} numberOfLines={1}>
+                    <Txt variant="micro" color={color.textSubtle} numberOfLines={2}>
                       {describeDevice({ moving, speed, inside, lastSeenMs, now })}
                     </Txt>
                   </View>
