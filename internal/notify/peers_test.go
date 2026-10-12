@@ -134,7 +134,7 @@ func TestPeerNoteDeliveredToBothRecipients(t *testing.T) {
 	}
 	toHarsh, toNishtha := got[harsh], got[nishtha]
 
-	if toHarsh.Title != "Nishtha passed Grocery" || toHarsh.Body != "buy milk" || toHarsh.Kind != notify.KindNote {
+	if toHarsh.Title != "Nishtha passed by Grocery" || toHarsh.Body != "buy milk" || toHarsh.Kind != notify.KindNote {
 		t.Errorf("Harsh's reminder = %q / %q / %q", toHarsh.Title, toHarsh.Body, toHarsh.Kind)
 	}
 	if toHarsh.FromUserID != "" || toHarsh.FromName != "" {
@@ -203,7 +203,7 @@ func TestWatchReminderForOwner(t *testing.T) {
 	}{
 		{domain.TriggerArrive, "Nishtha arrived at Grocery"},
 		{domain.TriggerLeave, "Nishtha left Grocery"},
-		{domain.TriggerPassby, "Nishtha passed Grocery"},
+		{domain.TriggerPassby, "Nishtha passed by Grocery"},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.trigger), func(t *testing.T) {
