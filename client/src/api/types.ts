@@ -152,6 +152,12 @@ export type Position = {
   headingDeg: number;
   battery: number;
   seq: number;
+  /**
+   * When the device was at `point`, on the server's clock: its own timestamp
+   * corrected for how far its clock is off. Older than `recvTs` for a fix a
+   * phone queued offline. Absent from older servers and from snapshots.
+   */
+  fixTs?: string;
 };
 
 export type GeoEvent = {

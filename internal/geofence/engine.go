@@ -216,12 +216,12 @@ func (e *Engine) Evaluate(ctx context.Context, pos domain.Position) error {
 
 	// ---- gate 1: freshness. Stale fixes are history, not news.
 	//
-	// A fix's age is the older of when it arrived and when the device says it
-	// took it: a phone that comes back from a tunnel uploads its queue *now*,
-	// and judging those fixes by their arrival would announce an arrival that
-	// happened twenty minutes ago. A device clock in the future cannot make a
-	// fix younger than its arrival, so a wrong clock can only ever silence a
-	// fix, never resurrect one.
+	// A fix's age is from when the device was there (FixTS: its own time,
+	// corrected for its clock by ingest), not from when it arrived: a phone
+	// that comes back from a tunnel uploads its queue *now*, and judging those
+	// fixes by their arrival would announce an arrival that happened twenty
+	// minutes ago. FixTS is never later than the arrival, so a clock running
+	// fast cannot make a fix younger than it is.
 	if pos.Late {
 		// Older than a fix this device already sent (ingest decided, by device
 		// clock): the inside-set must not rewind.
@@ -229,10 +229,8 @@ func (e *Engine) Evaluate(ctx context.Context, pos domain.Position) error {
 		return nil
 	}
 	age := start.Sub(pos.RecvTS)
-	if !pos.DeviceTS.IsZero() && pos.DeviceTS.Before(pos.RecvTS) {
-		if byDevice := start.Sub(pos.DeviceTS); byDevice > age {
-			age = byDevice
-		}
+	if !pos.FixTS.IsZero() && pos.FixTS.Before(pos.RecvTS) {
+		age = start.Sub(pos.FixTS)
 	}
 	if age > e.cfg.FreshWindow {
 		metrics.GeoDroppedStale.Inc(metrics.AttrDevice.String(pos.DeviceID))

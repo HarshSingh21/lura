@@ -114,6 +114,16 @@ type Position struct {
 	// is history — kept, never drawn, never evaluated against a fence — because
 	// the live map and the inside-set must only ever move forwards.
 	Late bool `json:"late,omitempty"`
+
+	// FixTS is when the device was actually at Point, on the server's clock:
+	// its own timestamp corrected by how far its clock runs from the server's
+	// (learnt per device from fixes that arrive live). It equals RecvTS for a
+	// fix sent as it was taken and is older for one a phone queued while it
+	// had no network. Freshness — "is this news, or history?" — is judged by
+	// it, so a phone replaying a tunnel's worth of fixes neither fires fences
+	// nor shows up as "just now", while a laptop whose clock is ten minutes
+	// out still counts as live.
+	FixTS time.Time `json:"fixTs"`
 }
 
 // PlaceShape is the geometry a geofence uses.

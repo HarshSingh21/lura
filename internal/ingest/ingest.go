@@ -117,6 +117,50 @@ type deviceOrder struct {
 	point domain.Point
 	seq   int64
 	seen  bool
+
+	// clock is how far the device's clock runs behind the server's.
+	clock clockSkew
+}
+
+// clockSkew estimates a device's clock offset (receive time − device time)
+// from its recent fixes. A fix sent the moment it was taken has the smallest
+// offset — transit only — so the minimum over a sliding window is the clock
+// difference; a queued fix shows up as an offset well above it. The window
+// lets the estimate follow a clock that was corrected (NTP, a laptop waking
+// from sleep with a lagging timer) within skewWindow.
+type clockSkew struct {
+	samples []skewSample
+}
+
+type skewSample struct {
+	recv   time.Time
+	offset time.Duration
+}
+
+const (
+	skewWindow  = 10 * time.Minute
+	skewSamples = 64
+)
+
+// observe records a fix and returns the device's current offset estimate.
+func (c *clockSkew) observe(recv time.Time, offset time.Duration) time.Duration {
+	keep := c.samples[:0]
+	for _, s := range c.samples {
+		if recv.Sub(s.recv) <= skewWindow {
+			keep = append(keep, s)
+		}
+	}
+	c.samples = append(keep, skewSample{recv: recv, offset: offset})
+	if len(c.samples) > skewSamples {
+		c.samples = c.samples[len(c.samples)-skewSamples:]
+	}
+	low := c.samples[0].offset
+	for _, s := range c.samples[1:] {
+		if s.offset < low {
+			low = s.offset
+		}
+	}
+	return low
 }
 
 // New returns an ingest service.
@@ -171,6 +215,18 @@ func (s *Service) Accept(ctx context.Context, dev domain.Device, p Payload) (dom
 	order := v.(*deviceOrder)
 	order.mu.Lock()
 	defer order.mu.Unlock()
+	// When the device was there, on the server's clock. The first fix a
+	// device ever sends can only be taken at its word (there is nothing yet
+	// to tell a slow clock from a queued fix), which is why the estimate is
+	// learnt from live traffic before it is needed.
+	if p.TST > 0 {
+		offset := pos.RecvTS.Sub(pos.DeviceTS)
+		skew := order.clock.observe(pos.RecvTS, offset)
+		pos.FixTS = pos.DeviceTS.Add(skew)
+		if pos.FixTS.After(pos.RecvTS) {
+			pos.FixTS = pos.RecvTS
+		}
+	}
 	switch classify(order, p, pos) {
 	case Duplicate:
 		metrics.IngestRejected.Inc(metrics.AttrOutcome.String("duplicate"))
@@ -240,6 +296,7 @@ func (s *Service) toPosition(dev domain.Device, p Payload, recv time.Time) domai
 		DeviceID: dev.ID,
 		UserID:   dev.UserID,
 		RecvTS:   recv.UTC(),
+		FixTS:    recv.UTC(),
 		Point:    domain.Point{Lat: p.Lat, Lon: p.Lon},
 		Seq:      p.Seq,
 	}

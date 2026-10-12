@@ -168,22 +168,16 @@ export function speedOf(buffer: readonly TrailPoint[]): number {
 export const STALE_AFTER_MS = 120_000;
 
 /**
- * How far behind the server's receive time a device clock may be before the
- * fix is treated as taken earlier than it arrived. Below it, the difference is
- * clock skew; above it, the fix was queued (a phone back from a tunnel
- * replaying what it recorded) and "just now" would be a lie.
- */
-export const QUEUED_FIX_MS = 60_000;
-
-/**
  * fixTimeMs is when a fix describes the device as being there: the server's
- * receive time, unless the device says it took the fix well before that.
+ * `fixTs` (the device's own time, corrected for its clock — older than the
+ * arrival for a fix a phone queued in a tunnel), else the arrival. The raw
+ * device time is never used: a laptop whose clock lags ten minutes after
+ * sleep would read as ten minutes stale while standing right there.
  */
-export function fixTimeMs(p: Pick<Position, 'recvTs' | 'deviceTs'>): number {
+export function fixTimeMs(p: Pick<Position, 'recvTs' | 'fixTs'>): number {
   const recv = new Date(p.recvTs).getTime();
-  const taken = p.deviceTs ? new Date(p.deviceTs).getTime() : Number.NaN;
-  if (Number.isFinite(taken) && Number.isFinite(recv) && taken < recv - QUEUED_FIX_MS) return taken;
-  return recv;
+  const fix = p.fixTs ? new Date(p.fixTs).getTime() : Number.NaN;
+  return Number.isFinite(fix) && (!Number.isFinite(recv) || fix <= recv) ? fix : recv;
 }
 
 /** isStale says whether a fix taken at `fixMs` is too old to be drawn as live at `now`. */

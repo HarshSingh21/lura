@@ -9,9 +9,9 @@ import (
 )
 
 // A phone back from a tunnel uploads what it recorded *now*: the server
-// receives the fix this instant, but the device took it half an hour ago. That
-// arrival already happened and must not be announced (HLD §5.4) — the device's
-// own time, when it is the older of the two, is the fix's age.
+// receives the fix this instant, but the device was there half an hour ago
+// (ingest's FixTS). That arrival already happened and must not be announced
+// (HLD §5.4).
 func TestQueuedFixIsJudgedByWhenItWasTaken(t *testing.T) {
 	h := newHarness(t, baseConfig())
 	h.place("p1", "Home", 120, domain.TriggerArrive)
@@ -19,7 +19,7 @@ func TestQueuedFixIsJudgedByWhenItWasTaken(t *testing.T) {
 	now := h.clock.Now()
 	if err := h.engine.Evaluate(context.Background(), domain.Position{
 		DeviceID: testDevice, UserID: testUser,
-		RecvTS: now, DeviceTS: now.Add(-30 * time.Minute), Point: inside(),
+		RecvTS: now, DeviceTS: now.Add(-30 * time.Minute), FixTS: now.Add(-30 * time.Minute), Point: inside(),
 	}); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -27,11 +27,11 @@ func TestQueuedFixIsJudgedByWhenItWasTaken(t *testing.T) {
 		t.Fatalf("a fix taken 30 min ago fired %v", got)
 	}
 
-	// A device clock in the future cannot make a fix younger than its arrival:
-	// it is simply evaluated as received.
+	// A device whose clock is simply wrong — here an hour behind, but sending
+	// live (ingest learnt the offset, so FixTS is the arrival) — is news.
 	if err := h.engine.Evaluate(context.Background(), domain.Position{
 		DeviceID: testDevice, UserID: testUser,
-		RecvTS: now.Add(time.Second), DeviceTS: now.Add(time.Hour), Point: inside(),
+		RecvTS: now.Add(time.Second), DeviceTS: now.Add(-time.Hour), FixTS: now.Add(time.Second), Point: inside(),
 	}); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
