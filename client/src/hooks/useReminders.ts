@@ -103,7 +103,8 @@ export function useReminders(enabled = true) {
         const first = due[0]!;
         if (store.muted) recordChime(first, 'muted');
         else {
-          playChime(chimeFor(first));
+          const chime = chimeFor(first);
+          playChime(chime.kind, { watched: chime.watched });
           recordChime(first, 'sound');
         }
         return;

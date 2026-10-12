@@ -609,6 +609,10 @@ func verbFor(t domain.Trigger) string {
 }
 
 // peerVerbFor is the verb after a person's name: "Nishtha arrived at Grocery".
+// It must read exactly like the client's own wording for the geo frame of the
+// same crossing (VERB in client/src/features/notify/model.ts): the toast the geo
+// frame raised is re-titled by this reminder, and a different verb makes it
+// visibly flick from "passed by" to "passed".
 func peerVerbFor(t domain.Trigger) string {
 	switch t {
 	case domain.TriggerArrive:
@@ -618,7 +622,7 @@ func peerVerbFor(t domain.Trigger) string {
 	case domain.TriggerDwell:
 		return "is still at"
 	case domain.TriggerPassby:
-		return "passed"
+		return "passed by"
 	}
 	return string(t)
 }

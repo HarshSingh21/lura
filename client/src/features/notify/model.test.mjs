@@ -53,19 +53,20 @@ function reminder(over = {}) {
   };
 }
 
-test('a peer crossing is titled with the peer and rings the watch chime', () => {
+test('a peer crossing is titled with the peer and rings its trigger with the watch bell', () => {
   const item = fromGeo(geo(), HARSH);
   assert.equal(item.title, 'Nishtha arrived at Grocery');
   assert.equal(item.kind, 'watch');
   assert.equal(item.subjectUserId, NISHTHA);
-  assert.equal(chimeFor(item), 'watch');
+  assert.deepEqual(chimeFor(item), { kind: 'arrive', watched: true });
+  assert.deepEqual(chimeFor(fromGeo(geo({ trigger: 'leave' }), HARSH)), { kind: 'leave', watched: true });
 });
 
 test('my own crossing says "You", and an old server without a subject is mine', () => {
   const mine = fromGeo(geo({ subjectUserId: HARSH, subjectName: 'Harsh', trigger: 'leave' }), HARSH);
   assert.equal(mine.title, 'You left Grocery');
   assert.equal(mine.kind, 'geo');
-  assert.equal(chimeFor(mine), 'leave');
+  assert.deepEqual(chimeFor(mine), { kind: 'leave', watched: false });
 
   const legacy = fromGeo(geo({ subjectUserId: undefined, subjectName: undefined, trigger: 'dwell' }));
   assert.equal(legacy.title, 'You are staying at Grocery');
@@ -92,6 +93,25 @@ test('one crossing is one entry even when both frames arrive, in either order', 
     assert.equal(items[0].body, 'at Grocery');
     assert.equal(items[0].subjectName, 'Nishtha');
   }
+});
+
+test('a watch reminder re-titles nothing and does not repeat its title as the body', () => {
+  // The server words a watch reminder exactly like the client words the geo
+  // frame (internal/notify/worker.go peerVerbFor), and sends the title again as
+  // the body for push channels. On screen the toast must not change or stutter.
+  for (const trigger of ['arrive', 'leave', 'passby']) {
+    const crossing = geo({ trigger });
+    const first = ingest([], fromGeo(crossing, HARSH));
+    const title = first.item.title;
+    const second = ingest(
+      first.items,
+      fromReminder(reminder({ kind: 'watch', trigger, title, body: title, noteIds: [], event: crossing }), HARSH),
+    );
+    assert.equal(second.announce, false, trigger);
+    assert.equal(second.item.title, title, trigger);
+    assert.equal(second.item.body, undefined, trigger);
+  }
+  assert.equal(fromGeo(geo({ trigger: 'passby' }), HARSH).title, 'Nishtha passed by Grocery');
 });
 
 test('my own bare crossing is filed quietly, and its reminder is then announced', () => {
@@ -156,6 +176,6 @@ test('a reminder with no event still gets a stable id', () => {
   const a = fromReminder(reminder({ event: undefined }), HARSH);
   const b = fromReminder(reminder({ event: undefined }), HARSH);
   assert.equal(a.id, b.id);
-  assert.equal(chimeFor(fromReminder(reminder({ kind: 'watch' }), HARSH)), 'watch');
-  assert.equal(chimeFor(fromReminder(reminder({ trigger: 'passby' }), HARSH)), 'passby');
+  assert.deepEqual(chimeFor(fromReminder(reminder({ kind: 'watch' }), HARSH)), { kind: 'arrive', watched: true });
+  assert.deepEqual(chimeFor(fromReminder(reminder({ trigger: 'passby' }), HARSH)), { kind: 'passby', watched: false });
 });

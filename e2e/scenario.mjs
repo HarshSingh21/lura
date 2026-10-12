@@ -864,6 +864,61 @@ try {
   });
 
   // ---------------------------------------------------------------- 6
+  /**
+   * toastOnScreen returns the text of a live toast whose label matches, once its
+   * text matches too: what the person can read right now.
+   */
+  const toastOnScreen = (person, label, text) =>
+    person.page.evaluate(
+      ({ l, t }) => {
+        const el = [...document.querySelectorAll('[aria-label$="Show on the map."]')].find(
+          (n) => !n.closest('[aria-modal="true"]') && new RegExp(l).test(n.getAttribute('aria-label')),
+        );
+        return el && new RegExp(t).test(el.innerText) ? el.innerText.replace(/\s+/g, ' ') : null;
+      },
+      { l: label.source, t: text.source },
+    );
+
+  /** toastsSettled waits for every toast's entrance to finish, so a screenshot shows it as people see it. */
+  const toastsSettled = (person) =>
+    waitFor(`${person.name}’s toasts to finish appearing`, () =>
+      person.page.evaluate(() =>
+        [...document.querySelectorAll('[aria-label$="Show on the map."]')]
+          .filter((n) => !n.closest('[aria-modal="true"]'))
+          .every((n) => Number(getComputedStyle(n.parentElement).opacity) > 0.99),
+      ),
+    { timeout: 3000, every: 50 });
+
+  /**
+   * hideTab makes a page report itself hidden (another window in front), and
+   * records the system notifications it raises from then on, after the browser
+   * accepted them.
+   */
+  const hideTab = (person) =>
+    person.page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+      document.dispatchEvent(new Event('visibilitychange'));
+      const Native = window.Notification;
+      const shown = (window.__luraDesktop = []);
+      class Recorded extends Native {
+        constructor(title, options) {
+          super(title, options);
+          shown.push({ t: performance.now(), title, body: options?.body ?? '', tag: options?.tag ?? '' });
+        }
+      }
+      Object.defineProperty(Recorded, 'permission', { get: () => Native.permission });
+      Recorded.requestPermission = Native.requestPermission.bind(Native);
+      window.Notification = Recorded;
+    });
+  const showTab = (person) =>
+    person.page.evaluate(() => {
+      delete document.hidden;
+      delete document.visibilityState;
+      document.dispatchEvent(new Event('visibilitychange'));
+      return window.__luraDesktop ?? [];
+    });
+
   const crossing = (dwell = 8) => [
     { ...ROUTE_IN },
     { ...GROCERY, dwell },
@@ -875,12 +930,34 @@ try {
     const t0h = await pageNow(harsh);
     const t0n = await pageNow(nishtha);
     const badge0 = { h: await unreadBadge(harsh), n: await unreadBadge(nishtha) };
+    // Nishtha's Lura tab is behind another window this time: her reminder must
+    // also reach the desktop. Harsh is looking at his, so his stays in the app.
+    await hideTab(nishtha);
+    await harsh.page.evaluate(() => {
+      const Native = window.Notification;
+      const shown = (window.__luraDesktop = []);
+      window.Notification = class extends Native {
+        constructor(title, options) {
+          super(title, options);
+          shown.push({ title });
+        }
+      };
+    });
     const run = sim(facts.nDevice, crossing(), { interval: '700ms', scale: 4 });
     // Screenshots while she is at the shop: the arrival ripple and the toasts.
     await waitFor('Harsh’s arrive toast', async () => (await toastsSince(harsh, t0h)).some((t) => /arrived at Grocery|buy milk/i.test(t.label + t.text)), { timeout: 60000 });
+    // The geo frame raises the toast and the reminder frame for the same
+    // crossing fills in the note a moment later, so the note is asserted on
+    // the toast as it is on screen, not on its first paint.
+    const arriveOnScreen = {
+      harsh: await waitFor('the note on Harsh’s arrive toast', () => toastOnScreen(harsh, /arrived at Grocery/, /buy milk/), { timeout: 5000, every: 50 }),
+      nishtha: await waitFor('Nishtha’s "buy milk" toast', () => toastOnScreen(nishtha, /Grocery/, /buy milk[\s\S]*from Harsh/), { timeout: 15000, every: 50 }),
+    };
+    await Promise.all([toastsSettled(harsh), toastsSettled(nishtha)]);
     const atShop = [await harsh.shot(OUT, '06-arrive-harsh'), await nishtha.shot(OUT, '06-arrive-nishtha')];
     await run.done;
     await sleep(2500);
+    const desktop = { nishtha: await showTab(nishtha), harsh: await harsh.page.evaluate(() => window.__luraDesktop ?? []) };
 
     const recH = await harsh.record();
     const recN = await nishtha.record();
@@ -908,12 +985,22 @@ try {
     check(toastsH.length === crossings, `Harsh saw ${toastsH.length} toasts for ${crossings} crossings: ${toastsH.map((t) => t.label)}`);
     check(toastsH.some((t) => /passed by Grocery/.test(t.label)), 'no pass-by toast for Harsh');
     check(toastsH.some((t) => /left Grocery/.test(t.label)), 'no leave toast for Harsh');
-    check(toastsH.some((t) => /buy milk/.test(t.label + t.text)), 'the arrive toast for Harsh does not carry the note');
+    check(toastsH.some((t) => /arrived at Grocery/.test(t.label)) && arriveOnScreen.harsh, 'the arrive toast for Harsh does not carry the note');
     check(toastsN.length === 1 && /buy milk/.test(toastsN[0].label + toastsN[0].text) && /from Harsh/.test(toastsN[0].text), `Nishtha's toasts: ${JSON.stringify(toastsN)}`);
     check(badge.h - badge0.h === crossings, `Harsh's badge went ${badge0.h} → ${badge.h} for ${crossings} crossings`);
     check(badge.n - badge0.n === 1, `Nishtha's badge went ${badge0.n} → ${badge.n}`);
     check(chimesH.length === crossings, `Harsh heard ${chimesH.length} chimes for ${crossings} crossings: ${JSON.stringify(chimesH)}`);
     check(chimesN.length === 1, `Nishtha heard ${chimesN.length} chimes: ${JSON.stringify(chimesN)}`);
+    // Each trigger has its own chime, watched person or not (release spec §4).
+    check(JSON.stringify(chimesH.map((c) => c.kind)) === JSON.stringify(triggers), `Harsh's chimes ${chimesH.map((c) => c.kind)} do not follow the crossings ${triggers}`);
+    check(chimesN[0].kind === 'arrive', `Nishtha's chime is ${chimesN[0].kind}, not arrive`);
+    // Hidden tab: one system notification, the note, from Harsh, tagged with the crossing.
+    const arriveId = geoH.find((f) => f.data.trigger === 'arrive')?.data.id;
+    check(
+      desktop.nishtha.length === 1 && /Grocery/.test(desktop.nishtha[0].title) && /buy milk/.test(desktop.nishtha[0].body) && /from Harsh/.test(desktop.nishtha[0].body) && desktop.nishtha[0].tag === arriveId,
+      `Nishtha's hidden tab raised ${JSON.stringify(desktop.nishtha)} (crossing ${arriveId})`,
+    );
+    check(desktop.harsh.length === 0, `Harsh's visible tab raised system notifications: ${JSON.stringify(desktop.harsh)}`);
     // The toast follows the frame within a frame or two.
     const lagH = toastsH.map((t) => {
       const f = recH.frames.filter((x) => (x.type === 'geo' || x.type === 'notify') && x.t <= t.t).at(-1);
@@ -921,10 +1008,13 @@ try {
     });
 
     // The notification centre lists what happened.
-    await harsh.page.locator('[aria-label^="Notifications"]').first().click();
-    await sleep(600);
-    const panel = await harsh.shot(OUT, '06-notification-centre');
-    await harsh.page.getByRole('button', { name: 'Close', exact: true }).click().catch(() => harsh.page.keyboard.press('Escape'));
+    const panels = [];
+    for (const p of [harsh, nishtha]) {
+      await p.page.locator('[aria-label^="Notifications"]').first().click();
+      await sleep(600);
+      panels.push(await p.shot(OUT, '06-notification-centre'));
+      await p.page.getByRole('button', { name: 'Close', exact: true }).click().catch(() => p.page.keyboard.press('Escape'));
+    }
     facts.lastFireWall = Date.now();
     return {
       events: triggers,
@@ -932,7 +1022,9 @@ try {
       chimes: { harsh: chimesH.map((c) => c.kind), nishtha: chimesN.map((c) => c.kind) },
       badges: { before: badge0, after: badge },
       toastLagMs: stats(lagH.filter(Number.isFinite)),
-      shots: [...atShop, panel],
+      onScreen: arriveOnScreen,
+      desktop: { nishtha: desktop.nishtha.map((d) => `${d.title} — ${d.body}`), harsh: desktop.harsh.length },
+      shots: [...atShop, ...panels],
     };
   });
 

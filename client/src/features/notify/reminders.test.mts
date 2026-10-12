@@ -287,7 +287,7 @@ test('notification entries carry the reminder status and survive replays', () =>
   assert.equal(ack.kind, 'ack');
   assert.equal(ack.status, undefined);
   assert.notEqual(ack.id, 'evt_1');
-  assert.equal(chimeFor(ack), 'dwell');
+  assert.deepEqual(chimeFor(ack), { kind: 'dwell', watched: false });
   assert.equal(ingest(items, ack).items.length, 2);
 });
 

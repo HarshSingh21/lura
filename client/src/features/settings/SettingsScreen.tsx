@@ -368,12 +368,12 @@ export function SettingsScreen() {
   );
 }
 
-const CHIMES: { kind: ChimeKind; label: string }[] = [
+const CHIMES: { kind: ChimeKind; label: string; watched?: boolean }[] = [
   { kind: 'arrive', label: 'Arrive' },
   { kind: 'leave', label: 'Leave' },
   { kind: 'passby', label: 'Pass-by' },
   { kind: 'dwell', label: 'Dwell' },
-  { kind: 'watch', label: 'Someone you watch' },
+  { kind: 'arrive', label: 'Someone you watch', watched: true },
 ];
 
 /**
@@ -409,12 +409,12 @@ function AlertSettings() {
       <View style={styles.row}>
         {CHIMES.map((chime) => (
           <Button
-            key={chime.kind}
+            key={chime.label}
             label={`▶ ${chime.label}`}
             variant="ghost"
             small
             disabled={muted}
-            onPress={() => playChime(chime.kind)}
+            onPress={() => playChime(chime.kind, { watched: chime.watched })}
           />
         ))}
       </View>

@@ -15,8 +15,15 @@ import type { GeoEvent, Point, Reminder, ReminderRecord, ReminderStatus, Trigger
  * tests without a bundler (see model.test.mjs).
  */
 
-/** ChimeKind picks the sound: one per trigger, plus "watch" for a watched person. */
-export type ChimeKind = 'arrive' | 'leave' | 'passby' | 'dwell' | 'watch';
+/**
+ * ChimeKind picks the sound: one per trigger, so arrive, leave and pass-by can be
+ * told apart by ear (release spec §4). A watched person's crossing rings the same
+ * trigger's chime with the watch bell layered on top (see `Chime.watched`).
+ */
+export type ChimeKind = 'arrive' | 'leave' | 'passby' | 'dwell';
+
+/** Chime is what one announcement sounds like. */
+export type Chime = { kind: ChimeKind; watched: boolean };
 
 /** Mirrors api/reminders.isStored; repeated so this file keeps type-only imports. */
 function isStored(r: Reminder | ReminderRecord): boolean {
@@ -139,14 +146,18 @@ export function fromReminder(r: Reminder | ReminderRecord, viewerId?: string, no
     stored && !ack && r.id && r.status
       ? { reminderId: r.id, status: r.status, ackedAt: r.ackedAt ? stamp(r.ackedAt, now) : undefined }
       : {};
+  const title = r.title?.trim() || (e ? fromGeo(e, viewerId, now).title : 'Reminder');
+  // A watch reminder repeats its title as the body, which push channels need (a
+  // phone banner may show only one of them); on screen it would say it twice.
+  const body = r.body?.trim();
   return {
     id,
     ...status,
     kind: ack ? 'ack' : r.kind === 'watch' ? 'watch' : 'note',
     source: 'notify',
     trigger: r.trigger,
-    title: r.title?.trim() || (e ? fromGeo(e, viewerId, now).title : 'Reminder'),
-    body: r.body?.trim() || undefined,
+    title,
+    body: body && body !== title ? body : undefined,
     placeId: r.placeId || e?.placeId || undefined,
     placeName: r.placeName || e?.placeName || undefined,
     subjectUserId: peer ? subject.subjectUserId : undefined,
@@ -293,10 +304,15 @@ export function groupByDay(
   return { today: sorted.filter((i) => i.at >= cut), earlier: sorted.filter((i) => i.at < cut) };
 }
 
-/** chimeFor maps an entry to its sound: a watched person always rings the watch chime. */
-export function chimeFor(item: Pick<NotificationItem, 'kind' | 'trigger'>): ChimeKind {
-  if (item.kind === 'watch') return 'watch';
-  // "Nishtha acknowledged buy milk": the soft double knock, a closing sound.
-  if (item.kind === 'ack') return 'dwell';
-  return item.trigger === 'leave' || item.trigger === 'passby' || item.trigger === 'dwell' ? item.trigger : 'arrive';
+/**
+ * chimeFor maps an entry to its sound: the trigger's chime, with the watch bell
+ * on top when it is about someone the viewer watches — "Nishtha arrived" and
+ * "Nishtha left" must not sound the same. An acknowledgement ("Nishtha
+ * acknowledged buy milk") rings the soft double knock, a closing sound.
+ */
+export function chimeFor(item: Pick<NotificationItem, 'kind' | 'trigger'>): Chime {
+  if (item.kind === 'ack') return { kind: 'dwell', watched: false };
+  const kind: ChimeKind =
+    item.trigger === 'leave' || item.trigger === 'passby' || item.trigger === 'dwell' ? item.trigger : 'arrive';
+  return { kind, watched: item.kind === 'watch' };
 }

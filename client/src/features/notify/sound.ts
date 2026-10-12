@@ -7,9 +7,10 @@ import type { ChimeKind } from './model';
  *
  * A chime is a few sine partials under an envelope, so there is no audio asset to
  * bundle, license or cache, and each trigger can have its own shape: arrive
- * rises, leave falls, pass-by is a quick flick, dwell is a soft double knock and a
- * watched person is a two-tone bell — distinct enough to tell apart without
- * looking at the screen.
+ * rises, leave falls, pass-by is a quick flick and dwell is a soft double knock —
+ * distinct enough to tell apart without looking at the screen. A crossing by
+ * someone you watch rings the same trigger's chime with a bell shimmer on top, so
+ * "Nishtha arrived" and "Nishtha left" still sound different.
  *
  * Three constraints shape the code:
  *
@@ -57,22 +58,27 @@ const TONES: Record<ChimeKind, Tone[]> = {
     { freq: 880, at: 0, dur: 0.28, gain: 0.75 },
     { freq: 880, at: 0.24, dur: 0.4, gain: 0.75 },
   ],
-  // B5 / E6 bell with an inharmonic shimmer: someone you watch moved.
-  watch: [
-    { freq: 987.8, at: 0, dur: 0.7 },
-    { freq: 2650, at: 0, dur: 0.25, gain: 0.18 },
-    { freq: 1318.5, at: 0.18, dur: 0.85 },
-    { freq: 3540, at: 0.18, dur: 0.25, gain: 0.15 },
-  ],
 };
+
+/**
+ * The watch bell: two soft inharmonic partials, struck with the trigger's own
+ * notes, that read as "this is about someone you watch". They come after the
+ * trigger's tones in the schedule so the chime still starts on its trigger's note.
+ */
+const WATCH_BELL: Tone[] = [
+  { freq: 2650, at: 0.02, dur: 0.3, gain: 0.16 },
+  { freq: 3540, at: 0.2, dur: 0.35, gain: 0.12 },
+];
 
 const VIBRATION: Record<ChimeKind, number[]> = {
   arrive: [0, 40, 70, 60],
   leave: [0, 60, 70, 40],
   passby: [0, 25],
   dwell: [0, 35, 120, 35],
-  watch: [0, 50, 60, 50, 60, 80],
 };
+
+/** A watched person's crossing ends on one extra short buzz. */
+const WATCH_BUZZ = [60, 30];
 
 /** Peak per note, before the master gain. Low on purpose: chimes overlap. */
 const PEAK = 0.22;
@@ -136,17 +142,17 @@ export function installAudioUnlock(): void {
 }
 
 /**
- * playChime plays one kind's chime. It never throws: a notification whose sound
- * failed is still a notification.
+ * playChime plays one kind's chime, with the watch bell when `watched`. It never
+ * throws: a notification whose sound failed is still a notification.
  */
-export function playChime(kind: ChimeKind): void {
+export function playChime(kind: ChimeKind, opts: { watched?: boolean } = {}): void {
   const now = Date.now();
   if (now - lastPlayed < MIN_GAP_MS) return;
   lastPlayed = now;
 
   if (Platform.OS !== 'web') {
     try {
-      Vibration.vibrate(VIBRATION[kind]);
+      Vibration.vibrate(opts.watched ? [...VIBRATION[kind], ...WATCH_BUZZ] : VIBRATION[kind]);
     } catch {
       // A device without a vibrator is fine.
     }
@@ -158,7 +164,7 @@ export function playChime(kind: ChimeKind): void {
   try {
     if (c.state === 'suspended') void c.resume().catch(() => undefined);
     const start = c.currentTime + 0.02;
-    for (const tone of TONES[kind]) note(c, master, tone, start);
+    for (const tone of opts.watched ? [...TONES[kind], ...WATCH_BELL] : TONES[kind]) note(c, master, tone, start);
   } catch {
     // Autoplay policy or a closed context: stay silent rather than fail the toast.
   }
