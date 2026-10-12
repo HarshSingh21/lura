@@ -81,3 +81,48 @@ her location crosses the fence, both browsers show a toast with a sound.
 Keycloak realm `lura` gets `harsh@lura.local` / `lura-harsh` and
 `nishtha@lura.local` / `lura-nishtha` (first names Harsh / Nishtha), and the `lura`
 client accepts `http://lura.com:8080/*` as well as localhost.
+
+## 6. Reminders that wait for an acknowledgement
+
+The commute case: Harsh drives home → office; the Grocery fence on the way has
+an open note "buy milk". When he passes, the reminder must keep demanding
+attention until he presses **Acknowledge** — and that must survive reloads,
+other tabs/devices, signing out and back in, and a server restart.
+
+- Every delivered reminder is stored per recipient as a `Reminder` record
+  (Postgres table `reminders`, migration `0004_reminders_activity.sql`; the
+  memory store mirrors it):
+  `{id, userId (recipient), ownerId, noteIds[], placeId, placeName, trigger,
+  kind, title, body, subjectUserId, subjectName, fromUserId, fromName,
+  eventId, createdAt, status: "pending"|"acknowledged", ackedAt?, ackedBy?}`.
+  The WS `notify` frame carries this record (adds `id` and `status` to the
+  existing `Reminder` JSON; existing fields unchanged).
+- `GET /api/v1/reminders?status=pending|acknowledged|all&limit=` (newest first),
+  `POST /api/v1/reminders/{id}/ack` (idempotent; only the recipient; 404
+  otherwise) → publishes a `reminder_ack` frame `{id, ackedAt}` to all of the
+  recipient's sessions, and, when the recipient is not the note owner, a
+  `kind:"ack"` notification to the owner ("Nishtha acknowledged buy milk").
+  Acknowledging a reminder for a note also marks that note `done` when the
+  recipient is the owner, or when every recipient has acknowledged.
+- Client: a pending reminder is a **sticky** card (not an auto-dismissing
+  toast) with an Acknowledge button. Its chime repeats every
+  `REMIND_EVERY_MS` (default 60 s) while pending and the tab is visible, plus a
+  desktop notification (`requireInteraction: true`) when hidden. On sign-in,
+  page load and WS reconnect the client loads `GET /api/v1/reminders?status=pending`
+  and shows them. An ack in any session clears it everywhere within a second.
+  Mute silences sound only; the card stays.
+
+## 7. History is the user's activity
+
+- `GET /api/v1/activity?from=&to=&limit=` returns a merged, newest-first
+  timeline: `{type: "trip"|"stop"|"geo"|"reminder"|"ack"|"connection"|"share",
+  ts, ...}` built from stored positions/trips/stops, trigger events, reminders
+  (with ack state) and connection changes (invited, accepted, paused, resumed,
+  removed). Everything comes from the store (Postgres in production), so it is
+  there after signing in again or a restart.
+- History screen: a day picker; the map shows the day's track(s) and stops;
+  beside it the activity timeline ("08:42 left Home", "08:51 passed Grocery —
+  reminder buy milk", "08:52 acknowledged", "09:05 arrived Office", "Nishtha
+  passed Grocery"); tapping an item focuses it on the map. Peers' movements
+  appear only as events the user was entitled to (watched fences), never their
+  full track.
