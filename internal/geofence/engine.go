@@ -144,6 +144,11 @@ type fenceState struct {
 	EnteredAt       time.Time
 	ArriveConfirmed bool
 	DwellArmed      bool
+	// DwellFired is set once this visit's dwell has fired: a dwell is "you have
+	// been here N minutes", said once per visit. Re-arming after it fired
+	// computed a fire time already in the past and announced it again on every
+	// tick (every cool-off, with the default) for as long as the device stayed.
+	DwellFired bool
 	// Settled is set once the visit passes the fly-by filter (slowed down, or
 	// stayed ArriveDebounce), whether or not the place has an arrive trigger.
 	// Only a settled visit can end in a leave: driving through a fence is a
@@ -508,7 +513,7 @@ func (e *Engine) handleStillInside(ctx context.Context, st *deviceState, place d
 	}
 
 	// A place can gain a dwell trigger while the device is already inside.
-	if hasTrigger(place, domain.TriggerDwell) && !fs.DwellArmed {
+	if hasTrigger(place, domain.TriggerDwell) && !fs.DwellArmed && !fs.DwellFired {
 		e.armDwell(ctx, st, place, pos, fs)
 	}
 }
@@ -714,6 +719,7 @@ func (e *Engine) runDwellDue(ctx context.Context) {
 			st.mu.Lock()
 			if fs, ok := st.Inside[pd.PlaceID]; ok {
 				fs.DwellArmed = false
+				fs.DwellFired = true
 			}
 			st.mu.Unlock()
 		}

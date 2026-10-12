@@ -234,3 +234,37 @@ func TestDeletedFenceIsSilent(t *testing.T) {
 		t.Fatalf("stale inside-state for a deleted fence: %v", places)
 	}
 }
+
+// A dwell is said once per visit. Fixes keep coming while she stays; none of
+// them may re-arm a timer that already fired (it would mature at once, and fire
+// again on every sweep the cool-off allows).
+func TestDwellFiresOncePerVisit(t *testing.T) {
+	cfg := baseConfig()
+	cfg.CoolOff = time.Second
+	h := newHarness(t, cfg)
+	h.place("p_gym", "Gym", 80, domain.TriggerDwell)
+
+	h.fix(inside(), 0)
+	h.clock.Advance(16 * time.Minute)
+	h.engine.RunDueDwellsForTest(context.Background())
+	want(t, h.triggers(), domain.TriggerDwell)
+
+	h.reset()
+	for i := 0; i < 5; i++ {
+		h.clock.Advance(10 * time.Second)
+		h.fix(inside(), 0)
+		h.engine.RunDueDwellsForTest(context.Background())
+	}
+	if got := h.triggers(); len(got) != 0 {
+		t.Fatalf("staying on fired %v, want nothing more", got)
+	}
+
+	// A new visit is a new dwell.
+	h.clock.Advance(10 * time.Second)
+	h.fix(outside(), 2)
+	h.clock.Advance(time.Minute)
+	h.fix(inside(), 0)
+	h.clock.Advance(16 * time.Minute)
+	h.engine.RunDueDwellsForTest(context.Background())
+	want(t, h.triggers(), domain.TriggerDwell)
+}
