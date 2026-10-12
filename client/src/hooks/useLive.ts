@@ -100,6 +100,14 @@ export function useLive(enabled = true) {
             break;
 
           case 'acl':
+            // My places or notes changed in another session (or tab): re-read
+            // them now, so a moved fence moves here too.
+            if (frame.data.action === 'places' || frame.data.action === 'notes') {
+              void qc.invalidateQueries({ queryKey: keys.overview });
+              void qc.invalidateQueries({ queryKey: keys.places });
+              void qc.invalidateQueries({ queryKey: ['notes'] });
+              break;
+            }
             applyAcl(frame.data.action, frame.data.reason);
             // A grant or revoke changes what the sharing screen and banner show.
             void qc.invalidateQueries({ queryKey: keys.shares });
