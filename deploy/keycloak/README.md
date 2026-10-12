@@ -17,6 +17,10 @@ stays on device credentials — is in [`docs/auth.md`](../../docs/auth.md).
 > — connect them on People and each tracks the other. Their passwords are in a
 > public repository. Delete these users before this realm is reachable by anyone
 > but you.
+>
+> The file is imported only when the realm does not exist yet. A Keycloak that
+> was first started before Harsh and Nishtha were added does not have them — see
+> [Changing a running realm](#changing-a-running-realm).
 
 ---
 
@@ -250,6 +254,42 @@ docker rm -f lura-keycloak && docker run ... start-dev --import-realm
 docker exec lura-keycloak /opt/keycloak/bin/kc.sh import \
   --file /opt/keycloak/data/import/lura-realm.json --override true
 ```
+
+### Changing a running realm
+
+A container started before this release still has the old realm: no
+`harsh@lura.local` / `nishtha@lura.local`, and no `http://lura.com:8080` redirect.
+Re-creating the container is the clean fix; to patch it in place instead, use
+`kcadm.sh` inside the container — what `e2e/run.sh` does before every run:
+
+```bash
+kc() { docker exec lura-keycloak /opt/keycloak/bin/kcadm.sh "$@"; }
+kc config credentials --server http://localhost:8080 --realm master --user admin --password admin
+
+# The two release users (create fails harmlessly if the user exists)
+kc create users -r lura -s username=harsh@lura.local -s email=harsh@lura.local \
+  -s firstName=Harsh -s lastName=Singh -s enabled=true -s emailVerified=true
+kc set-password -r lura --username harsh@lura.local --new-password lura-harsh
+kc add-roles -r lura --uusername harsh@lura.local --rolename user
+
+kc create users -r lura -s username=nishtha@lura.local -s email=nishtha@lura.local \
+  -s firstName=Nishtha -s lastName=Dev -s enabled=true -s emailVerified=true
+kc set-password -r lura --username nishtha@lura.local --new-password lura-nishtha
+kc add-roles -r lura --uusername nishtha@lura.local --rolename user
+
+# The lura.com redirect and web origin on the app client
+ID=$(kc get clients -r lura -q clientId=lura-app --fields id --format csv --noquotes | tr -d '\r')
+kc update "clients/$ID" -r lura \
+  -s 'redirectUris=["http://localhost:8080/*","http://localhost:8081/*","http://localhost:19006/*","http://lura.com:8080/*","lura://*","exp://*"]' \
+  -s 'webOrigins=["+","http://localhost:8080","http://lura.com:8080"]'
+```
+
+`--server http://localhost:8080` is Keycloak's port *inside* the container; from
+the host it is 8085. `e2e/run.sh` only adds the users — it does not touch the
+client, so a realm that predates `lura.com` still needs the last command for the
+Mappls phase. The same command, with another port added to both lists, is what
+an e2e run on `E2E_PORT` other than 8080 needs: the web app's redirect is its own
+origin plus `/login`, and Keycloak rejects any origin it was not given.
 
 Exporting the realm back out (Realm settings → Action → Partial export, or
 `kc.sh export`) produces a much larger file: every default client scope, flow and

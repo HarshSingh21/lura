@@ -4,6 +4,13 @@ A private, self-hosted, AI-native location companion: live device tracking, plac
 you draw, reminders that fire when you arrive, leave, linger or pass by, expiring
 share links, and a private history — all on infrastructure you control.
 
+Two people who connect see each other move on the live map, and either can draw a
+fence — a circle, a polygon or a freehand outline — watch the other on it, and
+write a note such as "buy milk" that fires when *the other person* passes the shop
+and reaches both of them. Every crossing arrives once, as a toast, an entry in the
+notification centre and a short chime. What changed in this release is in
+[`docs/release-notes.md`](docs/release-notes.md).
+
 Phase 1 of [`lura_hld_v1.1.md`](lura_hld_v1.1.md), implemented end to end: a Go
 monolith and one Expo codebase for web, iOS and Android. The design of what was
 built is in [`docs/lura_lld_phase1.md`](docs/lura_lld_phase1.md).
@@ -53,13 +60,14 @@ before anything but localhost can reach it.
 |---|---|
 | **Sign in** | Keycloak's own hosted page — OTP, Google or X — over Authorization Code + PKCE; the app never sees a password |
 | **Introduction** | a five-step tour on first sign-in, explaining the map, places, notes, sharing and the privacy switches |
-| **Live map** | your devices *and* the people you are connected to, in real time over WebSocket, geofences, draw a place by tapping the map, the always-on "you are sharing" banner |
-| **People** | two-way live sharing with another account: invite by email, accept, pause either direction independently, remove for both |
-| **Places** | the geofence grid: radius, armed triggers, note and fire counts |
-| **Notes** | type free text, the AI Brain suggests the place, tags and trigger, with its confidence and where it ran |
+| **Live map** | your devices *and* the people you are connected to, in real time over WebSocket: each person in their own colour, gliding between fixes with a heading cone, an accuracy ring and a fading trail, a pulse while their last fix is under two minutes old, and **Follow** to keep the camera on one of them. **Draw** a circle (press the centre, drag the radius), a polygon (tap corners, tap the first or **Done**) or a freehand outline; drag any fence to move it, its edge to resize, its corners to reshape. A basemap picker (streets, light, dark, satellite, hybrid, terrain) remembered per viewer. **Publish my location** turns this browser or phone into a tracked device, and keeps publishing on every screen |
+| **Top bar** | the notification centre: every crossing and reminder of the session, once each, with an unread badge, mute and mark-all-read; tap an entry to open it on the map |
+| **People** | two-way live sharing with another account: invite by email, accept, pause either direction independently, remove for both; each person shows whether they share with you, with a shortcut to a note about them |
+| **Places** | the geofence grid: shape, armed triggers, note and fire counts, and **Edit on map** for the outline; the place form picks connected people to *watch* on the fence |
+| **Notes** | type free text, the AI Brain suggests the place, tags and trigger, with its confidence and where it ran; then choose *whose movement* fires it (me or a connected person) and *who is notified* (me and/or connected people) |
 | **Sharing** | expiring/revocable links, a preview of exactly what a recipient sees, one-tap revoke |
 | **History** | the day segmented into trips and stops, with GPX and GeoJSON export |
-| **Settings** | airgap mode, quiet hours, devices and ingest tokens, channels, retention, which server this app talks to |
+| **Settings** | airgap mode, quiet hours, notification sounds (mute, and a preview of each chime), desktop alerts, devices and ingest tokens, channels, retention, which server this app talks to |
 
 Mobile runs the same code. MapLibre Native needs a development build
 (`npx expo run:ios` / `run:android`); in Expo Go the app falls back to a locally
@@ -94,8 +102,9 @@ GET    /healthz /readyz /version /metrics
 
 GET    /api/v1/overview           the whole workspace in one request
 GET    /api/v1/me                 PATCH for airgap, quiet hours, timezone
-CRUD   /api/v1/places             geofences (circle + radius + triggers)
+CRUD   /api/v1/places             geofences (circle or polygon + triggers + watched people)
 CRUD   /api/v1/notes              POST returns the AI suggestion; /suggest previews it
+                                  PATCH on a place (or PUT) or a note changes only the fields sent
 CRUD   /api/v1/devices            + POST /{id}/token to rotate an ingest credential
 CRUD   /api/v1/shares             DELETE revokes immediately
 CRUD   /api/v1/channels           notification channels, tried in priority order
@@ -107,6 +116,51 @@ POST   /api/v1/people/{id}/accept idempotent
 PATCH  /api/v1/people/{id}        pause or resume *my* sharing
 DELETE /api/v1/people/{id}        removes both directions
 ```
+
+### Fences, watches and notes for other people
+
+A place is a circle or a polygon:
+
+```jsonc
+{ "name": "Grocery", "shape": "circle", "center": {"lat":12.973,"lon":77.642}, "radiusM": 80,
+  "triggers": ["arrive","passby"], "watchUserIds": [] }
+
+{ "name": "Grocery", "polygon": [{"lat":12.9734,"lon":77.6414}, {"lat":12.9734,"lon":77.6426}, {"lat":12.9726,"lon":77.6422}],
+  "triggers": ["passby"], "watchUserIds": ["usr_…nishtha"] }
+```
+
+- `shape` is `"circle"` (the default) or `"polygon"`; a request with a non-empty
+  `polygon` and no `shape` is a polygon. `polygon` is an open ring of 3–200
+  vertices that must not cross itself (`400 invalid_polygon`), and is `[]` for a
+  circle, never `null`. For a polygon the server computes `center` (the centroid)
+  and `radiusM` (centroid to the furthest vertex, at most 5000 m) and ignores what
+  the client sent for them. A circle's `radiusM` is 20–5000.
+- `watchUserIds` are connected people whose crossings of this fence notify you.
+  Each must be an accepted connection (`400 not_connected`). A watch is only
+  evaluated while *that person* shares live with you: pausing stops it on their
+  next fix.
+- **Moving a fence** is a `PATCH /api/v1/places/{id}` with the new geometry — any
+  subset of `name, tags, shape, center, radiusM, polygon, triggers, dwellMins,
+  watchUserIds`. A new `center` alone moves a polygon rigidly; a new `polygon`
+  reshapes it; a `shape` change converts between the two. The engine reads the
+  geometry on every fix, so a device the move left outside gets a normal `leave`.
+
+A note can be about someone else's movement and reach more than you:
+
+- `watchUserId` — whose movement fires it: `""` (your own devices, the default)
+  or an accepted connection, whose live position shared with you fires it.
+- `notifyUserIds` — who receives it: `[]` means just you; otherwise you and/or
+  accepted connections. Both fields are checked on create and on update
+  (`400 not_connected`).
+
+On the live socket, a `geo` event's `userId` is always the **place owner**;
+`subjectUserId` / `subjectName` say whose device crossed. A `notify` reminder
+carries `kind` — `"note"` (notes fired, or your own crossing) or `"watch"` (a
+person you watch crossed your fence and no note covered it, titled like
+"Nishtha arrived at Grocery") — and `fromUserId` / `fromName` when the note or
+fence belongs to someone else. Each recipient's own channels and quiet hours
+apply. The watched person is not told about a watch — the event goes out on the
+owner's subject only — unless a note names them as a recipient.
 
 Control-plane calls take `Authorization: Bearer <token>` — a Keycloak access token
 when `LURA_OIDC_ISSUER` is set, or the static `LURA_API_TOKEN` otherwise. Accounts
@@ -155,6 +209,60 @@ make client        # Expo dev server (web + native)
 make lint          # go vet + tsc --noEmit
 ```
 
+`e2e/run.sh` is the two-browser suite — see [End-to-end test](#end-to-end-test).
+
+---
+
+## End-to-end test
+
+`e2e/` plays the release scenario in two real browsers: Harsh and Nishtha sign
+in through Keycloak, connect, watch each other move, Harsh draws, moves and
+reshapes fences, Nishtha's route crosses the grocery and both browsers must show
+the toast, the badge and one chime — then every basemap, then pause, resume and
+remove. Nine steps, each asserted in the UI and on the wire; the run stops at the
+first failure.
+
+Needs Docker with Keycloak running as `lura-keycloak` on :8085
+([`deploy/keycloak/README.md`](deploy/keycloak/README.md)), Go, Node 20+ and
+Google Chrome (`E2E_CHROME` if it is not in `/Applications`). The script adds the
+two test users to the running realm if they are missing, builds the web bundle,
+server and simulator, installs `playwright-core`, and starts its own server.
+
+```bash
+e2e/run.sh                                  # MapLibre on localhost, then Mappls on lura.com if a key is set
+E2E_PHASES=maplibre e2e/run.sh              # one phase only
+E2E_STEPS=6,8 E2E_SEED=1 e2e/run.sh         # steps 1–3 plus these; step 4's fences come from the API
+E2E_KEEP_RUNNING=1 e2e/run.sh               # leave Lura serving the build afterwards
+```
+
+| Switch | Meaning |
+|---|---|
+| `E2E_PORT` | server port (default `8080`). Whatever already listens there is stopped. |
+| `E2E_PHASES` | `maplibre`, `mappls` or both (default). Mappls is skipped without `LURA_MAPPLS_WEB_KEY`. |
+| `E2E_STEPS` | comma-separated steps to run; 1–3 (sign in, connect, publish) always run |
+| `E2E_SEED` | `1` creates step 4's fences and note through the API instead of drawing them |
+| `E2E_KEEP_RUNNING` | `1` leaves Lura running on `E2E_PORT` when the run ends |
+| `E2E_OUT` | where results go (default a fresh temp dir) |
+| `E2E_SKIP_BUILD` / `E2E_COOLOFF` / `E2E_HEADED` | skip the web build / the cool-off for the run (`15s`) / show the browsers |
+
+Each phase writes `results.json`, screenshots and `server.log` to
+`$E2E_OUT/<phase>/`; nothing is written inside the repository. The exit status
+is non-zero if any phase failed.
+
+The Mappls phase serves the app as `http://lura.com:<port>`, because a Mappls
+web key is checked against the page's domain ([`docs/mappls.md`](docs/mappls.md)).
+Chrome is pointed at 127.0.0.1 for that name, so the run needs no hosts entry;
+to open the same build yourself, add one:
+
+```bash
+echo '127.0.0.1 lura.com' | sudo tee -a /etc/hosts     # then http://lura.com:8080
+```
+
+The realm accepts redirects on port 8080 only (`localhost` and `lura.com`). With
+another `E2E_PORT`, add that origin to the `lura-app` client first, or sign-in
+stops at Keycloak with "Invalid redirect uri" — see
+[`deploy/keycloak/README.md`](deploy/keycloak/README.md#changing-a-running-realm).
+
 ---
 
 ## Privacy invariants
@@ -171,6 +279,11 @@ they are hard to break:
 - **No covert sharing.** Every live share is listed to its owner with its token
   and a one-tap revoke, and a revoke drops the viewer's subscription on the next
   fix rather than at the end of a TTL.
+- **Being watched rides on your own switch.** A connected person's fences and
+  notes evaluate your position only while *your* sharing toward them is on —
+  their side cannot opt in for you. Pausing stops it on your next fix, without a
+  "left" event they could read anything into; removing ends both directions and
+  takes you off their watch and recipient lists.
 - **Your data is yours.** GPX/GeoJSON export and history deletion are ordinary
   endpoints, and retention runs in-process rather than depending on an operator's
   cron.
