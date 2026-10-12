@@ -336,8 +336,13 @@ try {
    * of a quarter of a fix's distance).
    */
   const FRAME_MS = 1000 / 60;
-  /** Below this the page is too starved of frames to tell a glide from a jump. */
-  const MIN_JUDGE_FPS = 10;
+  /**
+   * Below this the page is too starved of frames to tell a glide from a jump.
+   * A jump of one fix's distance is caught while a two-frame window is shorter
+   * than half the 1 s fix interval (the bound is twice the glide's speed over
+   * the window), i.e. above 4 fps; 6 leaves a margin.
+   */
+  const MIN_JUDGE_FPS = 6;
   /**
    * sampleOnMap records, every animation frame, where a marker is on screen and
    * the viewport it was drawn through, and returns its track in map space (the
@@ -477,16 +482,24 @@ try {
     // Follow mode: the camera rides with Nishtha, so she stays put on screen
     // while the city slides under her; stopping hands the camera back.
     await harsh.page.getByRole('switch', { name: `Follow ${nishtha.displayName} on the map` }).first().click();
-    await sleep(2500);
-    const followA = { v: await harsh.viewport(), m: await harsh.marker(nMarker) };
+    const fromMiddle = ({ v, m }) => (v && m ? Math.hypot(m.x - (v.left + v.width / 2), m.y - (v.top + v.height / 2)) : Infinity);
+    const followFrame = async () => ({ v: await harsh.viewport(), m: await harsh.marker(nMarker) });
+    // The camera first flies from the framed pair to her (a few hundred metres;
+    // slower when the machine is starved of frames), then rides along.
+    const followStart = Date.now();
+    const followA = await waitFor('the camera to reach Nishtha', async () => {
+      const f = await followFrame();
+      return fromMiddle(f) <= 40 ? f : null;
+    }, { timeout: 15000, every: 250 });
+    const followArriveMs = Date.now() - followStart;
     await sleep(2000);
-    const followB = { v: await harsh.viewport(), m: await harsh.marker(nMarker) };
+    const followB = await followFrame();
     const followShot = await harsh.shot(OUT, '03-following-nishtha');
     await harsh.page.getByRole('switch', { name: `Stop following ${nishtha.displayName}` }).first().click();
-    const fromMiddle = ({ v, m }) => (v && m ? Math.hypot(m.x - (v.left + v.width / 2), m.y - (v.top + v.height / 2)) : Infinity);
     const follow = {
       offCentrePx: [fromMiddle(followA), fromMiddle(followB)].map((d) => Math.round(d)),
       cameraMovedM: followA.v && followB.v ? Math.round(haversineM(followA.v.center, followB.v.center)) : 0,
+      arriveMs: followArriveMs,
     };
     check(follow.offCentrePx.every((d) => d <= 40) && follow.cameraMovedM > 3, `follow mode did not keep Nishtha centred: ${JSON.stringify(follow)}`);
     loop.stop();
