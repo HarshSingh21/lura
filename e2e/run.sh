@@ -5,7 +5,7 @@
 #   E2E_PHASES=maplibre e2e/run.sh
 #   E2E_PORT=8091 e2e/run.sh       # its own server, so several runs can go at once
 #   E2E_STEPS=6,8 E2E_SEED=1 e2e/run.sh   # only those steps; step 4's fences come from the API
-#   E2E_KEEP_RUNNING=1 e2e/run.sh   # leave Lura on :8080 serving the build afterwards
+#   E2E_KEEP_RUNNING=1 e2e/run.sh   # leave Lura on :$E2E_PORT (default 8080) serving the build afterwards
 #
 # Requirements: Docker with the `lura-keycloak` container running (see
 # deploy/keycloak/README.md), Go, Node 20+, Google Chrome. For the Mappls phase,
@@ -51,6 +51,51 @@ ensure_keycloak() {
     "${kc[@]}" set-password -r lura --username "$user" --new-password "$pass" >/dev/null
     "${kc[@]}" add-roles -r lura --uusername "$user" --rolename user >/dev/null 2>&1 || true
   done
+  ensure_redirects
+}
+
+# ensure_redirects lets the lura-app client sign in and out on this run's port,
+# on both names the phases use, by adding (never replacing) its redirect URIs,
+# web origins and post-logout URIs. A realm imported for :8080 has no others, so
+# without this any other E2E_PORT fails at Keycloak's "Invalid redirect_uri".
+ensure_redirects() {
+  local kc=(docker exec "$KC_CONTAINER" /opt/keycloak/bin/kcadm.sh) id current wanted
+  id="$("${kc[@]}" get clients -r lura -q clientId=lura-app --fields id 2>/dev/null |
+    node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const c=JSON.parse(s);process.stdout.write(c[0]?c[0].id:"")})')"
+  if [ -z "$id" ]; then
+    echo "e2e: the lura realm has no lura-app client" >&2
+    exit 1
+  fi
+  # Whole client: kcadm's --fields drops attribute keys that contain dots.
+  current="$("${kc[@]}" get "clients/$id" -r lura)"
+  # Prints the merged client, or nothing when every URI is already there.
+  wanted="$(PORT="$PORT" node -e '
+    let s = "";
+    process.stdin.on("data", (d) => (s += d)).on("end", () => {
+      const c = JSON.parse(s);
+      const hosts = [`http://localhost:${process.env.PORT}`, `http://lura.com:${process.env.PORT}`];
+      const add = (list, items) => [...list, ...items.filter((i) => !list.includes(i))];
+      const redirectUris = add(c.redirectUris ?? [], hosts.map((h) => `${h}/*`));
+      const webOrigins = add(c.webOrigins ?? [], hosts);
+      const logout = (c.attributes?.["post.logout.redirect.uris"] ?? "").split("##").filter(Boolean);
+      const postLogout = add(logout, hosts.map((h) => `${h}/*`));
+      const changed =
+        redirectUris.length !== (c.redirectUris ?? []).length ||
+        webOrigins.length !== (c.webOrigins ?? []).length ||
+        postLogout.length !== logout.length;
+      if (changed) {
+        process.stdout.write(JSON.stringify({
+          redirectUris,
+          webOrigins,
+          attributes: { "post.logout.redirect.uris": postLogout.join("##") },
+        }));
+      }
+    });' <<<"$current")"
+  if [ -n "$wanted" ]; then
+    # stdin reaches kcadm only with docker exec -i.
+    docker exec -i "$KC_CONTAINER" /opt/keycloak/bin/kcadm.sh update "clients/$id" -r lura -f - <<<"$wanted" >/dev/null
+    echo "keycloak: lura-app now accepts :$PORT on localhost and lura.com"
+  fi
 }
 
 # ---------------------------------------------------------------- build
