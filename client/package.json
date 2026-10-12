@@ -44,7 +44,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "build:web": "expo export --platform web --output-dir dist && node scripts/copy-maplibre-worker.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test": "node --test \"src/**/*.test.mts\"",
     "lint": "expo lint",
     "postinstall": "node scripts/copy-maplibre-worker.mjs || true"
   },
