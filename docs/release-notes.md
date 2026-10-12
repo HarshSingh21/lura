@@ -36,6 +36,21 @@ map, draw fences around the places that matter, and leave notes that fire on
   two-tone bell — synthesised in the browser rather than shipped as audio files.
   **Settings** previews each chime, mutes them, and turns on desktop alerts for a
   tab you are not looking at.
+- **Reminders wait for you.** A reminder is stored for each recipient before it
+  is sent, and stays on screen as a card with **Acknowledge** until it is
+  acknowledged — across reloads, other tabs and devices, signing out and in, and
+  a server restart. While it is pending its chime repeats every minute while the
+  tab is visible; a hidden tab raises a desktop notification that stays until it
+  is dealt with. Mute silences the sound only; the card stays. Acknowledging in
+  one session clears it in all of them, tells the note's owner when that is
+  someone else ("Nishtha acknowledged buy milk"), and marks the note done once
+  everyone it reached has acknowledged it.
+- **History is your day.** The History screen has a day picker, the day's track
+  and stops on the map, and a timeline beside it: "08:42 left Home", "08:51
+  passed Grocery — reminder buy milk", acknowledgements (yours, and others' of
+  your notes), connection and share-link changes, and the crossings of people
+  you watch. Tapping an entry
+  focuses it on the map.
 - **Basemaps.** Streets, light, dark, satellite, hybrid and terrain, picked on
   the map and remembered per viewer. Satellite and hybrid use Esri World Imagery
   (hybrid adds labels and roads). With Mappls as the provider, Mappls draws the
@@ -129,6 +144,12 @@ Everything else in the README's *Privacy invariants* still holds.
   `http://lura.com:8080` redirect;
   [`deploy/keycloak/README.md`](../deploy/keycloak/README.md#changing-a-running-realm)
   has the `kcadm` commands to add them to a running realm.
+- **API.** New: `GET /api/v1/reminders`, `POST /api/v1/reminders/{id}/ack`,
+  `GET /api/v1/activity`, and the `reminder_ack` WebSocket frame (README,
+  *Reminders and acknowledgements* and *Activity*). The `notify` frame gains the
+  stored record's fields (`id`, `status`, `ownerId`, `eventId`, `createdAt`,
+  `subjectUserId`, `subjectName`, `ackedAt`, `ackedBy`); its existing fields are
+  unchanged.
 - **Web client.** Rebuild it (`npm run build:web`, or `make serve`).
 - **Configuration.** No new environment variables.
 - **API clients.** All new fields have defaults (`shape: "circle"`,

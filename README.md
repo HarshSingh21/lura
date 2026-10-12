@@ -61,12 +61,12 @@ before anything but localhost can reach it.
 | **Sign in** | Keycloak's own hosted page — OTP, Google or X — over Authorization Code + PKCE; the app never sees a password |
 | **Introduction** | a five-step tour on first sign-in, explaining the map, places, notes, sharing and the privacy switches |
 | **Live map** | your devices *and* the people you are connected to, in real time over WebSocket: each person in their own colour, gliding between fixes with a heading cone, an accuracy ring and a fading trail, a pulse while their last fix is under two minutes old, and **Follow** to keep the camera on one of them. **Draw** a circle (press the centre, drag the radius), a polygon (tap corners, tap the first or **Done**) or a freehand outline; drag any fence to move it, its edge to resize, its corners to reshape. A basemap picker (streets, light, dark, satellite, hybrid, terrain) remembered per viewer. **Publish my location** turns this browser or phone into a tracked device, and keeps publishing on every screen |
-| **Top bar** | the notification centre: every crossing and reminder of the session, once each, with an unread badge, mute and mark-all-read; tap an entry to open it on the map |
+| **Top bar** | the notification centre: every crossing and reminder of the session, once each, with an unread badge, mute and mark-all-read; tap an entry to open it on the map. A pending reminder stays on screen as a card with **Acknowledge** until it is acknowledged, in any session |
 | **People** | two-way live sharing with another account: invite by email, accept, pause either direction independently, remove for both; each person shows whether they share with you, with a shortcut to a note about them |
 | **Places** | the geofence grid: shape, armed triggers, note and fire counts, and **Edit on map** for the outline; the place form picks connected people to *watch* on the fence |
 | **Notes** | type free text, the AI Brain suggests the place, tags and trigger, with its confidence and where it ran; then choose *whose movement* fires it (me or a connected person) and *who is notified* (me and/or connected people) |
 | **Sharing** | expiring/revocable links, a preview of exactly what a recipient sees, one-tap revoke |
-| **History** | the day segmented into trips and stops, with GPX and GeoJSON export |
+| **History** | the day's activity: a day picker, the day's track and stops on the map, and a timeline beside it — trips and stops, crossings (yours and watched people's), reminders and their acknowledgements, connection and share-link changes; tap an entry to focus it on the map. GPX and GeoJSON export |
 | **Settings** | airgap mode, quiet hours, notification sounds (mute, and a preview of each chime), desktop alerts, devices and ingest tokens, channels, retention, which server this app talks to |
 
 Mobile runs the same code. MapLibre Native needs a development build
@@ -95,7 +95,7 @@ mobile app can also publish its own position from the live map.
 
 ```
 POST   /pub                       OwnTracks-compatible ingest (device credentials)
-GET    /ws                        live positions, geofence events, reminders
+GET    /ws                        live positions, geofence events, reminders, reminder_ack
 GET    /s/{token}                 public share view — no account
 GET    /s/{token}/ws              public live stream
 GET    /healthz /readyz /version /metrics
@@ -109,6 +109,9 @@ CRUD   /api/v1/devices            + POST /{id}/token to rotate an ingest credent
 CRUD   /api/v1/shares             DELETE revokes immediately
 CRUD   /api/v1/channels           notification channels, tried in priority order
 GET    /api/v1/history            trips and stops; /export?format=gpx|geojson
+GET    /api/v1/reminders          ?status=pending|acknowledged|all&limit= (default 100, max 500), newest first
+POST   /api/v1/reminders/{id}/ack idempotent; only the recipient (404 for anyone else)
+GET    /api/v1/activity           ?from=&to=&limit= (default the last 24 h, 200 items, max 1000), newest first
 
 GET    /api/v1/people             every connection, both directions of consent
 POST   /api/v1/people/invite      by email; a crossed invitation auto-accepts
@@ -161,6 +164,61 @@ person you watch crossed your fence and no note covered it, titled like
 fence belongs to someone else. Each recipient's own channels and quiet hours
 apply. The watched person is not told about a watch — the event goes out on the
 owner's subject only — unless a note names them as a recipient.
+
+### Reminders and acknowledgements
+
+Every delivered reminder is stored per recipient *before* it is published, so a
+pending one is still there after a reload, on another device, after signing out
+and in, and after a restart. `GET /api/v1/reminders` returns
+`{"reminders": [...]}` of records:
+
+```jsonc
+{ "id": "rem_…", "userId": "<recipient>", "ownerId": "<note or place owner>", "noteIds": ["nte_…"],
+  "placeId": "plc_…", "placeName": "Grocery", "trigger": "passby", "kind": "note",   // note | watch | ack
+  "title": "Passing Grocery", "body": "buy milk", "subjectUserId": "usr_…", "subjectName": "Nishtha",
+  "fromUserId": "usr_…", "fromName": "Harsh",          // only when someone else's note or fence
+  "eventId": "geo_…",                                  // the crossing's GeoEvent id; "" for kind "ack"
+  "createdAt": "…", "status": "pending",               // pending | acknowledged
+  "ackedAt": "…", "ackedBy": "usr_…" }                 // once acknowledged
+```
+
+The live `notify` frame carries the same fields (its `id`, `status`, `ownerId`,
+`eventId`, `createdAt`, … are the stored record's) alongside the crossing in
+`event`. An owner's own crossing with no note is a live toast only: it has no
+`id` and nothing to acknowledge, and a redelivered crossing never stores a
+second record for the same person.
+
+`POST /api/v1/reminders/{id}/ack` returns `{"reminder": {...}, "notesDone":
+["nte_…"]}` and publishes a `reminder_ack` frame `{"id", "ackedAt"}` to every
+session of the recipient, which clears the card everywhere. Acknowledging again
+changes nothing. The first acknowledgement also:
+
+- when the recipient is not the note's owner, stores and sends the owner a
+  `kind: "ack"` reminder, already acknowledged ("Nishtha acknowledged buy milk");
+- marks the note `done` when the recipient is its owner, or when every
+  recipient's reminder for it has been acknowledged (`notesDone` lists them).
+
+### Activity
+
+`GET /api/v1/activity` is the History screen's timeline: `{"items": [...],
+"from", "to"}`, newest first, every item with `type`, `id` and `ts`, read from
+the store so it survives a restart. `from` after `to` is `400`.
+
+| `type` | what it is | fields beyond `type`, `id`, `ts` |
+|---|---|---|
+| `trip` | a movement of one of your devices (`ts` is its start) | `deviceId, deviceName, mode, startTs, endTs, distanceM, fromPlace?, toPlace?, path` |
+| `stop` | a stay of one of your devices | `deviceId, deviceName, startTs, endTs, atPlace?, point?` |
+| `geo` | a crossing of one of your fences, by you or a person you watch | `eventId` (the GeoEvent id, as in the reminder's `eventId`), `triggerEventId` (the trigger-history row), `placeId, placeName, trigger, deviceId, subjectUserId, subjectName, noteIds, delivered` |
+| `reminder` | a reminder you received | `reminder` (the record above, with its current status) |
+| `ack` | an acknowledgement: yours, or someone acknowledging your note | `reminderId, title, body, placeName, noteIds, ackedBy, ackedByName, byMe` |
+| `connection` | a connection invited, accepted, paused, resumed or removed | `action, peerId, peerName, byMe` |
+| `share` | a share link created or revoked | `action` (`created`/`revoked`), `shareId, label, mode, reason?` |
+
+Trips and stops are only ever your own devices; a connected person's movement
+appears only as the crossings of your fences you watch them on, never as a
+track. A `geo` item recorded before 0.2.0 has its trigger-history id as
+`eventId`, so a client joining reminders to crossings should fall back to the
+fence, trigger and time.
 
 Control-plane calls take `Authorization: Bearer <token>` — a Keycloak access token
 when `LURA_OIDC_ISSUER` is set, or the static `LURA_API_TOKEN` otherwise. Accounts
