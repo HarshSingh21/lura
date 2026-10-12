@@ -336,6 +336,55 @@ try {
    * of a quarter of a fix's distance).
    */
   const FRAME_MS = 1000 / 60;
+  /** Below this the page is too starved of frames to tell a glide from a jump. */
+  const MIN_JUDGE_FPS = 10;
+  /**
+   * sampleOnMap records, every animation frame, where a marker is on screen and
+   * the viewport it was drawn through, and returns its track in map space (the
+   * first frame's pixels): a glide is the marker moving over the map, so a camera
+   * move — a re-fit, a resize — must not read as the marker jumping. Frames where
+   * the camera moved are counted separately.
+   */
+  const sampleOnMap = async (person, markerId, ms) => {
+    const raw = await person.page.evaluate(
+      ([id, ms]) =>
+        new Promise((resolve) => {
+          const out = [];
+          const t0 = performance.now();
+          const tick = () => {
+            const el = document.querySelector(`[data-testid="lura-marker-${id}"]`);
+            const vp = [...document.querySelectorAll('[data-testid="lura-map-viewport"]')].find((n) => n.offsetParent !== null);
+            if (el && vp) {
+              const r = el.getBoundingClientRect();
+              const vr = vp.getBoundingClientRect();
+              const d = vp.dataset;
+              out.push({
+                t: performance.now(),
+                x: r.left - vr.left,
+                y: r.top - vr.top,
+                view: { center: { lat: +d.lat, lon: +d.lon }, zoom: +d.zoom, width: +d.width, height: +d.height },
+              });
+            }
+            if (performance.now() - t0 < ms) requestAnimationFrame(tick);
+            else resolve(out);
+          };
+          requestAnimationFrame(tick);
+        }),
+      [markerId, ms],
+    );
+    const z0 = raw[0]?.view.zoom ?? 0;
+    let cameraMoves = 0;
+    const track = raw.map((s, i) => {
+      if (i > 0 && JSON.stringify(s.view) !== JSON.stringify(raw[i - 1].view)) cameraMoves += 1;
+      // The viewport centre in world pixels at this frame's zoom, then scaled to the first frame's.
+      const c = project(s.view.center, { center: { lat: 0, lon: 0 }, zoom: s.view.zoom, width: 0, height: 0 });
+      const k = 2 ** (z0 - s.view.zoom);
+      return { t: s.t, x: (s.x - s.view.width / 2 + c.x) * k, y: (s.y - s.view.height / 2 + c.y) * k };
+    });
+    const spanMs = Math.max(1, (raw.at(-1)?.t ?? 0) - (raw[0]?.t ?? 0));
+    return { track, cameraMoves, fps: (1000 * Math.max(0, raw.length - 1)) / spanMs };
+  };
+
   /** closeUp screenshots the map around one marker: its label, cone, ring and wake. */
   const closeUp = async (person, markerId, name) => {
     const m = await person.marker(markerId);
@@ -357,6 +406,7 @@ try {
       d: Math.hypot(s.x - samples[i].x, s.y - samples[i].y),
       dt: s.t - samples[i].t,
       w: s.t - samples[Math.max(0, i - 1)].t,
+      at: s.t - samples[0].t,
     }));
     const travelled = steps.reduce((sum, s) => sum + s.d, 0);
     const durationMs = Math.max(1, (samples.at(-1)?.t ?? 0) - (samples[0]?.t ?? 0));
@@ -373,7 +423,7 @@ try {
       fixesDuring,
       travelledPx: Math.round(travelled),
       biggestStepPx: round1(Math.max(0, ...steps.map((s) => s.d))),
-      jumps: jumps.slice(0, 5).map((s) => `${round1(s.d)}px in ${Math.round(s.w)}ms`),
+      jumps: jumps.slice(0, 5).map((s) => `${round1(s.d)}px in ${Math.round(s.w)}ms at +${Math.round(s.at)}ms`),
     };
   };
 
@@ -406,7 +456,15 @@ try {
     const shotA = await harsh.shot(OUT, '03-nishtha-moving-a');
     // Between two pings the marker must glide, not jump: sample its screen
     // position every frame across ~2.5 pings.
-    const samples = await harsh.page.evaluate((id) => window.__luraSample(id, 2600), nMarker);
+    // A page starved of frames (a loaded machine) cannot show a glide either
+    // way, so sample again rather than judge two frames a second.
+    let sampled = await sampleOnMap(harsh, nMarker, 2600);
+    const sampleTries = [Math.round(sampled.fps)];
+    while (sampled.fps < MIN_JUDGE_FPS && sampleTries.length < 4) {
+      sampled = await sampleOnMap(harsh, nMarker, 2600);
+      sampleTries.push(Math.round(sampled.fps));
+    }
+    const { track: samples, cameraMoves } = sampled;
     await sleep(1500);
     const b = await harsh.marker(nMarker);
     const shotB = await harsh.shot(OUT, '03-nishtha-moving-b');
@@ -441,12 +499,15 @@ try {
     const fixesDuring = since(recH.frames, samples[0]?.t ?? 0).filter(
       (f) => f.type === 'position' && f.deviceId === facts.nDevice.id && f.t <= (samples.at(-1)?.t ?? 0),
     ).length;
-    const glide = glideOf(samples, fixesDuring);
+    const fixesAtMs = since(recH.frames, samples[0]?.t ?? 0)
+      .filter((f) => f.type === 'position' && f.deviceId === facts.nDevice.id && f.t <= (samples.at(-1)?.t ?? 0))
+      .map((f) => Math.round(f.t - samples[0].t));
+    const glide = { ...glideOf(samples, fixesDuring), cameraMoves, fixesAtMs, sampleTries };
     const latN = latencyFor(recH, facts.nDevice.id, nMarker, t0h);
 
     check(a && b && (Math.abs(a.x - b.x) > 2 || Math.abs(a.y - b.y) > 2), `Nishtha's marker did not move: ${JSON.stringify({ a, b })}`);
     check(
-      fixesDuring >= 2 && glide.movingMs >= fixesDuring * 10 * FRAME_MS && glide.jumps.length === 0,
+      sampled.fps >= MIN_JUDGE_FPS && fixesDuring >= 2 && glide.movingMs >= fixesDuring * 10 * FRAME_MS && glide.jumps.length === 0,
       `marker jumped instead of gliding: ${JSON.stringify(glide)}`,
     );
     check(offN !== null && offN <= 3, `Nishtha's marker is ${offN?.toFixed(1)} px from her last fix`);
