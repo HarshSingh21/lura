@@ -16,35 +16,40 @@ import (
 
 // ---------------------------------------------------------------- places
 
-// The ring comes back as GeoJSON rather than WKT: it is one call, it is
-// unambiguous about axis order ([lon, lat]), and encoding/json parses it.
+// The ring comes back as two float8 arrays (latitudes, longitudes) in vertex
+// order, not as text. Text output rounds — ST_AsGeoJSON's default is 9
+// decimals — and every rewrite of a place (a rename, a watcher pruned when a
+// connection goes) writes back what it read, so a rounded read would nudge the
+// fence a little further on every save. Binary float8 is the stored value bit
+// for bit. A circle has no boundary, so both arrays are empty.
 const placeCols = `id, user_id, name, tags, shape,
 	ST_Y(center::geometry), ST_X(center::geometry),
-	radius_m, ST_AsGeoJSON(boundary::geometry, 9), watch_user_ids,
+	radius_m,
+	ARRAY(SELECT ST_Y(d.geom) FROM ST_DumpPoints(boundary::geometry) d ORDER BY d.path),
+	ARRAY(SELECT ST_X(d.geom) FROM ST_DumpPoints(boundary::geometry) d ORDER BY d.path),
+	watch_user_ids,
 	triggers, dwell_mins, created_at, updated_at`
 
 func scanPlace(row pgx.Row) (domain.Place, error) {
 	var (
-		p        domain.Place
-		shape    string
-		boundary *string
-		triggers []string
+		p          domain.Place
+		shape      string
+		lats, lons []float64
+		triggers   []string
 	)
 	err := row.Scan(&p.ID, &p.UserID, &p.Name, &p.Tags, &shape,
 		&p.Center.Lat, &p.Center.Lon,
-		&p.RadiusM, &boundary, &p.WatchUserIDs,
+		&p.RadiusM, &lats, &lons, &p.WatchUserIDs,
 		&triggers, &p.DwellMins, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return domain.Place{}, err
 	}
 	p.Shape = domain.PlaceShape(shape)
-	if boundary != nil {
-		ring, err := parseRing(*boundary)
-		if err != nil {
-			return domain.Place{}, fmt.Errorf("place %s boundary: %w", p.ID, err)
-		}
-		p.Polygon = ring
+	ring, err := openRing(lats, lons)
+	if err != nil {
+		return domain.Place{}, fmt.Errorf("place %s boundary: %w", p.ID, err)
 	}
+	p.Polygon = ring
 	p.Triggers = make([]domain.Trigger, 0, len(triggers))
 	for _, t := range triggers {
 		p.Triggers = append(p.Triggers, domain.Trigger(t))
@@ -52,26 +57,20 @@ func scanPlace(row pgx.Row) (domain.Place, error) {
 	return p.Normalized(), nil
 }
 
-// parseRing reads a GeoJSON Polygon's outer ring back as the open ring the API
+// openRing turns the stored ring's vertices back into the open ring the API
 // speaks: PostGIS stores rings closed, the contract does not repeat the first
 // vertex.
-func parseRing(geojson string) ([]domain.Point, error) {
-	var g struct {
-		Coordinates [][][2]float64 `json:"coordinates"`
+func openRing(lats, lons []float64) ([]domain.Point, error) {
+	if len(lats) != len(lons) {
+		return nil, fmt.Errorf("ring has %d latitudes and %d longitudes", len(lats), len(lons))
 	}
-	if err := json.Unmarshal([]byte(geojson), &g); err != nil {
-		return nil, err
+	n := len(lats)
+	if n > 1 && lats[0] == lats[n-1] && lons[0] == lons[n-1] {
+		n--
 	}
-	if len(g.Coordinates) == 0 {
-		return []domain.Point{}, nil
-	}
-	outer := g.Coordinates[0]
-	if n := len(outer); n > 1 && outer[0] == outer[n-1] {
-		outer = outer[:n-1]
-	}
-	ring := make([]domain.Point, 0, len(outer))
-	for _, c := range outer {
-		ring = append(ring, domain.Point{Lat: c[1], Lon: c[0]})
+	ring := make([]domain.Point, n)
+	for i := 0; i < n; i++ {
+		ring[i] = domain.Point{Lat: lats[i], Lon: lons[i]}
 	}
 	return ring, nil
 }
@@ -225,9 +224,18 @@ func (s *Store) DeletePlace(ctx context.Context, userID, id string) error {
 	return err
 }
 
-// PlacesContaining is the geofence hot path: ST_DWithin over the GIST index for
-// circles, ST_Covers over the boundary index for polygons — the query the
-// engine runs for every incoming fix.
+// PlacesContaining is the geofence hot path, run for every incoming fix:
+// ST_DWithin on geography (metres) for circles, ST_Covers for polygons.
+//
+// The polygon test is planar — ST_Covers on boundary::geometry, not on the
+// geography column. Geography edges are great-circle arcs, while the map and
+// the in-memory ray cast draw an edge as a straight line in lon/lat; on
+// geography a fix exactly on a fence's equator-side edge reads as outside, and
+// a wide fence at high latitude is off by metres (migration 0004).
+//
+// The plan is driven by places_user_idx: the query is always one user's fences,
+// which is a short list, and a per-row radius_m means ST_DWithin cannot use
+// places_center_gix anyway.
 func (s *Store) PlacesContaining(ctx context.Context, userID string, pt domain.Point) ([]domain.Place, error) {
 	start := time.Now()
 	rows, err := s.pool.Query(ctx, `
@@ -237,7 +245,7 @@ func (s *Store) PlacesContaining(ctx context.Context, userID string, pt domain.P
 		  AND ((shape = 'circle'
 		        AND ST_DWithin(center, ST_SetSRID(ST_MakePoint($2,$3),4326)::geography, radius_m))
 		    OR (shape = 'polygon'
-		        AND ST_Covers(boundary, ST_SetSRID(ST_MakePoint($2,$3),4326)::geography)))
+		        AND ST_Covers(boundary::geometry, ST_SetSRID(ST_MakePoint($2,$3),4326))))
 		ORDER BY id`, userID, pt.Lon, pt.Lat)
 	if err != nil {
 		observe("PlacesContaining", start, err)
