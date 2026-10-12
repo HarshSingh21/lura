@@ -5,7 +5,7 @@ import { Icon } from '@/components/ui/Icon';
 import { Dot } from '@/components/ui/primitives';
 import { NotificationGlyph, NotificationMeta, tintFor, useOpenNotification } from '@/features/notify/ui';
 import { Txt } from '@/theme/text';
-import { color, palette, radius, shadow, space } from '@/theme/tokens';
+import { color, layout, palette, radius, shadow, space } from '@/theme/tokens';
 import { useLayoutMode } from '@/theme/useLayout';
 import { useStore, type Toast } from '@/state/store';
 
@@ -24,12 +24,16 @@ import { useStore, type Toast } from '@/state/store';
  */
 export function Toasts() {
   const toasts = useStore((s) => s.toasts);
-  const { isWide } = useLayoutMode();
+  const { isWide, isDesktop } = useLayoutMode();
 
   if (toasts.length === 0) return null;
 
+  // The stack must never cover the map's own controls (zoom, recentre,
+  // basemap) in the bottom-right corner: on the desktop layout it sits over the
+  // right rail, exactly as wide as the rail; narrower layouts keep a lane clear
+  // for the controls.
   return (
-    <View style={[styles.stack, !isWide && styles.stackPhone]} pointerEvents="box-none">
+    <View style={[styles.stack, isDesktop ? styles.stackDesktop : isWide ? styles.stackWide : styles.stackPhone]} pointerEvents="box-none">
       {toasts.map((toast) => (
         <ToastCard key={toast.id} toast={toast} />
       ))}
@@ -38,6 +42,9 @@ export function Toasts() {
 }
 
 const native = Platform.OS !== 'web';
+
+/** Room on the right for the map's control column (18 px inset + 38 px buttons + a gap). */
+const CONTROLS_LANE = 64;
 
 function ToastCard({ toast }: { toast: Toast }) {
   // A stable callback, so a new toast arriving does not restart this one's timer.
@@ -168,14 +175,13 @@ function Progress({ progress, tint }: { progress: Animated.Value; tint: string }
 const styles = StyleSheet.create({
   stack: {
     position: 'absolute',
-    right: space.xxl,
     bottom: space.xxl,
     gap: space.md,
-    width: 380,
-    maxWidth: '92%',
     zIndex: 60,
   },
-  stackPhone: { left: space.lg, right: space.lg, width: undefined, maxWidth: undefined, bottom: 84 },
+  stackDesktop: { right: space.lg, width: layout.railWidth - space.lg * 2 },
+  stackWide: { right: CONTROLS_LANE, width: 380 },
+  stackPhone: { left: space.lg, right: CONTROLS_LANE, bottom: 84 },
   toast: {
     flexDirection: 'row',
     alignItems: 'flex-start',
