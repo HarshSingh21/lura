@@ -8,6 +8,7 @@ import {
   refreshDelayMs,
   refreshMarginMs,
   REFRESH_MARGIN_MS,
+  renewAfterRejection,
   shouldForceRenewal,
   withDeadline,
   withSessionToken,
@@ -132,4 +133,68 @@ test('a token request that never answers is abandoned at the deadline', async ()
   await assert.rejects(withDeadline(new Promise(() => {}), 20, 'too slow'), /too slow/);
   assert.equal(await withDeadline(Promise.resolve(7), 1000), 7);
   await assert.rejects(withDeadline(Promise.reject(new Error('refused')), 1000), /refused/);
+});
+
+/** A session for renewAfterRejection: holds `token`, renews to `next` when asked. */
+function sessionFor(token: string, next: string) {
+  const state = { token, refreshes: 0, inFlight: undefined as Promise<unknown> | undefined };
+  let release: () => void = () => {};
+  const refresh = () => {
+    if (state.inFlight) return state.inFlight;
+    state.refreshes += 1;
+    state.inFlight = new Promise<void>((resolve) => {
+      release = () => {
+        state.token = next;
+        state.inFlight = undefined;
+        resolve();
+      };
+    });
+    return state.inFlight;
+  };
+  const deps = {
+    current: () => state.token,
+    hasRefreshToken: () => true,
+    inFlight: () => state.inFlight,
+    refresh,
+    now: () => NOW,
+    forced: {} as { at?: number },
+  };
+  return { state, deps, release: () => release() };
+}
+
+test('two 401s that come back together both retry with the one renewed token', async () => {
+  // After a sleep every request that was in flight answers 401 at once.
+  const { state, deps, release } = sessionFor('old', 'new');
+  const first = renewAfterRejection('old', deps);
+  const second = renewAfterRejection('old', deps);
+  release();
+  assert.deepEqual(await Promise.all([first, second]), ['new', 'new']);
+  assert.equal(state.refreshes, 1);
+});
+
+test('a 401 during a renewal someone else started waits for it', async () => {
+  const { state, deps, release } = sessionFor('old', 'new');
+  void deps.refresh(); // the renewal timer, or a request that saw the token expiring
+  const renewed = renewAfterRejection('old', deps);
+  release();
+  assert.equal(await renewed, 'new');
+  assert.equal(state.refreshes, 1);
+  // It did not count as a forced renewal.
+  assert.equal(deps.forced.at, undefined);
+});
+
+test('a second 401 after a forced renewal, for the same new token, does not renew again', async () => {
+  const { state, deps, release } = sessionFor('old', 'new');
+  const first = renewAfterRejection('old', deps);
+  release();
+  assert.equal(await first, 'new');
+  // The server refuses the new one as well (a user it does not know): no loop.
+  assert.equal(await renewAfterRejection('new', deps), 'new');
+  assert.equal(state.refreshes, 1);
+});
+
+test('a 401 for a token the session already replaced retries with the replacement', async () => {
+  const { state, deps } = sessionFor('new', 'newer');
+  assert.equal(await renewAfterRejection('old', deps), 'new');
+  assert.equal(state.refreshes, 0);
 });

@@ -11,8 +11,8 @@ import {
   isExpiring,
   REFRESH_DEADLINE_MS,
   refreshDelayMs,
+  renewAfterRejection,
   RETRY_DELAY_MS,
-  shouldForceRenewal,
   withDeadline,
 } from './refresh';
 
@@ -361,21 +361,25 @@ export async function ensureFreshAccessToken(): Promise<string | undefined> {
   return useSession.getState().accessToken;
 }
 
-let lastForcedRenewal: number | undefined;
+const forcedRenewal: { at?: number } = {};
 
 /**
  * renewRejectedToken is what to try after the server answered 401 to
  * `rejected`. The token may look fresh by its own clock and still be refused
  * (the session was cut short at Keycloak, or this machine's clock is off), so
  * this renews regardless of expiry — at most once per FORCED_RENEWAL_GAP_MS,
- * and not at all when the session already moved on to another token.
+ * not at all when the session already moved on to another token, and by
+ * joining a renewal already under way (refresh.ts renewAfterRejection).
  */
-export async function renewRejectedToken(rejected: string | undefined): Promise<string | undefined> {
-  const { accessToken, refreshToken } = useSession.getState();
-  if (!refreshToken || !shouldForceRenewal(rejected, accessToken, lastForcedRenewal, Date.now())) return accessToken;
-  lastForcedRenewal = Date.now();
-  await useSession.getState().refresh();
-  return useSession.getState().accessToken;
+export function renewRejectedToken(rejected: string | undefined): Promise<string | undefined> {
+  return renewAfterRejection(rejected, {
+    current: () => useSession.getState().accessToken,
+    hasRefreshToken: () => !!useSession.getState().refreshToken,
+    inFlight: () => inFlightRefresh,
+    refresh: () => useSession.getState().refresh(),
+    now: () => Date.now(),
+    forced: forcedRenewal,
+  });
 }
 
 // A tab that comes back into view, regains focus or comes back online renews at
