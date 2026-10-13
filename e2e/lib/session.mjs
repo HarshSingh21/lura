@@ -248,9 +248,11 @@ export class Laptop {
    */
   async sleep(ms, { network = 'offline', during, rejoinMs = 1000 } = {}) {
     const { ctx, page } = this.person;
+    // A moment ahead of both clocks: pauseAt cannot go back, and the page's
+    // clock moves on while this call travels.
     const fakeNow = await page.evaluate(() => Date.now());
     const asleepAt = Date.now();
-    await ctx.clock.pauseAt(Math.max(fakeNow, asleepAt));
+    await ctx.clock.pauseAt(Math.max(fakeNow, asleepAt) + 500);
     if (network === 'offline') await ctx.setOffline(true);
     else for (const c of this.conns.filter((x) => !x.closed && !x.black)) c.cut();
     const work = during ? during() : Promise.resolve();

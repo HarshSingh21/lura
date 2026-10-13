@@ -45,6 +45,10 @@ const SLEEP_MS = Number(process.env.E2E_UC_SLEEP_MS ?? 3 * 60_000);
 const ONLY = (process.env.E2E_UC_ONLY ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 // The positions either way must never pause for longer than this.
 const MAX_GAP_MS = 10_000;
+// An arrive fires once someone has settled inside, or after the server's
+// arrive debounce (LURA_ARRIVE_DEBOUNCE, 45 s) if they keep moving. A browser
+// whose emulated GPS stops changing sends no slower fix, so allow the debounce.
+const ARRIVE_MS = 60_000;
 // After waking, the app has this long to renew its token and be live again.
 const WAKE_BUDGET_MS = 5_000;
 const STEP_MS = 2500;
@@ -366,7 +370,7 @@ try {
     // ---- the finish: Nishtha walks into the Grocery; the note tells both.
     const tc = Date.now();
     await walkTo(nishtha, FENCES.Grocery);
-    const notice = (p, re) => waitFor(`${p.name}'s Grocery notice`, async () => (await uc(p.page)).notices.find((t) => t.wall >= tc && re.test(t.label + t.text)), { timeout: 15000 });
+    const notice = (p, re) => waitFor(`${p.name}'s Grocery notice`, async () => (await uc(p.page)).notices.find((t) => t.wall >= tc && re.test(t.label + t.text)), { timeout: ARRIVE_MS });
     const [th, tn] = await Promise.all([notice(harsh, /Grocery|buy milk/), notice(nishtha, /buy milk/)]);
     const crossShots = [await harsh.shot(OUT, `${longId}-crossing`), await nishtha.shot(OUT, `${longId}-crossing`)];
     await sleep(3000);
@@ -436,13 +440,15 @@ try {
     const panelBefore = (await panelEntries(harsh.page)).filter((l) => l.includes(fence)).length;
     let tCross;
     let asleepShot;
+    const tAsleep = Date.now();
     const s = await laptop.sleep(SLEEP_MS, {
       network,
       during: async () => {
         await sleep(20_000);
         tCross = Date.now();
         await walkTo(nishtha, FENCES[fence]);
-        await sleep(5000);
+        // Inside, and the arrive has fired, well before he wakes.
+        await sleep(Math.min(ARRIVE_MS, Math.max(5000, tAsleep + SLEEP_MS - 20_000 - Date.now())));
         asleepShot = await nishtha.shot(OUT, `${id}-nishtha-while-harsh-sleeps`);
         if (network === 'offline') await harsh.shot(OUT, `${id}-harsh-asleep-offline`).catch(() => null);
       },
