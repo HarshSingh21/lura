@@ -8,7 +8,8 @@ import { Mono, Txt } from '@/theme/text';
 import { color, font, palette, radius, shadow, size, space } from '@/theme/tokens';
 import { selectPendingReminders, useStore } from '@/state/store';
 
-import { stackView, type ReminderCard } from './reminders';
+import { inQuietHours } from './quiet';
+import { cardLabel, silence, stackView, type ReminderCard } from './reminders';
 import { NotificationGlyph, formatWhen, tintFor, useOpenNotification } from './ui';
 
 /**
@@ -64,6 +65,7 @@ export function ReminderCards() {
 
 function Card({ card }: { card: ReminderCard }) {
   const acknowledge = useStore((s) => s.acknowledgeReminder);
+  const silent = useStore((s) => silence({ muted: s.muted, quiet: inQuietHours(s.quietHours) }));
   const open = useOpenNotification();
   const tint = tintFor(card);
   const show = () =>
@@ -79,7 +81,7 @@ function Card({ card }: { card: ReminderCard }) {
     <View
       style={[styles.card, { borderLeftColor: tint }]}
       accessibilityRole="alert"
-      accessibilityLabel={`Reminder: ${card.title}${card.placeName ? ` at ${card.placeName}` : ''}. Waiting for acknowledgement.`}
+      accessibilityLabel={cardLabel(card)}
     >
       <View style={styles.head}>
         <Dot size={7} color={palette.amber} blink />
@@ -129,6 +131,15 @@ function Card({ card }: { card: ReminderCard }) {
               <Txt variant="micro" color={palette.accentInk}>
                 from {card.fromName}
               </Txt>
+            ) : null}
+            {silent ? (
+              // Why it is not ringing: a silent card must not read as a broken one.
+              <View style={styles.metaPart} accessibilityLabel={silent === 'quiet' ? 'Silent: quiet hours' : 'Silent: sounds muted'}>
+                <Icon name="bell-off" size={11} color={color.textSubtle} />
+                <Txt variant="micro" color={color.textSubtle}>
+                  {silent === 'quiet' ? 'Quiet hours' : 'Muted'}
+                </Txt>
+              </View>
             ) : null}
           </View>
         </View>
