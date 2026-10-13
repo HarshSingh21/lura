@@ -283,6 +283,33 @@ export function resolveEveryMs(hook: unknown, env: string | undefined): number {
   return DEFAULT_REMIND_EVERY_MS;
 }
 
+/**
+ * cardLabel is what a screen reader says for a pending card. The server titles
+ * a reminder with its crossing ("Still at Office", "Harsh arrived at Library"),
+ * so the place is only added when the title does not already name it — not
+ * "Still at Office at Office".
+ */
+export function cardLabel(card: Pick<ReminderCard, 'title' | 'body' | 'placeName'>): string {
+  const place = card.placeName && !card.title.includes(card.placeName) ? ` at ${card.placeName}` : '';
+  // Several notes arrive a line each ("• buy aspirin\n• pick up …"): read them inline.
+  const notes = (card.body ?? '')
+    .split('\n')
+    .map((l) => l.replace(/^\s*•\s*/, '').trim())
+    .filter(Boolean)
+    .join(', ');
+  const body = notes && notes !== card.title ? `: ${notes}` : '';
+  return `Reminder: ${card.title}${place}${body}. Waiting for acknowledgement.`;
+}
+
+/**
+ * silence says why a pending card is not ringing, for the card to show: quiet
+ * hours win over mute (they also hold back push), and neither means it rings.
+ */
+export function silence(opts: { muted: boolean; quiet: boolean }): 'quiet' | 'muted' | null {
+  if (opts.quiet) return 'quiet';
+  return opts.muted ? 'muted' : null;
+}
+
 /** stackView is how the card stack renders: the newest card, and how many wait behind it. */
 export function stackView(cards: ReminderCard[], expanded: boolean): { shown: ReminderCard[]; hidden: number } {
   if (expanded || cards.length <= 1) return { shown: cards, hidden: 0 };

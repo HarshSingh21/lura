@@ -202,13 +202,15 @@ function quoted(label: string | undefined): string {
   return label?.trim() ? ` “${label.trim()}”` : '';
 }
 
-/** reminderStatus is "acknowledged 08:52" / "pending". */
-function reminderStatus(r: Pick<ReminderRecord, 'status' | 'ackedAt'>, tz: string): string {
-  if (r.status === 'acknowledged') {
-    const at = formatClock(r.ackedAt, tz);
-    return at ? `acknowledged ${at}` : 'acknowledged';
-  }
-  return 'pending';
+/**
+ * reminderStatus is "acknowledged 08:52", or nothing while pending: a pending
+ * row carries a PENDING chip (and the screen reader hears "pending" from the
+ * row's label), so the words would only say it a second time.
+ */
+function reminderStatus(r: Pick<ReminderRecord, 'status' | 'ackedAt'>, tz: string): string | undefined {
+  if (r.status !== 'acknowledged') return undefined;
+  const at = formatClock(r.ackedAt, tz);
+  return at ? `acknowledged ${at}` : 'acknowledged';
 }
 
 /**
@@ -218,8 +220,22 @@ function reminderStatus(r: Pick<ReminderRecord, 'status' | 'ackedAt'>, tz: strin
  */
 function noteLabel(r: { kind?: string; title?: string; body?: string }): string {
   const body = r.body?.trim();
-  if (r.kind !== 'watch' && body) return body;
+  if (r.kind !== 'watch' && body) return noteList(body);
   return r.title?.trim() || 'note';
+}
+
+/**
+ * noteList reads a reminder body as one line. One crossing with several notes
+ * is one reminder whose body lists them a line each ("• buy aspirin\n• pick up
+ * the prescription", internal/notify render); a timeline row says them inline:
+ * "buy aspirin, pick up the prescription".
+ */
+export function noteList(body: string): string {
+  const lines = body
+    .split('\n')
+    .map((l) => l.replace(/^\s*•\s*/, '').trim())
+    .filter(Boolean);
+  return lines.join(', ');
 }
 
 function join(...parts: (string | undefined | false)[]): string | undefined {
@@ -275,7 +291,9 @@ export function describe(item: ActivityItem, ctx: DescribeContext): ActivityRow 
       return {
         ...base,
         icon: 'bell',
-        title: `${watch ? r.title || 'Watched crossing' : `Reminder: ${noteLabel(r)}`} — ${reminderStatus(r, ctx.tz)}`,
+        title: [watch ? r.title || 'Watched crossing' : `Reminder: ${noteLabel(r)}`, reminderStatus(r, ctx.tz)]
+          .filter(Boolean)
+          .join(' — '),
         detail: join(r.placeName, r.fromName && `from ${r.fromName}`),
         personId: peer ? r.subjectUserId : undefined,
         status: r.status,

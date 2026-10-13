@@ -1,3 +1,4 @@
+import { usePathname } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { Animated, Easing, Platform, Pressable, StyleSheet, View } from 'react-native';
 
@@ -9,6 +10,8 @@ import { Txt } from '@/theme/text';
 import { color, layout, palette, radius, shadow, space } from '@/theme/tokens';
 import { useLayoutMode } from '@/theme/useLayout';
 import { useStore, type Toast } from '@/state/store';
+
+import { stackSlot, type StackMetrics } from './stackSlot';
 
 /**
  * Live toasts.
@@ -28,21 +31,25 @@ import { useStore, type Toast } from '@/state/store';
 export function Toasts() {
   const toasts = useStore((s) => s.toasts);
   const pending = useStore((s) => s.reminders.cards.length);
-  const { isWide, isDesktop } = useLayoutMode();
+  const { mode } = useLayoutMode();
+  const pathname = usePathname();
 
   if (toasts.length === 0 && pending === 0) return null;
 
   // Wide: under the bell, where the notification centre opens, so a toast reads
   // as "new in there" and never sits on the map's zoom and locate controls; on
   // the desktop layout it is exactly as wide as the right rail it covers, so it
-  // never hides any of the map either. Phone: above the tab bar, within reach
-  // of a thumb, with a lane kept clear for the map's control column.
+  // never hides any of the map either — except on History, whose rail head is
+  // the day picker, where it sits on the map instead. Phone: above the tab bar,
+  // within reach of a thumb, with a lane kept clear for the map's control
+  // column. The rules are in stackSlot.ts.
+  const slot = stackSlot(mode, pathname, METRICS);
   return (
-    <View style={[styles.stack, isDesktop ? styles.stackDesktop : isWide ? styles.stackWide : styles.stackPhone]} pointerEvents="box-none">
+    <View style={[styles.stack, slot]} pointerEvents="box-none">
       {/* Pending reminders sit above the passing toasts and outlast them. */}
       <ReminderCards />
       {toasts.map((toast) => (
-        <ToastCard key={toast.id} toast={toast} fromTop={isWide} />
+        <ToastCard key={toast.id} toast={toast} fromTop={slot.top !== 'auto'} />
       ))}
     </View>
   );
@@ -50,10 +57,14 @@ export function Toasts() {
 
 const native = Platform.OS !== 'web';
 
-/** Room on the right for the map's control column (18 px inset + 38 px buttons + a gap). */
-const CONTROLS_LANE = 64;
-/** Tab bar (≈58 px) plus the live map's collapsed people sheet and a gap. */
-const PHONE_STACK_BOTTOM = 128;
+const METRICS: StackMetrics = {
+  topBarHeight: layout.topBarHeight,
+  railWidth: layout.railWidth,
+  historyRailWidth: layout.historyRailWidth,
+  inset: space.lg,
+  wideInset: space.xxl,
+  gap: space.md,
+};
 
 function ToastCard({ toast, fromTop }: { toast: Toast; fromTop: boolean }) {
   // A stable callback, so a new toast arriving does not restart this one's timer.
@@ -189,17 +200,9 @@ function Progress({ progress, tint }: { progress: Animated.Value; tint: string }
 const styles = StyleSheet.create({
   stack: {
     position: 'absolute',
-    top: layout.topBarHeight + space.md,
     gap: space.md,
     zIndex: 60,
   },
-  stackDesktop: { right: space.lg, width: layout.railWidth - space.lg * 2 },
-  stackWide: { right: space.xxl, width: 380 },
-  // 'auto', not undefined: an undefined style is dropped when styles merge, and
-  // the stack then kept the wide layout's top and covered the map's Draw button.
-  // Above the tab bar and the live map's people sheet, so neither the sheet's
-  // handle nor the "+N more" pill under a reminder card is covered.
-  stackPhone: { top: 'auto', left: space.lg, right: CONTROLS_LANE, bottom: PHONE_STACK_BOTTOM },
   toast: {
     flexDirection: 'row',
     alignItems: 'flex-start',

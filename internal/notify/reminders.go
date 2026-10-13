@@ -137,6 +137,21 @@ func (w *Worker) Acknowledge(ctx context.Context, userID, id string) (AckResult,
 	return res, nil
 }
 
+// inlineNotes reads a reminder body as one line: render lists several notes a
+// line each ("• buy aspirin\n• pick up the prescription"), and an
+// acknowledgement notice says them inline ("buy aspirin, pick up the
+// prescription") rather than falling back to the crossing's title.
+func inlineNotes(body string) string {
+	var parts []string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "•"))
+		if line != "" {
+			parts = append(parts, line)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
 // tellOwner stores and publishes "Nishtha acknowledged buy milk" for the note
 // owner. It is in-app only: an acknowledgement is news, not a reminder, so it
 // does not push to the owner's phone.
@@ -145,8 +160,8 @@ func (w *Worker) tellOwner(ctx context.Context, rec domain.ReminderRecord) {
 	if name == "" {
 		name = "Someone"
 	}
-	what := rec.Body
-	if what == "" || strings.Contains(what, "\n") {
+	what := inlineNotes(rec.Body)
+	if what == "" {
 		what = rec.Title
 	}
 	notice, err := w.store.SaveReminder(ctx, domain.ReminderRecord{

@@ -21,6 +21,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/signal"
@@ -301,11 +302,17 @@ func jitter(lat, lon, metres float64) (float64, float64) {
 	if metres <= 0 {
 		return lat, lon
 	}
-	// Derived from the clock rather than math/rand: no seeding, no dependency, and
-	// repeated runs still look different.
-	t := float64(time.Now().UnixNano()%1_000_000) / 1_000_000
-	bearing := t * 360
-	return geo.Destination(lat, lon, bearing, metres*t)
+	return jitterWith(lat, lon, metres, rand.Float64(), rand.Float64())
+}
+
+// jitterWith places a fix uniformly within a disc of the given radius, from two
+// independent uniform draws: one for the bearing, one for the distance (its
+// square root, so the disc is evenly covered rather than crowded at the
+// centre). The bearing and distance used to come from one clock-derived number,
+// which tied them together: the full radius was only ever reached due north,
+// and a phone parked on an east or west fence edge never strayed across it.
+func jitterWith(lat, lon, metres, u, v float64) (float64, float64) {
+	return geo.Destination(lat, lon, u*360, metres*math.Sqrt(v))
 }
 
 func parseRoute(spec string) ([]waypoint, error) {

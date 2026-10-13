@@ -10,6 +10,7 @@ import {
   acknowledge,
   beginAck,
   cardFrom,
+  cardLabel,
   commitAck,
   dueCards,
   markChimed,
@@ -17,6 +18,7 @@ import {
   reconcile,
   resolveEveryMs,
   rollbackAck,
+  silence,
   stackView,
   upsert,
   type RemindersState,
@@ -316,4 +318,30 @@ test('a due repeat is held back in quiet hours, chimes in front, notifies the de
   assert.equal(repeatAction({ quiet: false, visible: true, muted: false }), 'sound');
   assert.equal(repeatAction({ quiet: false, visible: true, muted: true }), 'muted');
   assert.equal(repeatAction({ quiet: false, visible: false, muted: true }), 'desktop');
+});
+
+test('a card is read out once per place, with its notes', () => {
+  // The title already names the place: not "Still at Office at Office".
+  assert.equal(
+    cardLabel({ title: 'Still at Office', placeName: 'Office', body: 'submit timesheet' }),
+    'Reminder: Still at Office: submit timesheet. Waiting for acknowledgement.',
+  );
+  // Two notes on one crossing are read inline.
+  assert.equal(
+    cardLabel({ title: 'Arrived at Pharmacy', placeName: 'Pharmacy', body: '• buy aspirin\n• pick up the prescription' }),
+    'Reminder: Arrived at Pharmacy: buy aspirin, pick up the prescription. Waiting for acknowledgement.',
+  );
+  // A title that does not say where gets the place; a watch reminder's body repeats its title.
+  assert.equal(cardLabel({ title: 'buy milk', placeName: 'Grocery' }), 'Reminder: buy milk at Grocery. Waiting for acknowledgement.');
+  assert.equal(
+    cardLabel({ title: 'Nishtha arrived at Grocery', placeName: 'Grocery', body: 'Nishtha arrived at Grocery' }),
+    'Reminder: Nishtha arrived at Grocery. Waiting for acknowledgement.',
+  );
+});
+
+test('a silent card says why', () => {
+  assert.equal(silence({ muted: false, quiet: false }), null);
+  assert.equal(silence({ muted: true, quiet: false }), 'muted');
+  assert.equal(silence({ muted: false, quiet: true }), 'quiet');
+  assert.equal(silence({ muted: true, quiet: true }), 'quiet');
 });
