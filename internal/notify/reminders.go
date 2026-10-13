@@ -101,6 +101,15 @@ func (w *Worker) Acknowledge(ctx context.Context, userID, id string) (AckResult,
 
 	owner := rec.OwnerID
 	if owner != "" && owner != userID {
+		// Someone else's note: once the two are no longer connected the
+		// reminder is only the recipient's own record. Telling the owner, or
+		// ticking off their note, would be news of the recipient reaching
+		// someone they removed.
+		if !w.connected(ctx, owner, userID) {
+			w.log.InfoContext(ctx, "notify: ack of a removed connection's note kept private",
+				"reminder", rec.ID, "owner", owner)
+			return res, nil
+		}
 		w.tellOwner(ctx, rec)
 	}
 
