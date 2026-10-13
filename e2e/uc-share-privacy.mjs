@@ -753,16 +753,22 @@ try {
   });
 
   await step('Z', 'No page errors, console errors or 5xx in any browser; only the expected refusals', async () => {
+    // The laptop's own uplink or DNS dropping while MapLibre fetches the
+    // third-party basemap (tiles.openfreemap.org) is not Lura's fault: Chrome
+    // logs it as a net:: transport error with no HTTP status. Anything from
+    // Lura's own origin, and any HTTP 4xx/5xx, still counts.
+    const offline = (e) => e.kind === 'console' && /Failed to load resource: net::ERR_(NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|NETWORK_CHANGED|ADDRESS_UNREACHABLE)\b/.test(e.text)
+      && !!e.url && !e.url.startsWith(new URL(BASE).origin) && !e.url.startsWith(new URL(API).origin);
     const report = {};
     for (const p of people) {
       const bad = p.badResponses.filter((r) => !/favicon/.test(r.url) && !/:8085\//.test(r.url));
-      report[p.name] = { errors: p.errors, bad };
+      report[p.name] = { errors: p.errors.filter((e) => !offline(e)), bad };
     }
     for (const v of viewers) {
       // A viewer of an ended, expired or unknown link is refused on purpose
       // (403/404 on /s/…), and Chrome logs each refusal as a console error.
       const bad = v.bad.filter((r) => !(/\/s\/[^/]+(\/ws)?(\?|$)/.test(r.url) && [403, 404].includes(r.status)) && !/favicon/.test(r.url));
-      const errors = v.errors.filter((e) => !/status of 40[34]|WebSocket connection to .*\/s\/.* failed/.test(e.text));
+      const errors = v.errors.filter((e) => !offline(e) && !/status of 40[34]|WebSocket connection to .*\/s\/.* failed/.test(e.text));
       report[`viewer-${v.name}`] = { errors, bad };
     }
     const problems = Object.values(report).flatMap((r) => [...r.errors, ...r.bad]);
