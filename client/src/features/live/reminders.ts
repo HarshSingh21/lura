@@ -26,7 +26,11 @@ export function firstName(name: string): string {
 
 export type UpcomingNote = {
   note: Note;
-  /** Why it cannot fire now, if it cannot (reminderHold). */
+  /**
+   * Why it cannot fire now, if it cannot (reminderHold). Also set on a waiting
+   * note: it stays open until acknowledged, so it can fire again, and a paused
+   * watch stops that just as it would for an armed one.
+   */
   hold?: string;
   /** It has gone off and its reminder card is waiting to be acknowledged. */
   waiting: boolean;
@@ -38,8 +42,9 @@ export const WAITING_LINE = 'Went off · waiting for you to acknowledge it';
 /**
  * upcomingNotes is the rail's "Upcoming reminders": open notes bound to a place.
  * One whose reminder has gone off and waits on a card is no longer armed: it is
- * listed first and says so, rather than reading as a reminder still to come.
- * Armed ones follow, then those on hold. At most `limit`.
+ * listed first and says so, rather than reading as a reminder still to come,
+ * and still says when it is on hold. Armed ones follow, then those on hold.
+ * At most `limit`.
  */
 export function upcomingNotes(
   notes: Note[],
@@ -51,10 +56,7 @@ export function upcomingNotes(
   const rank = (u: UpcomingNote) => (u.waiting ? 0 : u.hold ? 2 : 1);
   return notes
     .filter((note) => !note.done && note.placeId)
-    .map((note) => {
-      const waiting = waitingIds.has(note.id);
-      return { note, hold: waiting ? undefined : reminderHold(note, people), waiting };
-    })
+    .map((note) => ({ note, hold: reminderHold(note, people), waiting: waitingIds.has(note.id) }))
     .sort((a, b) => rank(a) - rank(b))
     .slice(0, limit);
 }
