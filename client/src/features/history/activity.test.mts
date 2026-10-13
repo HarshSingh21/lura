@@ -256,6 +256,20 @@ test('the timeline runs in the order the day happened, under part-of-day heading
   assert.equal(sections[2]!.rows[0]!.title, 'Arrived at Home');
 });
 
+test('a folded pending reminder says pending once, by its status', () => {
+  const sections = buildTimeline(
+    [
+      { type: 'reminder', id: 'r1', ts: ist(8, 51), reminder: reminder({ status: 'pending', ackedAt: undefined }) },
+      geo({ id: 'g1', ts: ist(8, 51) }),
+    ],
+    ctx,
+  );
+  const row = sections[0]!.rows[0]!;
+  assert.equal(row.title, 'Passed Grocery — reminder buy milk');
+  assert.equal(row.status, 'pending');
+  assert.equal(row.detail, undefined);
+});
+
 test('a reminder without its crossing in the feed stands on its own', () => {
   const sections = buildTimeline(
     [{ type: 'reminder', id: 'r1', ts: ist(4, 10), reminder: reminder({ status: 'pending', ackedAt: undefined }) }],

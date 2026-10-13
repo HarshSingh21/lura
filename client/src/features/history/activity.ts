@@ -375,7 +375,9 @@ export function buildTimeline(items: ActivityItem[], ctx: DescribeContext): Acti
     return {
       ...row,
       title: `${row.title} — reminder ${reminders.map((r) => noteLabel(r)).join(', ')}`,
-      detail: join(row.detail, ...reminders.map((r) => reminderStatus(r, ctx.tz))),
+      // A pending one is said by the row's PENDING chip; "pending" beside it
+      // again is noise. Acknowledged ones say when.
+      detail: join(row.detail, ...reminders.filter((r) => r.status !== 'pending').map((r) => reminderStatus(r, ctx.tz))),
       status: pending ? ('pending' as const) : ('acknowledged' as const),
     };
   });
