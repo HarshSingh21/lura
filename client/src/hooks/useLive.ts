@@ -5,6 +5,7 @@ import { connectLive } from '@/api/live';
 import { keys } from '@/api/hooks';
 import type { Overview, Position } from '@/api/types';
 import { useTrails } from '@/features/live/trails';
+import { peopleOf } from '@/features/people/types';
 import { useStore } from '@/state/store';
 
 import { syncPendingReminders } from './useReminders';
@@ -39,14 +40,22 @@ export function useLive(enabled = true) {
     // marker until the overview names it; re-read it rather than wait for the
     // next poll. Throttled, so a burst of fixes costs one request.
     let lastRefetch = 0;
+    // The same goes for a peer's device the snapshot predates (a tablet they
+    // just added): without a re-read its marker says "new device" until the
+    // next poll.
     const learnDevice = (p: Position) => {
       const overview = qc.getQueryData<Overview>(keys.overview);
-      if (!overview || p.userId !== overview.user.id) return;
-      if (overview.devices.some((d) => d.id === p.deviceId)) return;
+      if (!overview) return;
+      const known =
+        p.userId === overview.user.id
+          ? overview.devices.some((d) => d.id === p.deviceId)
+          : peopleOf(overview).some((peer) => peer.peerId === p.userId && (peer.devices ?? []).some((d) => d.id === p.deviceId));
+      if (known) return;
       const now = Date.now();
       if (now - lastRefetch < 5_000) return;
       lastRefetch = now;
       void qc.invalidateQueries({ queryKey: keys.overview });
+      if (p.userId !== overview.user.id) void qc.invalidateQueries({ queryKey: ['people'] });
     };
     // A different server or credential is a different stream: its trails start empty.
     clearTrails();
