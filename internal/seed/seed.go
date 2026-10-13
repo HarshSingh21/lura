@@ -246,11 +246,14 @@ func seedDay(ctx context.Context, st store.Store, deviceID, userID string, place
 		{place: "plc_gym", stopMins: 50, mode: "Drive"},
 	}
 
-	// Start at 08:04 local, or earlier if the process starts early in the day, so
-	// the generated day always ends before "now".
+	// Start at 08:04 local, or earlier if the process starts before the day's
+	// legs (about five hours) could have happened since then, so the generated
+	// day is always whole and ends before "now". A server started at 08:10 once
+	// seeded one fix and no trips.
+	const dayLength = 6 * time.Hour
 	start := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 8, 4, 0, 0, localNow.Location())
-	if !start.Before(localNow) {
-		start = localNow.Add(-6 * time.Hour)
+	if localNow.Sub(start) < dayLength {
+		start = localNow.Add(-dayLength)
 	}
 
 	const (
