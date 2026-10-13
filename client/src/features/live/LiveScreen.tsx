@@ -1153,8 +1153,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
-  // Never under the control column: on a phone the credit wraps rather than run beneath it.
-  attributionPhone: { bottom: 84, maxWidth: '78%' },
+  // Never under the control column: on a phone the credit wraps rather than run
+  // beneath it, to two lines on any phone, so it sits right on the people sheet
+  // (60 px over the map's foot) and stays clear of the reminder stack's foot
+  // (components/shell/stackSlot.ts).
+  attributionPhone: { bottom: 66, maxWidth: '78%' },
   attributionAboveToolbar: { bottom: 128 },
 
   statusOverlay: {
