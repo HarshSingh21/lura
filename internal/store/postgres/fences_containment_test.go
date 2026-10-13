@@ -26,6 +26,7 @@ func openFenceStore(t *testing.T) *postgres.Store {
 	if err != nil {
 		t.Fatalf("open bootstrap connection: %v", err)
 	}
+	postgres.EnsurePostGISInPublic(ctx, t, bootstrap)
 	if _, err := bootstrap.Pool().Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		_ = bootstrap.Close()
 		t.Fatalf("create schema: %v", err)

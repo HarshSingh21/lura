@@ -153,6 +153,7 @@ func isolatedStore(t *testing.T, ctx context.Context, dsn string) *Store {
 	if err != nil {
 		t.Fatalf("open bootstrap: %v", err)
 	}
+	EnsurePostGISInPublic(ctx, t, boot)
 	if _, err := boot.pool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		_ = boot.Close()
 		t.Fatalf("create schema: %v", err)
