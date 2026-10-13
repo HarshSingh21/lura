@@ -247,6 +247,53 @@ func TestFeedMergesEverySourceNewestFirst(t *testing.T) {
 	}
 }
 
+// A connected person's crossing of my fence is in my feed when the fence
+// watches them or I was told about it — not when it fired only for a note
+// about them that tells only them.
+func TestFeedShowsAPeersCrossingOnlyWhenIWasEntitledToIt(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	st, t0 := f.st, f.t0
+	if _, err := st.CreatePlace(ctx, domain.Place{ID: "p_gym", UserID: me, Name: "Gym", WatchUserIDs: []string{peer},
+		Center: domain.Point{Lat: 12.93, Lon: 77.6}, RadiusM: 80, Triggers: []domain.Trigger{domain.TriggerPassby}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreatePlace(ctx, domain.Place{ID: "p_gym2", UserID: me, Name: "Gym2",
+		Center: domain.Point{Lat: 12.94, Lon: 77.6}, RadiusM: 80, Triggers: []domain.Trigger{domain.TriggerPassby}}); err != nil {
+		t.Fatal(err)
+	}
+	cross := func(place, name, geoID string, at time.Duration) {
+		t.Helper()
+		if _, err := st.InsertTriggerEvent(ctx, domain.TriggerEvent{UserID: me, PlaceID: place, PlaceName: name,
+			DeviceID: "dev_nishtha", Trigger: domain.TriggerPassby, TS: t0.Add(at), SubjectUserID: peer,
+			SubjectName: "Nishtha", GeoEventID: geoID, NoteIDs: []string{}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cross("p_gym", "Gym", "geo_watched", 10*time.Minute)      // the fence watches her
+	cross("p_gym2", "Gym2", "geo_note_only", 20*time.Minute)  // "pick up keys", notify only her
+	cross("p_grocery", "Grocery", "geo_told", 30*time.Minute) // a note that tells me too
+	if _, err := st.SaveReminder(ctx, domain.ReminderRecord{UserID: me, OwnerID: me, Kind: domain.ReminderKindNote,
+		Title: "Nishtha passed by Grocery", Body: "buy milk", PlaceID: "p_grocery", PlaceName: "Grocery",
+		EventID: "geo_told", CreatedAt: t0.Add(30 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := activity.New(st, nil).Feed(ctx, me, activity.Query{From: t0, To: t0.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var places []string
+	for _, it := range res.Items {
+		if g, ok := it.(activity.GeoItem); ok && g.SubjectUserID == peer {
+			places = append(places, g.PlaceName)
+		}
+	}
+	if strings.Join(places, ",") != "Grocery,Gym" {
+		t.Errorf("peer crossings in my feed = %v, want Grocery (I was told) and Gym (I watch her), not Gym2", places)
+	}
+}
+
 func TestFeedRejectsAnInvertedWindow(t *testing.T) {
 	f := newFixture(t)
 	if _, err := activity.New(f.st, nil).Feed(context.Background(), me, activity.Query{

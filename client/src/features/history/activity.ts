@@ -282,17 +282,19 @@ export function describe(item: ActivityItem, ctx: DescribeContext): ActivityRow 
         focus: r.placeId ? { placeId: r.placeId, placeName: r.placeName } : undefined,
       };
     }
-    case 'ack':
+    case 'ack': {
+      const label = noteLabel(item);
       return {
         ...base,
         icon: 'check',
-        title: item.byMe
-          ? `Acknowledged ${noteLabel(item)}`
-          : `${item.ackedByName || 'Someone'} acknowledged ${noteLabel(item)}`,
-        detail: join(item.placeName),
+        title: item.byMe ? `Acknowledged ${label}` : `${item.ackedByName || 'Someone'} acknowledged ${label}`,
+        // An acknowledged watch alert already names the place ("Acknowledged
+        // Nishtha passed by Gym"); a note's text does not ("buy milk").
+        detail: item.placeName && label.includes(item.placeName) ? undefined : join(item.placeName),
         personId: item.byMe ? undefined : item.ackedBy,
         focus: item.placeName ? { placeName: item.placeName } : undefined,
       };
+    }
     case 'connection':
       return { ...base, icon: 'people', title: connectionTitle(item), personId: item.peerId };
     case 'share':
@@ -372,9 +374,13 @@ export function buildTimeline(items: ActivityItem[], ctx: DescribeContext): Acti
     const reminders = folded.get(i.id);
     if (!reminders?.length) return row;
     const pending = reminders.some((r) => r.status === 'pending');
+    // A watch reminder *is* the crossing ("Nishtha passed by Grocery"): naming
+    // it again after the row's own title would say the same thing twice. Only
+    // notes add something to read; a watch adds just its status.
+    const notes = reminders.filter((r) => r.kind !== 'watch');
     return {
       ...row,
-      title: `${row.title} — reminder ${reminders.map((r) => noteLabel(r)).join(', ')}`,
+      title: notes.length ? `${row.title} — reminder ${notes.map((r) => noteLabel(r)).join(', ')}` : row.title,
       detail: join(row.detail, ...reminders.map((r) => reminderStatus(r, ctx.tz))),
       status: pending ? ('pending' as const) : ('acknowledged' as const),
     };

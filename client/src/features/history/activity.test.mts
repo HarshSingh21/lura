@@ -331,3 +331,46 @@ test('the note text names a reminder, and a crossing named by another id still f
     'Nishtha acknowledged buy milk',
   ]);
 });
+
+test('a watch alert folds into its crossing without saying the crossing twice', () => {
+  // Nishtha watches Harsh at Gym: the crossing and the watch reminder it raised
+  // are one moment, and the reminder's title is that same crossing.
+  const viewer = { tz: IST, viewerId: NISHTHA };
+  const items: ActivityItem[] = [
+    geo({ id: 'g', eventId: 'geo_w', placeId: 'plc_gym', placeName: 'Gym', noteIds: [] }),
+    {
+      type: 'reminder',
+      id: 'r',
+      ts: ist(8, 51),
+      reminder: reminder({
+        userId: NISHTHA, ownerId: NISHTHA, kind: 'watch', noteIds: [], eventId: 'geo_w', placeId: 'plc_gym', placeName: 'Gym',
+        title: 'Harsh passed by Gym', body: 'Harsh passed by Gym', ackedBy: NISHTHA,
+      }),
+    },
+    {
+      type: 'ack', id: 'a', ts: ist(8, 52), reminderId: 'rem_1', title: 'Harsh passed by Gym', body: 'Harsh passed by Gym',
+      placeName: 'Gym', noteIds: [], ackedBy: NISHTHA, ackedByName: 'Nishtha', byMe: true,
+    },
+  ];
+  const rows = buildTimeline(items, viewer).flatMap((s) => s.rows);
+  assert.deepEqual(rows.map((r) => [r.title, r.detail]), [
+    ['Harsh passed Gym', 'acknowledged 08:52'],
+    ['Acknowledged Harsh passed by Gym', undefined],
+  ]);
+  // A note still says what it is about, and its acknowledgement where.
+  const note = buildTimeline(
+    [
+      geo({ subjectUserId: NISHTHA, subjectName: 'Nishtha' }),
+      { type: 'reminder', id: 'r', ts: ist(8, 51), reminder: reminder({ kind: 'note', title: 'Nishtha passed by Grocery', body: 'buy milk' }) },
+      {
+        type: 'ack', id: 'a', ts: ist(8, 52), reminderId: 'rem_1', title: 'Nishtha passed by Grocery', body: 'buy milk',
+        placeName: 'Grocery', noteIds: ['nte_1'], ackedBy: HARSH, ackedByName: 'Harsh', byMe: true,
+      },
+    ],
+    ctx,
+  ).flatMap((s) => s.rows);
+  assert.deepEqual(note.map((r) => [r.title, r.detail]), [
+    ['Nishtha passed Grocery — reminder buy milk', 'acknowledged 08:52'],
+    ['Acknowledged buy milk', 'Grocery'],
+  ]);
+});

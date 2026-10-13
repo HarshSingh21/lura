@@ -9,7 +9,7 @@ import type { TrackingStatus } from '@/hooks/useTracking';
 import { Mono, SectionLabel, Txt } from '@/theme/text';
 import { color, palette, radius, size, space } from '@/theme/tokens';
 
-import { fixTimeMs, formatAge, formatSpeed, isStale, MOVING_MPS, speedOf, type TrailPoint } from './motion';
+import { deviceLine, fixTimeMs, formatAge, MOVING_MPS, pingLine, speedOf, type TrailPoint } from './motion';
 import { firstName, reminderHold } from './reminders';
 
 /**
@@ -56,20 +56,6 @@ function FollowButton({ on, name, onPress }: { on: boolean; name: string; onPres
       </Mono>
     </Pressable>
   );
-}
-
-/**
- * pingLine writes the live half of a row: speed or "still", how long since the
- * last ping (ticking), and the battery when the device reported one.
- */
-function pingLine({ speed, lastSeenMs, battery, now }: { speed: number; lastSeenMs?: number; battery?: number; now: number }): string {
-  const parts: string[] = [];
-  // Gone quiet: a speed from minutes ago is not news, how long ago is.
-  if (lastSeenMs !== undefined && isStale(lastSeenMs, now)) return `Last seen ${formatAge(now - lastSeenMs)}`;
-  parts.push(speed > MOVING_MPS ? `Moving · ${formatSpeed(speed)}` : 'Still');
-  if (lastSeenMs !== undefined && Number.isFinite(lastSeenMs)) parts.push(formatAge(now - lastSeenMs));
-  if (battery !== undefined && battery > 0) parts.push(`${Math.round(battery)}% battery`);
-  return parts.join(' · ');
 }
 
 export function SharingBanner({
@@ -356,7 +342,7 @@ export function DeviceList({
                       {device.name}
                     </Txt>
                     <Txt variant="micro" color={color.textSubtle} numberOfLines={2} testID={`lura-rail-device-${device.id}`}>
-                      {describeDevice({ moving, speed, inside, lastSeenMs, now })}
+                      {deviceLine({ moving, speed, inside, lastSeenMs, now })}
                     </Txt>
                   </View>
 
@@ -377,28 +363,6 @@ export function DeviceList({
       </View>
     </View>
   );
-}
-
-/** describeDevice writes the "Moving · 34 km/h · 3s ago" / "Idle · Home" line from the mock. */
-function describeDevice({
-  moving,
-  speed,
-  inside,
-  lastSeenMs,
-  now,
-}: {
-  moving: boolean;
-  speed: number;
-  inside?: string;
-  lastSeenMs?: number;
-  now: number;
-}): string {
-  if (lastSeenMs !== undefined && isStale(lastSeenMs, now)) return `Last seen ${formatAge(now - lastSeenMs)}${inside ? ` · ${inside}` : ''}`;
-  const age = lastSeenMs !== undefined && Number.isFinite(lastSeenMs) ? ` · ${formatAge(now - lastSeenMs)}` : '';
-  if (moving) return `Moving · ${formatSpeed(speed)}${age}`;
-  if (inside) return `Idle · ${inside}${age}`;
-  if (age) return `Idle${age}`;
-  return 'No fix yet';
 }
 
 export function UpcomingReminders({ notes, places, people = [] }: { notes: Note[]; places: Place[]; people?: Peer[] }) {

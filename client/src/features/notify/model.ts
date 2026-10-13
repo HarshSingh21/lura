@@ -149,7 +149,14 @@ export function fromReminder(r: Reminder | ReminderRecord, viewerId?: string, no
   const title = r.title?.trim() || (e ? fromGeo(e, viewerId, now).title : 'Reminder');
   // A watch reminder repeats its title as the body, which push channels need (a
   // phone banner may show only one of them); on screen it would say it twice.
+  // So does an acknowledgement: "Nishtha acknowledged pick up keys" over
+  // "pick up keys".
   const body = r.body?.trim();
+  const sayOnce = body && (body === title || (ack && title.includes(body)));
+  // The person who acknowledged is the one it is about, already named in the
+  // title and the person dot: "from Nishtha" would be the third time.
+  const fromName = r.fromName?.trim() || undefined;
+  const fromSubject = ack && fromName !== undefined && fromName === (peer ? subject.name : undefined);
   return {
     id,
     ...status,
@@ -157,13 +164,13 @@ export function fromReminder(r: Reminder | ReminderRecord, viewerId?: string, no
     source: 'notify',
     trigger: r.trigger,
     title,
-    body: body && body !== title ? body : undefined,
+    body: body && !sayOnce ? body : undefined,
     placeId: r.placeId || e?.placeId || undefined,
     placeName: r.placeName || e?.placeName || undefined,
     subjectUserId: peer ? subject.subjectUserId : undefined,
     subjectName: peer ? subject.name || undefined : undefined,
     deviceId: ('deviceId' in r ? r.deviceId : undefined) || e?.deviceId || undefined,
-    fromName: r.fromName?.trim() || undefined,
+    fromName: fromSubject ? undefined : fromName,
     point: e?.point,
     at: stamp(ts, now),
     read: false,

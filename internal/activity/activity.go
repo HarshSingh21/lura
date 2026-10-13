@@ -239,6 +239,27 @@ func (s *Service) Feed(ctx context.Context, userID string, q Query) (Result, err
 		}
 	}
 
+	// The reminders the viewer received, read first: they also say which of a
+	// connected person's crossings the viewer was told about.
+	reminders, err := s.store.ListReminders(ctx, userID, store.ReminderFilter{From: q.From, To: q.To, Limit: q.Limit * 2})
+	if err != nil {
+		return Result{}, err
+	}
+	told := map[string]bool{}
+	for _, r := range reminders {
+		if r.EventID != "" {
+			told[r.EventID] = true
+		}
+	}
+	places, err := s.store.ListPlaces(ctx, userID)
+	if err != nil {
+		return Result{}, err
+	}
+	watches := map[string]domain.Place{}
+	for _, p := range places {
+		watches[p.ID] = p
+	}
+
 	// ---- fence crossings on the viewer's places.
 	events, err := s.store.TriggerEventsBetween(ctx, userID, window)
 	if err != nil {
@@ -248,6 +269,9 @@ func (s *Service) Feed(ctx context.Context, userID string, q Query) (Result, err
 		subject := e.SubjectUserID
 		if subject == "" {
 			subject = e.UserID
+		}
+		if subject != userID && !entitled(e, watches, told) {
+			continue
 		}
 		id := "geo:" + e.ID
 		crossing := e.GeoEventID
@@ -263,10 +287,6 @@ func (s *Service) Feed(ctx context.Context, userID string, q Query) (Result, err
 	}
 
 	// ---- reminders received, and acknowledgements.
-	reminders, err := s.store.ListReminders(ctx, userID, store.ReminderFilter{From: q.From, To: q.To, Limit: q.Limit * 2})
-	if err != nil {
-		return Result{}, err
-	}
 	myName := ""
 	if u, err := s.store.GetUser(ctx, userID); err == nil {
 		myName = u.DisplayName
@@ -344,6 +364,23 @@ func (s *Service) Feed(ctx context.Context, userID string, q Query) (Result, err
 		items = append(items, e.item)
 	}
 	return Result{Items: items, From: q.From, To: q.To}, nil
+}
+
+// entitled says whether the viewer may see a connected person's crossing of
+// one of the viewer's fences (release spec §7: "only as events the user was
+// entitled to"). They may when the fence watches that person, or when the
+// viewer was told about this crossing (a reminder carries its id). A fence that
+// fired only because a note is about the person, and the note tells only them,
+// is not the viewer's to see: "pick up keys, notify only Nishtha" leaves Harsh
+// with her acknowledgement, not a record of where she went. A row recorded
+// before crossings kept their id cannot be matched to what the viewer was told,
+// so it stands as it always did.
+func entitled(e domain.TriggerEvent, places map[string]domain.Place, told map[string]bool) bool {
+	if e.GeoEventID == "" || told[e.GeoEventID] {
+		return true
+	}
+	p, ok := places[e.PlaceID]
+	return ok && p.Watches(e.SubjectUserID)
 }
 
 func centroid(path []domain.Point) *domain.Point {
