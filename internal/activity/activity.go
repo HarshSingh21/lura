@@ -341,11 +341,19 @@ func (s *Service) Feed(ctx context.Context, userID string, q Query) (Result, err
 			Type: TypeShare, ID: id, TS: sh.CreatedAt.UTC(), Action: "created",
 			ShareID: sh.ID, Label: sh.Label, Mode: sh.Mode,
 		})
-		if sh.RevokedAt != nil {
+		ended, reason := sh.RevokedAt, sh.RevokeReason
+		if ended == nil && sh.ExpiresAt != nil && !sh.ExpiresAt.After(s.now()) {
+			// Expired, but nothing recorded it: the in-process timer and the
+			// sweeper only end links while this process is running, so a link
+			// that ran out across a restart has no revocation row. It is over
+			// all the same (Share.Active), and its history must say so.
+			ended, reason = sh.ExpiresAt, "expired"
+		}
+		if ended != nil {
 			id := "share:" + sh.ID + ":revoked"
-			add(*sh.RevokedAt, id, ShareItem{
-				Type: TypeShare, ID: id, TS: sh.RevokedAt.UTC(), Action: "revoked",
-				ShareID: sh.ID, Label: sh.Label, Mode: sh.Mode, Reason: sh.RevokeReason,
+			add(*ended, id, ShareItem{
+				Type: TypeShare, ID: id, TS: ended.UTC(), Action: "revoked",
+				ShareID: sh.ID, Label: sh.Label, Mode: sh.Mode, Reason: reason,
 			})
 		}
 	}
