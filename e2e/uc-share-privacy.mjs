@@ -207,16 +207,21 @@ function leaks(value) {
 /**
  * historyHolds checks one person's History (API) against the other's raw
  * track: no point of the other's device in /history, its export, or a trip or
- * stop of the activity feed.
+ * stop of the activity feed. Naming their phone in ?deviceId= is a 404
+ * not_found, the same answer as a phone that does not exist (every store).
  */
 async function historyHolds(me, them, theirDev) {
-  const [all, theirs, exp, feed] = await Promise.all([
+  const [all, theirRes, exp, feed] = await Promise.all([
     me.api('GET', '/api/v1/history?limit=20000'),
-    me.api('GET', `/api/v1/history?deviceId=${theirDev.id}`),
+    fetch(`${API}/api/v1/history?deviceId=${theirDev.id}`, { headers: { Authorization: `Bearer ${await me.token()}` } })
+      .then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) })),
     fetch(`${API}/api/v1/history/export?format=geojson`, { headers: { Authorization: `Bearer ${await me.token()}` } }).then((r) => r.text()),
     me.api('GET', '/api/v1/activity?limit=1000'),
   ]);
+  const theirs = theirRes.body ?? {};
   const theirPoints = (theirs.points ?? 0) + (theirs.track?.length ?? 0) + (theirs.segments?.length ?? 0);
+  check(theirRes.status === 404 && theirs.code === 'not_found',
+    `${me.name}'s /history?deviceId=<${them.name}'s phone> → ${theirRes.status} ${JSON.stringify(theirs).slice(0, 200)}; want 404 not_found`);
   const allLeak = pathsWith(all, theirDev.id);
   const expLeak = exp.includes(theirDev.id);
   const trips = feed.items.filter((i) => i.type === 'trip' || i.type === 'stop');
