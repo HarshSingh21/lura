@@ -98,6 +98,7 @@ export function LiveScreen() {
   const problem = loadProblem(error, !!data);
 
   const positions = useStore((s) => s.positions);
+  const reminderCards = useStore((s) => s.reminders.cards);
   const liveStatus = useStore((s) => s.status);
   const trails = useTrails((s) => s.trails);
   const lastEvent = useStore((s) => s.lastEvent);
@@ -608,7 +609,7 @@ export function LiveScreen() {
           setSheetOpen(false);
         }}
       />
-      <UpcomingReminders notes={data?.notes ?? []} places={places} people={people} />
+      <UpcomingReminders notes={data?.notes ?? []} places={places} people={people} cards={reminderCards} />
     </View>
   );
 

@@ -38,6 +38,8 @@ export type ReminderCard = {
   subjectName?: string;
   /** The note's author when it is not the viewer ("from Harsh"). */
   fromName?: string;
+  /** The notes it is for ([] for a watch). */
+  noteIds?: string[];
   point?: Point;
   /** Epoch ms the reminder fired. */
   at: number;
@@ -117,6 +119,7 @@ export function cardFrom(r: StoredReminder, viewerId?: string, now = Date.now())
     subjectUserId: peer.id,
     subjectName: peer.name,
     fromName: trimmed(r.fromName),
+    noteIds: r.noteIds?.length ? [...r.noteIds] : undefined,
     point: e?.point,
     at,
     receivedAt: now,

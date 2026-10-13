@@ -1,4 +1,5 @@
 import type { Note } from '@/api/types';
+import type { ReminderCard } from '@/features/notify/reminders';
 import type { Peer } from '@/features/people/types';
 
 /**
@@ -21,4 +22,39 @@ export function reminderHold(note: Pick<Note, 'userId' | 'watchUserId'>, people:
 /** firstName is how the rail refers to a person in a sentence. */
 export function firstName(name: string): string {
   return name.trim().split(/\s+/)[0] || 'they';
+}
+
+export type UpcomingNote = {
+  note: Note;
+  /** Why it cannot fire now, if it cannot (reminderHold). */
+  hold?: string;
+  /** It has gone off and its reminder card is waiting to be acknowledged. */
+  waiting: boolean;
+};
+
+/** WAITING_LINE is what the rail says under a note whose reminder is up. */
+export const WAITING_LINE = 'Went off · waiting for you to acknowledge it';
+
+/**
+ * upcomingNotes is the rail's "Upcoming reminders": open notes bound to a place.
+ * One whose reminder has gone off and waits on a card is no longer armed: it is
+ * listed first and says so, rather than reading as a reminder still to come.
+ * Armed ones follow, then those on hold. At most `limit`.
+ */
+export function upcomingNotes(
+  notes: Note[],
+  people: Peer[],
+  cards: Pick<ReminderCard, 'noteIds'>[] = [],
+  limit = 6,
+): UpcomingNote[] {
+  const waitingIds = new Set(cards.flatMap((c) => c.noteIds ?? []));
+  const rank = (u: UpcomingNote) => (u.waiting ? 0 : u.hold ? 2 : 1);
+  return notes
+    .filter((note) => !note.done && note.placeId)
+    .map((note) => {
+      const waiting = waitingIds.has(note.id);
+      return { note, hold: waiting ? undefined : reminderHold(note, people), waiting };
+    })
+    .sort((a, b) => rank(a) - rank(b))
+    .slice(0, limit);
 }

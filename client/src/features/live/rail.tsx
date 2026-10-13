@@ -11,7 +11,8 @@ import { color, palette, radius, size, space } from '@/theme/tokens';
 import { useTouchTargets } from '@/theme/touch';
 
 import { deviceLine, fixTimeMs, formatAge, MOVING_MPS, pingLine, speedOf, type TrailPoint } from './motion';
-import { firstName, reminderHold } from './reminders';
+import { firstName, upcomingNotes, WAITING_LINE } from './reminders';
+import type { ReminderCard } from '@/features/notify/reminders';
 
 /**
  * The live rail: what is sharing, who can see me, what is moving, what is about
@@ -370,15 +371,23 @@ export function DeviceList({
   );
 }
 
-export function UpcomingReminders({ notes, places, people = [] }: { notes: Note[]; places: Place[]; people?: Peer[] }) {
+export function UpcomingReminders({
+  notes,
+  places,
+  people = [],
+  cards = [],
+}: {
+  notes: Note[];
+  places: Place[];
+  people?: Peer[];
+  /** The pending reminder cards: a note one of them is for has gone off. */
+  cards?: Pick<ReminderCard, 'noteIds'>[];
+}) {
   // "Upcoming" is an open note bound to a place: it is armed and waiting for the
   // geofence to fire. A note with no place cannot fire, so it is not upcoming;
-  // one on hold is listed after the armed ones, and says why.
-  const upcoming = notes
-    .filter((note) => !note.done && note.placeId)
-    .map((note) => ({ note, hold: reminderHold(note, people) }))
-    .sort((a, b) => Number(!!a.hold) - Number(!!b.hold))
-    .slice(0, 6);
+  // one that has fired and waits on a card says so, first; one on hold is
+  // listed after the armed ones, and says why.
+  const upcoming = upcomingNotes(notes, people, cards);
 
   return (
     <View>
@@ -387,11 +396,14 @@ export function UpcomingReminders({ notes, places, people = [] }: { notes: Note[
         {upcoming.length === 0 ? (
           <EmptyState title="Nothing armed" body="Write a note and Lura will bind it to a place." />
         ) : (
-          upcoming.map(({ note, hold }) => {
+          upcoming.map(({ note, hold, waiting }) => {
             const place = places.find((p) => p.id === note.placeId);
             const watched = note.watchUserId ? people.find((p) => p.peerId === note.watchUserId) : undefined;
             return (
-              <Card key={note.id} style={[styles.reminderCard, hold ? styles.reminderHeld : null]}>
+              <Card
+                key={note.id}
+                style={[styles.reminderCard, hold ? styles.reminderHeld : null, waiting ? styles.reminderWaiting : null]}
+              >
                 <View style={styles.reminderHead}>
                   <TriggerBadge trigger={note.trigger} />
                   {note.tags[0] ? (
@@ -407,6 +419,14 @@ export function UpcomingReminders({ notes, places, people = [] }: { notes: Note[
                   {watched && !hold ? `when ${firstName(watched.peerName)} reaches ` : 'at '}
                   {place?.name ?? 'unbound place'}
                 </Txt>
+                {waiting ? (
+                  <View style={styles.reminderHold}>
+                    <Dot size={6} color={palette.amber} blink />
+                    <Txt variant="tiny" color={palette.amberInk} style={styles.reminderHoldText}>
+                      {WAITING_LINE}
+                    </Txt>
+                  </View>
+                ) : null}
                 {hold ? (
                   <View style={styles.reminderHold}>
                     <Dot size={6} color={color.neutralDot} />
@@ -575,6 +595,7 @@ const styles = StyleSheet.create({
   reminderCard: { padding: 12, gap: 4 },
   reminderHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 },
   reminderHeld: { backgroundColor: color.surfaceMuted, borderStyle: 'dashed' },
+  reminderWaiting: { borderColor: color.amberBorderStrong },
   reminderHoldText: { flex: 1 },
   reminderHold: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
 
