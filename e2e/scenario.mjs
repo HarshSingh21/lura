@@ -1444,16 +1444,26 @@ try {
     // request — not the app failing; anything else in that window still counts.
     const outage = (e) => duringRestart(e.at) && /WebSocket|ERR_CONNECTION_REFUSED|Failed to fetch|NetworkError|net::ERR_/i.test(`${e.text ?? ''} ${e.status ?? ''}`);
     const restartNoise = {};
+    const mapplsTileRetries = {};
     for (const p of people) {
       // A 401 from Keycloak's token endpoint during sign-in is not the app's.
-      const bad = p.badResponses.filter((r) => !/\/favicon\.ico$/.test(r.url) && !(duringRestart(r.at) && r.status >= 502));
+      const bad = p.badResponses
+        .filter((r) => !/\/favicon\.ico$/.test(r.url) && !(duringRestart(r.at) && r.status >= 502))
+        .map((r) => ({ ...r, url: redactKey(r.url) }));
+      // Mappls' tile CDN answers a few tiles with 412 or 408 and the SDK draws
+      // the map regardless (step 7 says why). That is theirs, so it is counted
+      // here as step 7 counts it, and fails only if it stops being a few.
+      const cdn = bad.filter((r) => isMapplsTile(r.url) && (r.status === 408 || r.status === 412));
+      const mapplsOk = p.tiles.filter((x) => isMapplsTile(x.url) && x.status === 200).length;
+      check(cdn.length <= Math.max(5, mapplsOk * 0.35), `${p.name}: ${cdn.length} Mappls tiles failed against ${mapplsOk} that loaded`);
+      if (cdn.length) mapplsTileRetries[p.name] = { failed: cdn.length, loaded: mapplsOk };
       const errors = p.errors.filter((e) => !outage(e));
       restartNoise[p.name] = p.errors.length - errors.length;
-      report[p.name] = { errors, badResponses: bad };
+      report[p.name] = { errors, badResponses: bad.filter((r) => !cdn.includes(r)) };
     }
     const problems = people.flatMap((p) => [...report[p.name].errors, ...report[p.name].badResponses]);
     check(problems.length === 0, `problems: ${JSON.stringify(report, null, 1)}`);
-    return { ...report, restartNoise };
+    return { ...report, restartNoise, mapplsTileRetries };
   });
 } catch {
   // The failing step has been recorded; the rest are skipped.
@@ -1466,7 +1476,7 @@ try {
     pass: results.length === 9 && results.every((r) => r.pass),
     partial: ONLY.length > 0 || SEED,
     results,
-    errors: Object.fromEntries(people.map((p) => [p.name, { errors: p.errors, badResponses: p.badResponses }])),
+    errors: Object.fromEntries(people.map((p) => [p.name, { errors: p.errors, badResponses: p.badResponses.map((r) => ({ ...r, url: redactKey(r.url) })) }])),
   };
   writeFileSync(`${OUT}/results.json`, JSON.stringify(summary, null, 2));
   process.stdout.write(`\n${summary.pass ? 'ALL STEPS PASSED' : 'FAILED'} (${PROVIDER}) — ${OUT}/results.json\n`);
