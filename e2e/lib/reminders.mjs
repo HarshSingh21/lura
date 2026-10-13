@@ -53,7 +53,7 @@ export function reminderHooks(everyMs) {
     const nativeState = Object.getOwnPropertyDescriptor(proto, 'visibilityState');
     Object.defineProperty(proto, 'hidden', { configurable: true, get() { return hidden || nativeHidden.get.call(this); } });
     Object.defineProperty(proto, 'visibilityState', { configurable: true, get() { return hidden ? 'hidden' : nativeState.get.call(this); } });
-    window.__ucHidden = (h) => { hidden = !!h; document.dispatchEvent(new Event('visibilitychange')); };
+    window.__ucHidden = (h) => { hidden = !!h; document.dispatchEvent(new Event('visibilitychange')); return Date.now(); };
     const count = () => document.querySelectorAll('[role="alert"][aria-label$="Waiting for acknowledgement."]').length;
     window.__ucCards = count;
     const log = (window.__ucCardLog = []);
@@ -98,7 +98,11 @@ export function desktopShown(page) {
   return page.evaluate(() => (window.__luraDesktop ?? []).slice());
 }
 
-/** setHidden makes a page report itself behind another window, or in front again. */
+/**
+ * setHidden makes a page report itself behind another window, or in front
+ * again, and returns the page's clock (Date.now()) at the moment it took
+ * effect: a repeat logged before then belongs to the old state.
+ */
 export function setHidden(page, hidden) {
   return page.evaluate((h) => window.__ucHidden(h), hidden);
 }

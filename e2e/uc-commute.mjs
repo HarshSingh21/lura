@@ -324,10 +324,12 @@ try {
 
   await useCase('C4', 'A tab behind another window: silent, a system notification that stays; in front, it rings again', async () => {
     const t0 = wallNow();
-    await setHidden(tabB.page, true);
+    // Counted from when the page took the change, not from before asking it:
+    // a repeat in between was the visible tab's, and rang as it should.
+    const hiddenAt = await setHidden(tabB.page, true);
     await sleep(EVERY_MS * 2 + 1500);
-    const rep = await repeats(tabB, reminder.id, t0);
-    const shown = (await desktopShown(tabB.page)).filter((d) => d.wall >= t0);
+    const rep = await repeats(tabB, reminder.id, hiddenAt);
+    const shown = (await desktopShown(tabB.page)).filter((d) => d.wall >= hiddenAt);
     check(rep.length >= 1 && rep.every((r) => r.how === 'desktop'), `the hidden tab's repeats: ${JSON.stringify(rep)}`);
     check(shown.length >= 1, 'the hidden tab raised no system notification');
     check(shown.every((d) => d.requireInteraction && d.tag === `reminder:${reminder.id}`), `system notifications: ${JSON.stringify(shown)}`);
@@ -335,8 +337,7 @@ try {
     // Tab A, in front, kept ringing meanwhile.
     const front = await repeats(desk, reminder.id, t0);
     check(front.length >= 1 && front.every((r) => r.how === 'sound'), `the visible tab's repeats: ${JSON.stringify(front)}`);
-    const t1 = wallNow();
-    await setHidden(tabB.page, false);
+    const t1 = await setHidden(tabB.page, false);
     await sleep(EVERY_MS + 1500);
     const back = await repeats(tabB, reminder.id, t1);
     check(back.length >= 1 && back.every((r) => r.how === 'sound'), `in front again: ${JSON.stringify(back)}`);
