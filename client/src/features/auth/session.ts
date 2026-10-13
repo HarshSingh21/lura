@@ -4,6 +4,7 @@ import * as SecureStore from 'expo-secure-store';
 import { create } from 'zustand';
 
 import { onWake } from '@/api/wake';
+import { localStorageOrNull } from '@/state/webStorage';
 
 import { keycloak, loadDiscovery } from './config';
 import { decodeIdToken, tokenLifetimeMs, type Profile } from './jwt';
@@ -89,7 +90,7 @@ const KEYS = {
 /* ------------------------------------------------------------------ storage */
 
 function webStorage(): Storage | null {
-  if (Platform.OS !== 'web' || typeof localStorage === 'undefined') return null;
+  if (Platform.OS !== 'web' || !localStorageOrNull()) return null;
   return localStorage;
 }
 

@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { create } from 'zustand';
 
-import { isBasemapId } from './basemaps';
+import { afterLoad, readBasemap, readBasemapAsync, writeBasemap, writeBasemapAsync } from './basemapPrefs';
 import type { BasemapId } from './types';
 
 /**
@@ -20,8 +20,6 @@ import type { BasemapId } from './types';
  * "streets" rather than an error.
  */
 
-const KEY = 'lura.basemap';
-
 type BasemapState = {
   basemap: BasemapId;
   loaded: boolean;
@@ -29,39 +27,15 @@ type BasemapState = {
 };
 
 const useBasemapStore = create<BasemapState>((set) => ({
-  basemap: readWebSync() ?? 'streets',
+  basemap: (Platform.OS === 'web' ? readBasemap() : undefined) ?? 'streets',
   loaded: Platform.OS === 'web',
   set: (basemap) => {
     set({ basemap, loaded: true });
-    void write(basemap);
+    // Losing the preference costs one tap next launch; basemapPrefs swallows it.
+    if (Platform.OS === 'web') writeBasemap(basemap);
+    else void writeBasemapAsync(basemap, SecureStore.setItemAsync);
   },
 }));
-
-function readWebSync(): BasemapId | undefined {
-  if (Platform.OS !== 'web' || typeof localStorage === 'undefined') return undefined;
-  try {
-    const raw = localStorage.getItem(KEY);
-    return isBasemapId(raw) ? raw : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function write(basemap: BasemapId): Promise<void> {
-  if (Platform.OS === 'web') {
-    try {
-      if (typeof localStorage !== 'undefined') localStorage.setItem(KEY, basemap);
-    } catch {
-      // A private-mode browser refusing storage is not worth failing over.
-    }
-    return;
-  }
-  try {
-    await SecureStore.setItemAsync(KEY, basemap);
-  } catch {
-    // Losing the preference costs one tap next launch.
-  }
-}
 
 let nativeLoad: Promise<void> | null = null;
 
@@ -69,16 +43,9 @@ let nativeLoad: Promise<void> | null = null;
 function loadNative(): Promise<void> {
   if (nativeLoad) return nativeLoad;
   nativeLoad = (async () => {
-    try {
-      const raw = await SecureStore.getItemAsync(KEY);
-      // A choice made while the read was in flight wins over the stored one.
-      if (isBasemapId(raw) && !useBasemapStore.getState().loaded) {
-        useBasemapStore.setState({ basemap: raw });
-      }
-    } catch {
-      // Nothing stored, or a keystore that will not open: streets it is.
-    }
-    useBasemapStore.setState({ loaded: true });
+    // Nothing stored, or a keystore that will not open: streets it is.
+    const stored = await readBasemapAsync(SecureStore.getItemAsync);
+    useBasemapStore.setState(afterLoad(stored, useBasemapStore.getState()));
   })();
   return nativeLoad;
 }

@@ -28,15 +28,13 @@ import { useLayoutMode } from '@/theme/useLayout';
 import { useStore } from '@/state/store';
 import { useGpsStatus } from '@/hooks/usePublishing';
 
-import { colorForUser, fixTimeMs, formatAge, formatSpeed, glideMsFor, headingFor, isStale, MOVING_MPS, speedOf, type TrailPoint } from './motion';
+import { colorForUser, fixTimeMs, glideMsFor, headingFor, type TrailPoint } from './motion';
+import { markerState } from './rowLines';
 import { DeviceList, DeviceTracking, PeopleList, SharingBanner, UpcomingReminders, useNow, type FollowKey } from './rail';
 import { useTrails } from './trails';
 import { bannerSlot, pushDown } from './bannerSlot';
 import { loadProblem } from './loadProblem';
 import { EDIT_MAX_ZOOM, editPadding, fenceExtent } from './editFrame';
-
-/** A ping older than this no longer pulses: the person may have gone offline. */
-const LIVE_PULSE_MS = 120_000;
 
 /** Follow mode never eases faster than this, so a jump still reads as motion. */
 const MIN_FOLLOW_MS = 450;
@@ -311,22 +309,19 @@ export function LiveScreen() {
   ): MapMarker => {
     const trail: TrailPoint[] = trails[deviceId] ?? [];
     const live = positions[deviceId];
-    const speed = trail.length > 0 ? speedOf(trail) : fallbackSpeed;
     const seenIso = fallbackSeen ? new Date(fallbackSeen).getTime() : undefined;
     const lastSeen = live ? fixTimeMs(live) : seenIso;
     // A fix this old is where they *were*: say so on the marker itself, in place
-    // of a speed that is no longer true.
-    const stale = isStale(lastSeen, pulseNow);
+    // of a speed that is no longer true (rowLines.markerState).
+    const { label: shown, stale, pulse } = markerState(label, trail, fallbackSpeed, lastSeen, pulseNow);
     const arrived = lastEvent && lastEvent.deviceId === deviceId && lastEvent.trigger === 'arrive' ? lastEvent.id : undefined;
     return {
       id,
       point,
-      label: stale && lastSeen !== undefined
-        ? `${label} · ${formatAge(pulseNow - lastSeen)}`
-        : speed > MOVING_MPS ? `${label} · ${formatSpeed(speed)}` : label,
+      label: shown,
       color: colour,
       stale,
-      pulse: !stale && lastSeen !== undefined && pulseNow - lastSeen < LIVE_PULSE_MS,
+      pulse,
       headingDeg: headingFor(trail),
       accuracyM: live?.accuracyM || undefined,
       animateMs: glideMsFor(trail),

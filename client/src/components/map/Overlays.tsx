@@ -7,6 +7,7 @@ import { color, palette, radius, shadow, size } from '@/theme/tokens';
 import { TOUCH_TARGET, useTouchTargets } from '@/theme/touch';
 
 import { Dot } from '@/components/ui/primitives';
+import { trailSegments } from '@/features/live/motion';
 import { absoluteFill } from './fill';
 import { pointInPolygon } from './geometry';
 import { estimateLabelWidth, placeLabels } from './labels';
@@ -620,47 +621,37 @@ function TrailLayer({ markers, view, dark }: { markers: MapMarker[]; view: Viewp
         {markers.map((marker) => {
           const pts = (marker.trail ?? []).map((p) => project(p, view));
           const tint = marker.color ?? toneColor(marker.tone, dark);
-          const n = pts.length;
+          const segments = trailSegments(pts.length);
           return (
             <G key={marker.id}>
               {/* A soft casing under the wake, so it reads over a road of a
                   similar colour, satellite imagery or the dark basemap alike. */}
-              {pts.map((p, i) => {
-                const prev = i > 0 ? pts[i - 1] : undefined;
-                if (!prev) return null;
-                const recency = i / (n - 1);
-                return (
-                  <Line
-                    key={`casing-${i}`}
-                    x1={prev.x}
-                    y1={prev.y}
-                    x2={p.x}
-                    y2={p.y}
-                    stroke={dark ? '#0b1020' : '#ffffff'}
-                    strokeOpacity={0.55 * recency * recency}
-                    strokeWidth={5 + 2.5 * recency}
-                    strokeLinecap="round"
-                  />
-                );
-              })}
-              {pts.map((p, i) => {
-                const prev = i > 0 ? pts[i - 1] : undefined;
-                if (!prev) return null;
-                const recency = i / (n - 1);
-                return (
-                  <Line
-                    key={i}
-                    x1={prev.x}
-                    y1={prev.y}
-                    x2={p.x}
-                    y2={p.y}
-                    stroke={tint}
-                    strokeOpacity={0.08 + 0.72 * recency * recency}
-                    strokeWidth={2 + 2.5 * recency}
-                    strokeLinecap="round"
-                  />
-                );
-              })}
+              {segments.map(({ i, casingOpacity, casingWidth }) => (
+                <Line
+                  key={`casing-${i}`}
+                  x1={pts[i - 1]!.x}
+                  y1={pts[i - 1]!.y}
+                  x2={pts[i]!.x}
+                  y2={pts[i]!.y}
+                  stroke={dark ? '#0b1020' : '#ffffff'}
+                  strokeOpacity={casingOpacity}
+                  strokeWidth={casingWidth}
+                  strokeLinecap="round"
+                />
+              ))}
+              {segments.map(({ i, opacity, width }) => (
+                <Line
+                  key={i}
+                  x1={pts[i - 1]!.x}
+                  y1={pts[i - 1]!.y}
+                  x2={pts[i]!.x}
+                  y2={pts[i]!.y}
+                  stroke={tint}
+                  strokeOpacity={opacity}
+                  strokeWidth={width}
+                  strokeLinecap="round"
+                />
+              ))}
             </G>
           );
         })}

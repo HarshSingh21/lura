@@ -32,6 +32,8 @@ import {
 import { inQuietHours, type QuietHours } from '@/features/notify/quiet';
 import { loadMuted, saveMuted } from '@/features/notify/sound';
 import { toastsAfter } from '@/features/notify/toasts';
+import { acceptsPosition } from '@/features/live/motion';
+import { localStorageOrNull } from './webStorage';
 
 /**
  * Client-local state (HLD §14: Zustand for local, TanStack Query for server).
@@ -173,7 +175,7 @@ export type Store = LiveState &
 /** loadConnection restores the server address on web; native starts from defaults. */
 function loadConnection(): ConnectionState {
   const fallback = { baseUrl: defaultBaseUrl(), token: DEFAULT_TOKEN };
-  if (Platform.OS !== 'web' || typeof localStorage === 'undefined') return fallback;
+  if (Platform.OS !== 'web' || !localStorageOrNull()) return fallback;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return fallback;
@@ -188,7 +190,7 @@ function loadConnection(): ConnectionState {
 }
 
 function persistConnection(next: ConnectionState) {
-  if (Platform.OS !== 'web' || typeof localStorage === 'undefined') return;
+  if (Platform.OS !== 'web' || !localStorageOrNull()) return;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
@@ -204,7 +206,7 @@ function persistConnection(next: ConnectionState) {
 const NOTIFY_KEY = 'lura.notifications.';
 
 function loadNotifications(viewerId: string): NotificationItem[] {
-  if (Platform.OS !== 'web' || typeof localStorage === 'undefined') return [];
+  if (Platform.OS !== 'web' || !localStorageOrNull()) return [];
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(NOTIFY_KEY + viewerId) ?? '[]');
     return Array.isArray(parsed) ? (parsed as NotificationItem[]) : [];
@@ -214,7 +216,7 @@ function loadNotifications(viewerId: string): NotificationItem[] {
 }
 
 function saveNotifications(viewerId: string | undefined, items: NotificationItem[]) {
-  if (!viewerId || Platform.OS !== 'web' || typeof localStorage === 'undefined') return;
+  if (!viewerId || Platform.OS !== 'web' || !localStorageOrNull()) return;
   try {
     localStorage.setItem(NOTIFY_KEY + viewerId, JSON.stringify(items));
   } catch {
@@ -246,12 +248,9 @@ export const useStore = create<Store>((set, get) => ({
 
   applyPosition: (p) =>
     set((state) => {
-      const current = state.positions[p.deviceId];
       // Drop-to-latest also applies on the client: an out-of-order frame must not
       // move a marker backwards, and the server's recv_ts is the authority.
-      if (current && new Date(current.recvTs).getTime() > new Date(p.recvTs).getTime()) {
-        return state;
-      }
+      if (!acceptsPosition(state.positions[p.deviceId], p)) return state;
       return { positions: { ...state.positions, [p.deviceId]: p } };
     }),
 

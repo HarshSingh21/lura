@@ -1,7 +1,7 @@
 import type { Point } from '@/api/types';
 
 import { showDesktop } from './desktop';
-import { chimeFor, type NotificationItem } from './model';
+import { announcement, reminderTag, type NotificationItem } from './model';
 import { playChime } from './sound';
 
 /**
@@ -13,25 +13,12 @@ import { playChime } from './sound';
  * entry are the whole announcement, as the server holds back push (quiet.ts).
  */
 export function announce(item: NotificationItem, opts: { muted: boolean; quiet?: boolean; onOpen?: () => void }): void {
-  if (opts.quiet) return;
-  if (!opts.muted) {
-    const chime = chimeFor(item);
-    playChime(chime.kind, { watched: chime.watched });
-  }
-  const pending = item.status === 'pending';
-  // A pending reminder stays on the desktop until it is dealt with; its tag is
-  // the reminder id, so the repeat (see useReminderRepeat) replaces it in place.
-  showDesktop(item, opts.onOpen, {
-    requireInteraction: pending,
-    silent: opts.muted,
-    tag: pending && item.reminderId ? reminderTag(item.reminderId) : undefined,
-  });
+  const { chime, desktop } = announcement(item, opts);
+  if (chime) playChime(chime.kind, { watched: chime.watched });
+  if (desktop) showDesktop(item, opts.onOpen, desktop);
 }
 
-/** reminderTag is the system notification tag for a pending reminder. */
-export function reminderTag(reminderId: string): string {
-  return `reminder:${reminderId}`;
-}
+export { reminderTag };
 
 /**
  * focusTarget is what "show me" means for an entry: the person, when it is about
