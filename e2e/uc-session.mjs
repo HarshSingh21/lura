@@ -32,7 +32,7 @@ import { chromium } from 'playwright-core';
 
 import { CHROME, Person, sleep, waitFor } from './lib/browser.mjs';
 import { haversineM, lerp } from './lib/geo.mjs';
-import { Laptop, NOTICES, TokenLog, decodeJwt, maxGap } from './lib/session.mjs';
+import { HOST_NETWORK, Laptop, NOTICES, TokenLog, decodeJwt, maxGap, setOffline } from './lib/session.mjs';
 
 const BASE = process.env.E2E_BASE ?? 'http://localhost:8097';
 const API = process.env.E2E_API ?? BASE;
@@ -124,7 +124,7 @@ async function scenario(id, title, fn, { always = false } = {}) {
     if (always) throw err;
   } finally {
     for (const w of [...walkers]) await w.stop();
-    await harsh.ctx.setOffline(false).catch(() => {});
+    await setOffline(harsh, false).catch(() => {});
   }
 }
 
@@ -248,6 +248,7 @@ class Observer {
 
 async function openPerson(p) {
   await p.open(browser, BASE);
+  await p.ctx.addInitScript(HOST_NETWORK);
   await p.ctx.addInitScript(NOTICES);
   p.log = new TokenLog(p, API).attach();
   p.navigations = [];
@@ -273,9 +274,9 @@ function sampleSession() {
         row[p.name] = {
           signedIn: await signedIn(p).catch(() => null),
           status: await liveStatus(p.page).catch(() => null),
-          // false: the OS told Chrome the network is gone (a Wi-Fi drop on
-          // this laptop), so the app is rightly offline, not broken.
-          online: await p.page.evaluate(() => navigator.onLine).catch(() => null),
+          // How often this laptop's Wi-Fi has dropped so far (HOST_NETWORK
+          // keeps it from the app; this keeps it in the record).
+          hostDrops: await p.page.evaluate(() => window.__ucNet?.host.filter((e) => e.type === 'offline').length ?? null).catch(() => null),
         };
       }
       samples.push(row);
@@ -433,6 +434,7 @@ try {
       minutes: Math.round(minutes * 10) / 10, samples: sampler.samples.length,
       nishthaOnHarsh: nOnH, harshOnNishtha: hOnN, tokens: tokensOk,
       crossing: { geoFrames: geo.length, notifyFrames: notify, noticeMs: { harsh: th.wall - tc, nishtha: tn.wall - tc }, harsh: th.label, nishtha: tn.label },
+      hostWifiDrops: Object.fromEntries(people.map((p) => [p.name, sampler.samples.at(-1)?.[p.name].hostDrops ?? null])),
       shots: [...midShots, ...crossShots],
     };
   });
