@@ -52,6 +52,45 @@ export const NOTICES = `(() => {
 })();`;
 
 /**
+ * HOST_NETWORK keeps this laptop's own Wi-Fi out of the pages. Chrome reports
+ * the host's network: when the Wi-Fi drops (macOS logs "Link down because of
+ * beacon loss"), every page gets an `offline` event and navigator.onLine turns
+ * false, and the app rightly goes offline for a minute — though Lura, Keycloak
+ * and the test all talk over loopback and never lost a packet. A session test
+ * asserting "live the whole time" cannot pass across such a drop, so outside
+ * the network the suite emulates itself (ctx.setOffline, with
+ * window.__ucNet.emulated set), the host's `offline` events are recorded in
+ * window.__ucNet.host and kept from the app, and navigator.onLine stays true.
+ * `online` events always pass: they only ever tell the app to try now.
+ */
+export const HOST_NETWORK = `(() => {
+  const rec = (window.__ucNet = { emulated: false, host: [] });
+  const onLine = Object.getOwnPropertyDescriptor(Navigator.prototype, 'onLine');
+  Object.defineProperty(Navigator.prototype, 'onLine', {
+    configurable: true,
+    enumerable: onLine.enumerable,
+    get() { const v = onLine.get.call(this); return v || rec.emulated ? v : true; },
+  });
+  window.addEventListener('offline', (e) => {
+    if (rec.emulated) return;
+    rec.host.push({ wall: Date.now(), type: 'offline' });
+    e.stopImmediatePropagation();
+  }, true);
+  window.addEventListener('online', () => { if (!rec.emulated) rec.host.push({ wall: Date.now(), type: 'online' }); }, true);
+})();`;
+
+/**
+ * setOffline emulates the network going away (or coming back) for one person,
+ * marking it as the suite's own so HOST_NETWORK lets the app hear it.
+ */
+export async function setOffline(person, offline) {
+  if (offline) await person.page.evaluate(() => { if (window.__ucNet) window.__ucNet.emulated = true; }).catch(() => {});
+  await person.ctx.setOffline(offline);
+  // No offline event follows going online, so the mark can go at once.
+  if (!offline) await person.page.evaluate(() => { if (window.__ucNet) window.__ucNet.emulated = false; }).catch(() => {});
+}
+
+/**
  * TokenLog watches one person's browser context: every token Keycloak hands
  * out (grant, expires_in, the token's own iat/exp), every bearer the app sends
  * to Lura (with the exp it carried at that moment), every socket handshake's
@@ -253,7 +292,7 @@ export class Laptop {
     const fakeNow = await page.evaluate(() => Date.now());
     const asleepAt = Date.now();
     await ctx.clock.pauseAt(Math.max(fakeNow, asleepAt) + 500);
-    if (network === 'offline') await ctx.setOffline(true);
+    if (network === 'offline') await setOffline(this.person, true);
     else for (const c of this.conns.filter((x) => !x.closed && !x.black)) c.cut();
     const work = during ? during() : Promise.resolve();
     await sleep(Math.max(0, asleepAt + ms - Date.now()));
@@ -264,7 +303,7 @@ export class Laptop {
     let onlineAt = null;
     if (network === 'offline') {
       await sleep(rejoinMs);
-      await ctx.setOffline(false);
+      await setOffline(this.person, false);
       onlineAt = Date.now();
     }
     return { asleepAt, wokeAt, onlineAt, sleptMs: wokeAt - asleepAt };

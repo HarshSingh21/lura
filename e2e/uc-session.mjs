@@ -32,7 +32,7 @@ import { chromium } from 'playwright-core';
 
 import { CHROME, Person, sleep, waitFor } from './lib/browser.mjs';
 import { haversineM, lerp } from './lib/geo.mjs';
-import { Laptop, NOTICES, TokenLog, decodeJwt, maxGap } from './lib/session.mjs';
+import { HOST_NETWORK, Laptop, NOTICES, TokenLog, decodeJwt, maxGap, setOffline } from './lib/session.mjs';
 
 const BASE = process.env.E2E_BASE ?? 'http://localhost:8097';
 const API = process.env.E2E_API ?? BASE;
@@ -81,6 +81,20 @@ const nishtha = new Person({ name: 'Nishtha', email: 'nishtha@lura.local', passw
 const people = [harsh, nishtha];
 const results = [];
 const facts = { t0: Date.now() };
+// What ended the browser, if anything did before the suite closed it: a
+// "Target page, context or browser has been closed" mid-scenario is otherwise
+// indistinguishable from a bug in the step that tripped over it.
+const lifecycle = [];
+let closing = false;
+function lifecycleEvent(what) {
+  const e = { wall: Date.now(), at: new Date().toISOString(), what };
+  lifecycle.push(e);
+  if (!closing) process.stdout.write(`  !! ${e.at} ${what}\n`);
+}
+browser.on('disconnected', () => lifecycleEvent('the browser disconnected (Chrome exited or was killed)'));
+// Playwright closes Chrome on SIGTERM/SIGHUP and keeps this process alive, so
+// a signal from outside shows up as a browser that closed itself mid-scenario.
+for (const sig of ['SIGTERM', 'SIGHUP']) process.on(sig, () => lifecycleEvent(`this run received ${sig}`));
 const walkers = new Set();
 const observers = [];
 
@@ -101,13 +115,16 @@ async function scenario(id, title, fn, { always = false } = {}) {
     results.push({ id, title, pass: true, ms: Date.now() - started, evidence });
     process.stdout.write(`  PASS ${JSON.stringify(evidence)}\n`);
   } catch (err) {
-    results.push({ id, title, pass: false, ms: Date.now() - started, error: String(err?.stack ?? err) });
+    const gone = lifecycle.filter((e) => e.wall >= started);
+    const cause = gone.length ? `\n  browser lifecycle during this scenario: ${JSON.stringify(gone)}` : '';
+    results.push({ id, title, pass: false, ms: Date.now() - started, error: String(err?.stack ?? err) + cause });
+    if (cause) process.stdout.write(cause + '\n');
     process.stdout.write(`  FAIL ${err?.stack ?? err}\n`);
     for (const p of people) await p.shot(OUT, `fail-${id}`).catch(() => {});
     if (always) throw err;
   } finally {
     for (const w of [...walkers]) await w.stop();
-    await harsh.ctx.setOffline(false).catch(() => {});
+    await setOffline(harsh, false).catch(() => {});
   }
 }
 
@@ -159,18 +176,25 @@ async function panelEntries(page) {
 function walk(person, from, to, { steps = 30 } = {}) {
   let stopped = false;
   let i = 0;
+  const errors = [];
   const done = (async () => {
     while (!stopped) {
       const leg = Math.floor(i / steps) % 2;
       const k = ((i % steps) + 1) / steps;
       const p = leg === 0 ? lerp(from, to, k) : lerp(to, from, k);
       person.at = p;
-      await person.ctx.setGeolocation({ latitude: p.lat, longitude: p.lon, accuracy: 6 }).catch(() => {});
+      try {
+        await person.ctx.setGeolocation({ latitude: p.lat, longitude: p.lon, accuracy: 6 });
+      } catch (err) {
+        // A dead context would otherwise just look like a GPS that stopped.
+        errors.push({ wall: Date.now(), error: String(err?.message ?? err) });
+        if (/closed/.test(String(err?.message))) break;
+      }
       i += 1;
       await sleep(STEP_MS);
     }
   })();
-  const w = { stop: async () => { stopped = true; walkers.delete(w); await done; } };
+  const w = { errors, stop: async () => { stopped = true; walkers.delete(w); await done; } };
   walkers.add(w);
   return w;
 }
@@ -224,9 +248,13 @@ class Observer {
 
 async function openPerson(p) {
   await p.open(browser, BASE);
+  await p.ctx.addInitScript(HOST_NETWORK);
   await p.ctx.addInitScript(NOTICES);
   p.log = new TokenLog(p, API).attach();
   p.navigations = [];
+  p.page.on('crash', () => lifecycleEvent(`${p.name}'s page crashed (renderer gone: out of memory?)`));
+  p.page.on('close', () => lifecycleEvent(`${p.name}'s page closed`));
+  p.ctx.on('close', () => lifecycleEvent(`${p.name}'s browser context closed`));
   p.page.on('framenavigated', (f) => {
     if (f === p.page.mainFrame()) p.navigations.push({ wall: Date.now(), url: f.url() });
   });
@@ -246,6 +274,9 @@ function sampleSession() {
         row[p.name] = {
           signedIn: await signedIn(p).catch(() => null),
           status: await liveStatus(p.page).catch(() => null),
+          // How often this laptop's Wi-Fi has dropped so far (HOST_NETWORK
+          // keeps it from the app; this keeps it in the record).
+          hostDrops: await p.page.evaluate(() => window.__ucNet?.host.filter((e) => e.type === 'offline').length ?? null).catch(() => null),
         };
       }
       samples.push(row);
@@ -360,6 +391,7 @@ try {
     }
     await hWalk.stop();
     await nWalk.stop();
+    check(!hWalk.errors.length && !nWalk.errors.length, `GPS updates failed: ${JSON.stringify({ harsh: hWalk.errors.slice(0, 3), nishtha: nWalk.errors.slice(0, 3) })}`);
     await sleep(1500);
     const t1 = Date.now();
     const [recH, recN] = await Promise.all(people.map((p) => p.record()));
@@ -402,6 +434,7 @@ try {
       minutes: Math.round(minutes * 10) / 10, samples: sampler.samples.length,
       nishthaOnHarsh: nOnH, harshOnNishtha: hOnN, tokens: tokensOk,
       crossing: { geoFrames: geo.length, notifyFrames: notify, noticeMs: { harsh: th.wall - tc, nishtha: tn.wall - tc }, harsh: th.label, nishtha: tn.label },
+      hostWifiDrops: Object.fromEntries(people.map((p) => [p.name, sampler.samples.at(-1)?.[p.name].hostDrops ?? null])),
       shots: [...midShots, ...crossShots],
     };
   });
@@ -529,11 +562,12 @@ try {
   }
   writeFileSync(`${OUT}/tokens.json`, JSON.stringify({ phase: PHASE, t0: new Date(facts.t0).toISOString(), tokens }, null, 2));
   const ran = results.filter((r) => !r.skipped);
-  const summary = { base: BASE, phase: PHASE, at: new Date().toISOString(), pass: ran.every((r) => r.pass), partial: ONLY.length > 0, results };
+  const summary = { base: BASE, phase: PHASE, at: new Date().toISOString(), pass: ran.every((r) => r.pass), partial: ONLY.length > 0, results, lifecycle };
   writeFileSync(`${OUT}/results.json`, JSON.stringify(summary, null, 2));
   process.stdout.write(`\n${summary.pass ? 'ALL SESSION SCENARIOS PASSED' : 'FAILED'} (${PHASE}) — ${OUT}/results.json, ${OUT}/tokens.json\n`);
   for (const r of ran) process.stdout.write(`  ${r.pass ? 'PASS' : 'FAIL'}  ${r.id.padEnd(4)} ${r.title}\n`);
+  closing = true;
   for (const p of people) await p.close().catch(() => {});
-  await browser.close();
+  await browser.close().catch(() => {});
   process.exit(summary.pass ? 0 : 1);
 }
