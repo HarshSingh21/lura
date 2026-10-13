@@ -161,6 +161,11 @@ export type Position = {
    * phone queued offline. Absent from older servers and from snapshots.
    */
   fixTs?: string;
+  /**
+   * A queued fix older than one the server already accepted for the device:
+   * history, never drawn as the live position.
+   */
+  late?: boolean;
 };
 
 export type GeoEvent = {
@@ -417,7 +422,7 @@ export type HistorySummary = {
 };
 
 export type PublicShareView = {
-  label: string;
+  // No label: that is the sharer's own name for the link, never sent to the recipient.
   sharerName: string;
   mode: ShareMode;
   expiresAt?: string;

@@ -14,6 +14,7 @@ import { Card, Dot } from '@/components/ui/primitives';
 import { Mono, Txt } from '@/theme/text';
 import { color, palette, radius, shadow, size, space } from '@/theme/tokens';
 import { useLayoutMode } from '@/theme/useLayout';
+import { acceptFix, describeDuration, describeEnding, fixTime, shareEnded } from '@/features/sharing/viewer';
 
 /**
  * The recipient's view of a share link.
@@ -46,6 +47,8 @@ export default function ShareViewer() {
   const [status, setStatus] = useState<LiveStatus>('idle');
   const [ended, setEnded] = useState<string | null>(null);
   const [box, setBox] = useState<Box>({ width: 0, height: 0 });
+  // The snapshot's answer is final for a link that is gone (403/404).
+  const refused = error instanceof ApiError && (error.status === 403 || error.status === 404);
   // Re-rendered on a slow tick so "ends in 12 min" and "seen 3 min ago" stay true
   // on a screen nobody is interacting with.
   const [now, setNow] = useState(() => Date.now());
@@ -55,8 +58,13 @@ export default function ShareViewer() {
     return () => clearInterval(timer);
   }, []);
 
+  // One socket while the link works, none once it has ended: a link that is
+  // gone refuses the handshake, and retrying it forever only burns battery.
+  // Not before the snapshot has answered either, or reopening an ended link
+  // races a refused handshake (and its retry) against the 403.
+  const listening = !!data && !refused && ended === null;
   useEffect(() => {
-    if (!shareToken) return;
+    if (!shareToken || !listening) return;
     const conn = connectLive({
       path: `/s/${shareToken}/ws`,
       anonymous: true,
@@ -64,13 +72,16 @@ export default function ShareViewer() {
       onFrame: (frame) => {
         switch (frame.type) {
           case 'position':
-            setLive((prev) => ({ ...prev, [frame.data.deviceId]: frame.data }));
+            // A queued fix older than the one shown is history, not a move.
+            setLive((prev) =>
+              acceptFix(prev[frame.data.deviceId], frame.data) ? { ...prev, [frame.data.deviceId]: frame.data } : prev,
+            );
             break;
           case 'acl':
             // The share was revoked or expired: stop claiming to be live and
             // re-read the snapshot so the reason is authoritative.
             if (frame.data.action === 'revoke') {
-              setEnded(frame.data.reason || 'This link is no longer active.');
+              setEnded(frame.data.reason ?? '');
               void refetch();
             }
             break;
@@ -80,7 +91,14 @@ export default function ShareViewer() {
       },
     });
     return () => conn.close();
-  }, [shareToken, refetch]);
+  }, [shareToken, refetch, listening]);
+
+  // A share can end while the socket is down (a network drop, a server
+  // restart): the revoke frame is never seen and the reconnect is refused. The
+  // snapshot is what tells the viewer, so ask it again on every reconnect.
+  useEffect(() => {
+    if (status === 'reconnecting') void refetch();
+  }, [status, refetch]);
 
   const devices = useMemo(() => data?.devices ?? [], [data]);
 
@@ -98,7 +116,7 @@ export default function ShareViewer() {
             name: device.name,
             point,
             speedMps,
-            lastSeen: frame?.recvTs ?? device.lastSeen,
+            lastSeen: frame ? new Date(fixTime(frame)).toISOString() : device.lastSeen,
           };
         })
         .filter((fix) => fix !== null)
@@ -106,16 +124,18 @@ export default function ShareViewer() {
     [devices, live],
   );
 
+  // Once the share has ended the dot goes too: the last position is no more
+  // the recipient's to keep looking at than the next one.
   const markers = useMemo<MapMarker[]>(
     () =>
-      fixes.map((fix) => ({
+      (listening ? fixes : []).map((fix) => ({
         id: fix.id,
         point: fix.point,
         label: fix.speedMps > 1 ? `${fix.name} · ${Math.round(fix.speedMps * 3.6)} km/h` : fix.name,
         tone: 'accent' as const,
-        pulse: !ended && fix.speedMps > 1,
+        pulse: fix.speedMps > 1,
       })),
-    [fixes, ended],
+    [fixes, listening],
   );
 
   /** The centre is the middle of everything shared, so nothing sits at an edge. */
@@ -154,8 +174,14 @@ export default function ShareViewer() {
   const shown = isPhone ? fixes.slice(0, 3) : fixes;
   const hidden = fixes.length - shown.length;
 
-  const gone =
-    ended !== null || (error instanceof ApiError && (error.status === 403 || error.status === 404));
+  const gone = ended !== null || refused;
+  const notice = gone
+    ? shareEnded({
+        reason: ended,
+        status: error instanceof ApiError ? error.status : undefined,
+        sharerName: data?.sharerName,
+      })
+    : null;
 
   return (
     <SafeAreaView style={styles.root}>
@@ -194,16 +220,23 @@ export default function ShareViewer() {
           }
         />
 
-        {gone ? (
-          <View style={styles.overlay}>
+        {notice ? (
+          <View style={styles.overlay} testID="lura-share-ended">
             <Card style={styles.notice}>
-              <Txt variant="h2">This share has ended</Txt>
-              <Txt variant="small" color={color.textMuted} style={styles.noticeBody}>
-                {ended ??
-                  (error instanceof ApiError && error.status === 404
-                    ? 'That link does not exist.'
-                    : 'The link was revoked or expired. Ask for a new one if you still need it.')}
+              <View style={styles.noticeIcon}>
+                <View style={styles.noticeIconCore} />
+              </View>
+              <Txt variant="h2" accessibilityRole="header">
+                {notice.title}
               </Txt>
+              <Txt variant="small" color={color.textMuted} style={styles.noticeBody}>
+                {notice.body}
+              </Txt>
+              {notice.ended ? (
+                <Mono size={size.monoTiny} color={color.textFaint} style={styles.noticeFoot}>
+                  Nothing more is being shared through this link.
+                </Mono>
+              ) : null}
             </Card>
           </View>
         ) : isLoading ? (
@@ -266,8 +299,9 @@ export default function ShareViewer() {
         ) : null}
 
         {/* On a phone the same sentence rides at the bottom of the panel; a second
-            floating chip would just be one more thing covering the map. */}
-        {isPhone ? null : (
+            floating chip would just be one more thing covering the map. Once the
+            share has ended, "the sharer can revoke this" is no longer true. */}
+        {isPhone || notice ? null : (
           <View style={styles.footer} pointerEvents="none">
             <View style={styles.footerChip}>
               <Mono size={size.monoTiny} color={color.textMuted}>
@@ -303,39 +337,6 @@ function initials(name: string): string {
       .map((part) => part[0]?.toUpperCase() ?? '')
       .join('') || '?'
   );
-}
-
-/**
- * describeEnding says how the share ends, counting down where it can.
- *
- * A wall-clock time ("until 3:19") is useless to someone who does not know what
- * time it is on the sharer's clock, so the remaining time leads and the clock time
- * follows it.
- */
-function describeEnding(mode: string, expiresAt: string | undefined, arrivePlace: string | undefined, now: number): string {
-  switch (mode) {
-    case 'until_arrive':
-      return arrivePlace ? `Sharing until they arrive at ${arrivePlace}` : 'Sharing until they arrive';
-    case 'duration': {
-      if (!expiresAt) return 'Sharing for a limited time';
-      const at = new Date(expiresAt);
-      const remainingMs = at.getTime() - now;
-      const clock = at.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-      if (remainingMs <= 0) return 'This link has expired';
-      return `Ends in ${describeDuration(remainingMs)} · ${clock}`;
-    }
-    default:
-      return 'Sharing until they revoke the link';
-  }
-}
-
-function describeDuration(ms: number): string {
-  const minutes = Math.round(ms / 60_000);
-  if (minutes < 1) return 'under a minute';
-  if (minutes < 60) return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
 }
 
 /** describeSeen turns a timestamp into the only thing that matters: how stale. */
@@ -390,8 +391,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: space.xxl,
   },
-  notice: { maxWidth: 420, gap: 6, ...shadow('card') },
+  notice: { maxWidth: 420, gap: 8, padding: space.xxl, ...shadow('card') },
   noticeBody: { lineHeight: 19 },
+  noticeFoot: { marginTop: 4, paddingTop: 10, borderTopWidth: 1, borderTopColor: color.hairlineSoft },
+  noticeIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    backgroundColor: color.surfaceMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
+  },
+  noticeIconCore: { width: 10, height: 10, borderRadius: 5, backgroundColor: color.neutralDot },
 
   // Position is split into two complete styles rather than one overridden with
   // `undefined`: setting both `top` and `bottom` stretches the card down the whole

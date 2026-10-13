@@ -50,6 +50,8 @@ export type ButtonProps = {
   full?: boolean;
   small?: boolean;
   style?: StyleProp<ViewStyle>;
+  /** The accessible name when the visible label alone is ambiguous ("Revoke" in a list). */
+  accessibilityLabel?: string;
 };
 
 export function Button({
@@ -62,6 +64,7 @@ export function Button({
   full,
   small,
   style,
+  accessibilityLabel,
 }: ButtonProps) {
   const isDisabled = disabled || loading;
   const tone = buttonTone(variant);
@@ -69,6 +72,7 @@ export function Button({
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
       aria-disabled={!!isDisabled}
       aria-busy={!!loading}
       disabled={!!isDisabled}

@@ -10,6 +10,7 @@
 #   E2E_SUITE=edge-fences-ui E2E_PORT=8097 e2e/run.sh   # fences, notifications, screens (e2e/edge.sh fences-ui)
 #   E2E_SUITE=uc-peers E2E_PORT=8093 e2e/run.sh         # peer watches and notes for others (UC5–UC7)
 #   E2E_SUITE=uc-triggers E2E_PORT=8094 e2e/run.sh      # dwell, leave, quiet hours (e2e/uc-triggers.sh)
+#   E2E_SUITE=uc-share-privacy E2E_PORT=8095 e2e/run.sh # share links and removing a connection (e2e/uc-share-privacy.mjs)
 #   E2E_STORE=postgres E2E_PORT=8091 e2e/run.sh   # against a throwaway PostGIS instead of memory
 #   E2E_STORE=postgres E2E_KEEP_DB=1 e2e/run.sh   # ... and leave the database container afterwards
 #   E2E_SKIP_BUILD=1 E2E_WEB_DIR=/tmp/web e2e/run.sh   # serve a web build made earlier
@@ -48,8 +49,10 @@ SUITE="${E2E_SUITE:-scenario}"
 case "$SUITE" in
   scenario) ;;
   edge-sync | edge-fences-ui) PHASES="maplibre" ;; # edge cases, not basemaps
-  uc-*) PHASES="maplibre" ;; # use-case suites (e2e/uc-*.mjs), not basemaps
-  *) echo "e2e: unknown E2E_SUITE=$SUITE (scenario | edge-sync | edge-fences-ui | uc-*)"; exit 2 ;;
+  uc-*) # a use-case suite, e2e/uc-<name>.mjs
+    [ -f "$(dirname "$0")/$SUITE.mjs" ] || { echo "e2e: no suite e2e/$SUITE.mjs"; exit 2; }
+    PHASES="maplibre" ;;
+  *) echo "e2e: unknown E2E_SUITE=$SUITE (scenario | edge-sync | edge-fences-ui | uc-<name>)"; exit 2 ;;
 esac
 STORE="${E2E_STORE:-memory}"
 case "$STORE" in

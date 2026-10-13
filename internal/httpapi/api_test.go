@@ -820,6 +820,11 @@ func TestShareLifecycle(t *testing.T) {
 	if strings.Contains(string(raw), "landlord") {
 		t.Error("the public share view leaked note text")
 	}
+	// The label is the sharer's own name for the link ("who is it for?"); the
+	// form promises it is not sent to the recipient.
+	if strings.Contains(string(raw), "Priya") {
+		t.Errorf("the public share view carries the sharer's private label: %s", raw)
+	}
 	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store for a live position", cc)
 	}
@@ -846,12 +851,18 @@ func TestShareLifecycle(t *testing.T) {
 	// A share viewer's socket receives positions…
 	conn := s.dialWS(t, "/s/"+token+"/ws")
 	nextFrame(t, conn, hub.FrameHello, 3*time.Second)
+	if snap := nextFrame(t, conn, "snapshot", 3*time.Second); strings.Contains(string(snap.Data), "Priya") {
+		t.Errorf("the viewer's snapshot carries the private label: %s", snap.Data)
+	}
 	s.pub(t, 12.9450, 77.6250, 6)
 	nextFrame(t, conn, hub.FramePosition, 5*time.Second)
 
 	// …and stops the moment the share is revoked (HLD §5.1 ACL re-subscription).
 	s.json(http.MethodDelete, "/api/v1/shares/"+id, nil, http.StatusOK)
-	nextFrame(t, conn, hub.FrameACL, 5*time.Second)
+	if acl := nextFrame(t, conn, hub.FrameACL, 5*time.Second); strings.Contains(string(acl.Data), "Priya") ||
+		!strings.Contains(string(acl.Data), "revoke") {
+		t.Errorf("the viewer's revoke frame = %s, want a revoke without the private label", acl.Data)
+	}
 
 	drained := drainFor(t, conn, 400*time.Millisecond)
 	for _, f := range drained {

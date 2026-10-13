@@ -316,3 +316,49 @@ func TestAckNoticeForTwoNotesNamesBoth(t *testing.T) {
 		t.Errorf("ack notice = %+v", notices)
 	}
 }
+
+// A removed connection ends what each learns of the other. Nishtha still holds
+// the reminder Harsh's note sent her while they were connected — it is her own
+// record — but acknowledging it after she removed him must not tell him, nor
+// tick off his note: that would be news of her reaching him after removal.
+func TestAckAfterRemovalStaysWithTheRecipient(t *testing.T) {
+	f := newPeerFixture(t, true)
+	// She is the note's only recipient, so hers is the last one pending:
+	// before the fix her ack both notified him and marked his note done.
+	n := f.note(t, "pick up parcel", domain.TriggerPassby, nishtha, nishtha)
+	f.handle(t, nishtha, domain.TriggerPassby)
+	hers := pendingFor(t, f, nishtha)
+	if len(hers) != 1 {
+		t.Fatalf("Nishtha has %d pending, want 1", len(hers))
+	}
+	ctx := context.Background()
+	for _, pair := range [][2]string{{nishtha, harsh}, {harsh, nishtha}} {
+		if err := f.store.DeleteConnection(ctx, pair[0], pair[1]); err != nil {
+			t.Fatalf("DeleteConnection: %v", err)
+		}
+	}
+
+	before := len(f.inapp.all())
+	res, err := f.w.Acknowledge(ctx, nishtha, hers[0].ID)
+	if err != nil {
+		t.Fatalf("Acknowledge: %v", err)
+	}
+	if res.Reminder.Status != domain.ReminderAcknowledged {
+		t.Errorf("her reminder = %+v, want acknowledged", res.Reminder)
+	}
+	if got := f.inapp.all()[before:]; len(got) != 0 {
+		t.Errorf("Harsh was told after the removal: %+v", got)
+	}
+	acks, _ := f.store.ListReminders(ctx, harsh, store.ReminderFilter{})
+	for _, r := range acks {
+		if r.Kind == notify.KindAck {
+			t.Errorf("an ack notice was stored for Harsh after the removal: %+v", r)
+		}
+	}
+	if len(res.NotesDone) != 0 {
+		t.Errorf("notesDone = %v, want none", res.NotesDone)
+	}
+	if got, _ := f.store.GetNote(ctx, harsh, n.ID); got.Done {
+		t.Error("her ack after the removal marked Harsh's note done")
+	}
+}

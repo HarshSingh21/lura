@@ -66,6 +66,13 @@ type Service struct {
 	// entirely with Valkey TTL keyspace notifications.
 	usersMu sync.Mutex
 	users   map[string]struct{}
+
+	// timers end each expiring share at its expiry, to the second. The sweeper
+	// alone would leave a viewer who is still connected receiving positions for
+	// up to sweepEvery after the link ran out.
+	timersMu sync.Mutex
+	timers   map[string]*time.Timer
+	stopped  bool
 }
 
 // New returns an unstarted share service.
@@ -125,9 +132,54 @@ func (s *Service) Stop() {
 		if s.sub != nil {
 			s.sub.Unsubscribe()
 		}
+		s.timersMu.Lock()
+		s.stopped = true
+		for id, t := range s.timers {
+			t.Stop()
+			delete(s.timers, id)
+		}
+		s.timersMu.Unlock()
 		close(s.done)
 	})
 	s.wg.Wait()
+}
+
+// scheduleExpiry revokes sh with reason "expired" the moment it expires. The
+// sweeper stays as the backstop (a restart drops these timers).
+func (s *Service) scheduleExpiry(ctx context.Context, sh domain.Share) {
+	if sh.ExpiresAt == nil {
+		return
+	}
+	s.timersMu.Lock()
+	defer s.timersMu.Unlock()
+	if s.stopped {
+		return
+	}
+	if s.timers == nil {
+		s.timers = map[string]*time.Timer{}
+	}
+	s.timers[sh.ID] = time.AfterFunc(time.Until(*sh.ExpiresAt), func() {
+		s.timersMu.Lock()
+		delete(s.timers, sh.ID)
+		s.timersMu.Unlock()
+		current, err := s.store.ShareByToken(ctx, sh.Token)
+		if err != nil || current.RevokedAt != nil {
+			return // gone, or ended some other way first
+		}
+		if _, err := s.Revoke(ctx, sh.UserID, sh.ID, "expired"); err != nil {
+			s.log.WarnContext(ctx, "share: expire failed", "share", sh.ID, "error", err)
+		}
+	})
+}
+
+// cancelExpiry drops a share's expiry timer once it has ended.
+func (s *Service) cancelExpiry(id string) {
+	s.timersMu.Lock()
+	defer s.timersMu.Unlock()
+	if t, ok := s.timers[id]; ok {
+		t.Stop()
+		delete(s.timers, id)
+	}
 }
 
 // Create issues a share and returns it with its public link.
@@ -203,6 +255,7 @@ func (s *Service) Create(ctx context.Context, userID string, req CreateRequest) 
 	}
 
 	s.publishACL(created, "grant", "")
+	s.scheduleExpiry(context.WithoutCancel(ctx), created)
 	s.log.InfoContext(ctx, "share created",
 		"share", created.ID, "mode", created.Mode, "label", created.Label, "expiresAt", created.ExpiresAt)
 	span.SetAttributes(attribute.String("lura.share_id", created.ID))
@@ -237,6 +290,7 @@ func (s *Service) Revoke(ctx context.Context, userID, id, reason string) (domain
 	if err != nil {
 		return domain.Share{}, err
 	}
+	s.cancelExpiry(sh.ID)
 	s.publishACL(sh, "revoke", reason)
 	s.log.InfoContext(ctx, "share revoked", "share", sh.ID, "reason", reason)
 	return sh, nil
@@ -276,9 +330,10 @@ func (s *Service) Subjects(ctx context.Context, token string) ([]string, error) 
 
 // PublicView is what a recipient sees: the sharer's display name, the shared
 // devices' latest positions, and how the share ends. No notes, no history, no
-// places — a share is a live dot, not an account.
+// places — a share is a live dot, not an account. Not the label either: that is
+// the sharer's own name for the link ("Priya", "the plumber"), and the form
+// promises it is not sent to them.
 type PublicView struct {
-	Label       string           `json:"label"`
 	SharerName  string           `json:"sharerName"`
 	Mode        domain.ShareMode `json:"mode"`
 	ExpiresAt   *time.Time       `json:"expiresAt,omitempty"`
@@ -322,7 +377,6 @@ func (s *Service) View(ctx context.Context, token string) (PublicView, error) {
 	}
 
 	view := PublicView{
-		Label:      sh.Label,
 		SharerName: name,
 		Mode:       sh.Mode,
 		ExpiresAt:  sh.ExpiresAt,
@@ -428,19 +482,21 @@ func (s *Service) Track(userID string) {
 
 func (s *Service) publishACL(sh domain.Share, action, reason string) {
 	s.Track(sh.UserID)
-	payload := map[string]any{
+	// The viewer of the link: drops or gains their subscription, and is told
+	// how it ended — but not the owner's private label or share id.
+	viewer := map[string]any{"action": action, "mode": sh.Mode, "reason": reason}
+	if err := bus.PublishJSON(s.b, bus.ACLSubject(ViewerID(sh.Token)), viewer); err != nil {
+		s.log.Warn("share: publish viewer acl failed", "error", err)
+	}
+	// The owner: their UI updates the "you are sharing" banner.
+	owner := map[string]any{
 		"action":  action,
 		"shareId": sh.ID,
 		"mode":    sh.Mode,
 		"label":   sh.Label,
 		"reason":  reason,
 	}
-	// The viewer of the link: drops or gains their subscription.
-	if err := bus.PublishJSON(s.b, bus.ACLSubject(ViewerID(sh.Token)), payload); err != nil {
-		s.log.Warn("share: publish viewer acl failed", "error", err)
-	}
-	// The owner: their UI updates the "you are sharing" banner.
-	if err := bus.PublishJSON(s.b, bus.ACLSubject(sh.UserID), payload); err != nil {
+	if err := bus.PublishJSON(s.b, bus.ACLSubject(sh.UserID), owner); err != nil {
 		s.log.Warn("share: publish owner acl failed", "error", err)
 	}
 }
