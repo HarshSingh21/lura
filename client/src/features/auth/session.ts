@@ -3,6 +3,8 @@ import { TokenError, refreshAsync, revokeAsync, TokenTypeHint, type TokenRespons
 import * as SecureStore from 'expo-secure-store';
 import { create } from 'zustand';
 
+import { onWake } from '@/api/wake';
+
 import { keycloak, loadDiscovery } from './config';
 import { decodeIdToken, tokenLifetimeMs, type Profile } from './jwt';
 import {
@@ -29,8 +31,9 @@ import {
  *     a quarter of its lifetime, if shorter) before it lapses. Timers stop while
  *     a machine sleeps and are throttled in a hidden tab, so the timer is only
  *     the first of three lines: every API call and socket handshake checks the
- *     token first (`ensureFreshAccessToken`), a tab coming back renews at once,
- *     and a 401 forces one renewal (`renewRejectedToken`). The policy — margins,
+ *     token first (`ensureFreshAccessToken`), a tab coming back or a machine
+ *     waking from sleep (api/wake.ts) renews at once, and a 401 forces one
+ *     renewal (`renewRejectedToken`). The policy — margins,
  *     deadlines, when a 401 may force a refresh — lives in refresh.ts.
  *
  * The interactive part of sign-in (opening Keycloak) lives in `useOidc.ts`. This
@@ -389,6 +392,14 @@ if (Platform.OS === 'web' && typeof document !== 'undefined' && typeof window !=
   window.addEventListener('focus', wake);
   window.addEventListener('online', wake);
 }
+
+// A machine waking from sleep fires none of those unless the network changed,
+// and the renewal timer it left behind is late by the whole sleep (timers run
+// on a clock that stops while asleep). api/wake.ts notices the wall clock's
+// jump; renew then, before the first request or handshake needs the token.
+onWake(() => {
+  if (useSession.getState().status === 'signed-in') void ensureFreshAccessToken();
+});
 
 /** Selectors, so components subscribe to the narrowest slice they need. */
 export const selectStatus = (s: SessionState) => s.status;

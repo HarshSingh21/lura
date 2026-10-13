@@ -1,5 +1,6 @@
 import { wsUrlFresh } from './client';
 import type { Frame } from './types';
+import { onWake, wakeAction, WAKE_PROBE_MS } from './wake';
 
 /**
  * The live WebSocket client.
@@ -19,6 +20,10 @@ import type { Frame } from './types';
  *     it is offline the socket is closed and the status says so at once, rather
  *     than after an idle timeout; when it comes back the socket reconnects
  *     immediately instead of waiting out whatever backoff it had reached.
+ *   - Notice a sleep. A laptop that wakes says nothing to the page, and the
+ *     socket it holds was dropped by the server meanwhile; its heartbeat would
+ *     find out only at the idle timeout. On waking (api/wake.ts) the socket is
+ *     replaced at once, or probed when the absence was short.
  *   - Nothing that fired while away is lost: a reconnect sends `since=` (the
  *     server time of the last frame received) and the server replays the
  *     geo events and reminders published after it. The store dedupes them by
@@ -55,6 +60,7 @@ export function connectLive(opts: LiveOptions): LiveConnection {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let probeTimer: ReturnType<typeof setTimeout> | null = null;
   // Server time of the newest frame received, for the replay on reconnect.
   let lastFrameTs: string | undefined;
   let opened = false;
@@ -71,8 +77,10 @@ export function connectLive(opts: LiveOptions): LiveConnection {
   const clearTimers = () => {
     if (pingTimer) clearInterval(pingTimer);
     if (idleTimer) clearTimeout(idleTimer);
+    if (probeTimer) clearTimeout(probeTimer);
     pingTimer = null;
     idleTimer = null;
+    probeTimer = null;
   };
 
   const armIdleTimer = () => {
@@ -149,6 +157,10 @@ export function connectLive(opts: LiveOptions): LiveConnection {
 
     ws.onmessage = (event) => {
       armIdleTimer();
+      if (probeTimer) {
+        clearTimeout(probeTimer);
+        probeTimer = null;
+      }
       if (typeof event.data !== 'string') return;
       let frame: Frame;
       try {
@@ -199,12 +211,60 @@ export function connectLive(opts: LiveOptions): LiveConnection {
     },
   });
 
+  // replace drops the socket in hand and opens another now, without waiting
+  // for the old one to finish closing: a socket whose server is gone may take
+  // its close handshake's whole timeout to report onclose.
+  const replace = (code: number, reason: string) => {
+    const ws = socket;
+    socket = null;
+    clearTimers();
+    ws?.close(code, reason);
+    attempt = 0;
+    open();
+  };
+
+  // Back from a sleep: the socket in hand is most likely dead, whatever the
+  // browser thinks, and anything that fired meanwhile is waiting in the replay.
+  const unwake = onWake((slept) => {
+    if (closedByCaller) return;
+    const state = offline ? 'offline' : socket ? (status === 'open' ? 'open' : 'connecting') : reconnectTimer ? 'backoff' : 'connecting';
+    switch (wakeAction(slept, state)) {
+      case 'reconnect':
+        replace(4003, 'woke from sleep');
+        break;
+      case 'probe': {
+        const ws = socket;
+        if (!ws || probeTimer) break;
+        try {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        } catch {
+          ws.close(4001, 'ping failed');
+          break;
+        }
+        probeTimer = setTimeout(() => {
+          probeTimer = null;
+          if (socket === ws) replace(4004, 'no answer after waking');
+        }, WAKE_PROBE_MS);
+        break;
+      }
+      case 'retry':
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        attempt = 0;
+        open();
+        break;
+      default:
+        break;
+    }
+  });
+
   open();
 
   return {
     close() {
       closedByCaller = true;
       unlisten?.();
+      unwake();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       clearTimers();
       socket?.close(1000, 'client closed');
