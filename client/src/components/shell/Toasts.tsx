@@ -1,5 +1,5 @@
 import { usePathname } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Platform, Pressable, StyleSheet, View } from 'react-native';
 
 import { Icon } from '@/components/ui/Icon';
@@ -12,7 +12,8 @@ import { useTouchTargets } from '@/theme/touch';
 import { useLayoutMode } from '@/theme/useLayout';
 import { useStore, type Toast } from '@/state/store';
 
-import { stackSlot, type StackMetrics } from './stackSlot';
+import { useRailCover } from './railCover';
+import { coversRail, stackSlot, type StackMetrics } from './stackSlot';
 
 /**
  * Live toasts.
@@ -34,6 +35,14 @@ export function Toasts() {
   const pending = useStore((s) => s.reminders.cards.length);
   const { mode } = useLayoutMode();
   const pathname = usePathname();
+  const setCover = useRailCover((s) => s.set);
+  const over = coversRail(mode, pathname) && pending > 0;
+  // The cards' last measured height: moving onto a screen where they cover the
+  // rail does not re-lay them out, so onLayout alone would not report it.
+  const measured = useRef(0);
+  useEffect(() => {
+    setCover(over ? measured.current : 0);
+  }, [over, setCover]);
 
   if (toasts.length === 0 && pending === 0) return null;
 
@@ -47,8 +56,19 @@ export function Toasts() {
   const slot = stackSlot(mode, pathname, METRICS);
   return (
     <View style={[styles.stack, slot]} pointerEvents="box-none">
-      {/* Pending reminders sit above the passing toasts and outlast them. */}
-      <ReminderCards />
+      {/* Pending reminders sit above the passing toasts and outlast them. Over
+          the desktop rail they are measured, so the rail can start below them. */}
+      {pending > 0 ? (
+        <View
+          pointerEvents="box-none"
+          onLayout={(e) => {
+            measured.current = e.nativeEvent.layout.height;
+            if (over) setCover(measured.current);
+          }}
+        >
+          <ReminderCards />
+        </View>
+      ) : null}
       {toasts.map((toast) => (
         <ToastCard key={toast.id} toast={toast} fromTop={slot.top !== 'auto'} />
       ))}

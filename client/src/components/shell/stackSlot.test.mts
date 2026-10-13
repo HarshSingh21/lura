@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CONTROLS_LANE, PHONE_STACK_BOTTOM, PHONE_STACK_MAX_WIDTH, WIDE_STACK_WIDTH, stackSlot } from './stackSlot.ts';
+import { CONTROLS_LANE, PHONE_STACK_BOTTOM, PHONE_STACK_MAX_WIDTH, WIDE_STACK_WIDTH, coversRail, railTopPadding, stackSlot } from './stackSlot.ts';
 
 // The shell's tokens (theme/tokens.ts layout and space).
 const M = { topBarHeight: 58, railWidth: 328, historyRailWidth: 360, inset: 11, wideInset: 18, gap: 8 };
@@ -43,6 +43,26 @@ test('on desktop History the stack leaves the timeline and its day picker alone'
   // A nested History path is History too; a path that merely starts with the word is not.
   assert.equal(stackSlot('desktop', '/history/2026-10-12', M).top, 'auto');
   assert.equal(stackSlot('desktop', '/historyx', M).top, 66);
+});
+
+test('the desktop Live rail starts below the sticky cards over it, and only there', () => {
+  assert.equal(coversRail('desktop', '/'), true);
+  assert.equal(coversRail('desktop', '/people'), true);
+  assert.equal(coversRail('desktop', '/history'), false);
+  assert.equal(coversRail('wide', '/'), false);
+  assert.equal(coversRail('phone', '/'), false);
+
+  const base = 18;
+  assert.equal(railTopPadding(0, base, M), base, 'no card up: the rail keeps its own padding');
+  // One folded card, a fractional height from the browser, and an expanded stack.
+  for (const cover of [128, 160.5, 470]) {
+    const pad = railTopPadding(cover, base, M);
+    // The rail's scroll content starts under the top bar; the stack starts M.gap below it.
+    const s = stackSlot('desktop', '/', M);
+    const stackBottom = (s.top as number) - M.topBarHeight + cover;
+    assert.ok(pad >= stackBottom + base, `${cover}px of cards: first row at ${pad}, cards end at ${stackBottom}`);
+    assert.ok(pad <= stackBottom + base + 1, `${cover}px of cards: ${pad - stackBottom}px of empty gap`);
+  }
 });
 
 test('wide and phone layouts keep their places on every screen', () => {
