@@ -151,3 +151,97 @@ export async function withSessionToken<T>(
     return send(renewed);
   }
 }
+
+/**
+ * singleFlight runs `work` at most once at a time: whoever asks while it is
+ * running gets the same promise. After a sleep every request, the socket
+ * handshake and the renewal timer all find the token stale at once, and each
+ * renewal spends the refresh token — Keycloak rotates it, so the second of two
+ * concurrent renewals presents a token the first one already replaced and
+ * signs the user out.
+ */
+export function singleFlight<T>(work: () => Promise<T>): { run: () => Promise<T>; current: () => Promise<T> | undefined } {
+  let inFlight: Promise<T> | undefined;
+  return {
+    run() {
+      if (inFlight) return inFlight;
+      // Started on a microtask, so `inFlight` is set before `work` can settle
+      // (or throw synchronously) and clear it.
+      const flight: Promise<T> = Promise.resolve()
+        .then(work)
+        .finally(() => {
+          if (inFlight === flight) inFlight = undefined;
+        });
+      inFlight = flight;
+      return flight;
+    },
+    current: () => inFlight,
+  };
+}
+
+/** What freshToken reads from the session. */
+export type FreshTokenDeps = {
+  state: () => { accessToken?: string; expiresAt?: number; refreshToken?: string };
+  /** The access token's own lifetime (jwt.ts tokenLifetimeMs). */
+  lifetimeMs: (accessToken: string | undefined) => number;
+  /** Renew; resolves once the session holds the result (never rejects). */
+  refresh: () => Promise<unknown>;
+  now: () => number;
+};
+
+/**
+ * freshToken is the token to send now: the one in hand while it is outside its
+ * expiry margin, otherwise whatever a renewal produces. Without a refresh token
+ * there is nothing to renew with, and the token in hand is the best there is.
+ */
+export async function freshToken(deps: FreshTokenDeps): Promise<string | undefined> {
+  const { accessToken, expiresAt, refreshToken } = deps.state();
+  if (accessToken && !isExpiring(expiresAt, deps.lifetimeMs(accessToken), deps.now())) return accessToken;
+  if (!refreshToken) return accessToken;
+  await deps.refresh();
+  return deps.state().accessToken;
+}
+
+type Listenable = {
+  addEventListener: (type: string, listener: () => void) => void;
+  removeEventListener: (type: string, listener: () => void) => void;
+};
+
+/** What installRenewTriggers hooks into. */
+export type RenewTriggerDeps = {
+  /** The page, on web: visibilitychange. */
+  document?: Listenable & { visibilityState: string };
+  /** The window, on web: focus and online. */
+  window?: Listenable;
+  /** api/wake.ts onWake: the machine came back from a sleep. */
+  onWake: (listener: (sleptMs: number) => void) => () => void;
+  signedIn: () => boolean;
+  /** Renew if stale (freshToken); cheap when the token is fresh. */
+  renew: () => void;
+};
+
+/**
+ * installRenewTriggers renews the token the moment the page could have missed
+ * its renewal timer: the tab comes back into view, regains focus or comes back
+ * online (a hidden tab's timers are throttled), or the machine wakes from a
+ * sleep (no timer ran at all, and no event says so). Signed out, or with the
+ * tab still hidden, nothing happens. Returns the uninstall.
+ */
+export function installRenewTriggers(deps: RenewTriggerDeps): () => void {
+  const onVisible = () => {
+    if (deps.document && deps.document.visibilityState !== 'visible') return;
+    if (deps.signedIn()) deps.renew();
+  };
+  deps.document?.addEventListener('visibilitychange', onVisible);
+  deps.window?.addEventListener('focus', onVisible);
+  deps.window?.addEventListener('online', onVisible);
+  const unwake = deps.onWake(() => {
+    if (deps.signedIn()) deps.renew();
+  });
+  return () => {
+    deps.document?.removeEventListener('visibilitychange', onVisible);
+    deps.window?.removeEventListener('focus', onVisible);
+    deps.window?.removeEventListener('online', onVisible);
+    unwake();
+  };
+}
