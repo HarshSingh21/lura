@@ -83,24 +83,34 @@ log() { printf '\n== %s\n' "$*"; }
 # The realm is imported once, when the container first starts, so the release's
 # two test people may be missing from a container that predates them. kcadm is
 # idempotent enough here: "exists" is not an error.
+# kc runs kcadm in the Keycloak container with a session file of this run's own:
+# kcadm's default (~/.keycloak/kcadm.config) is shared, and two runs signing in
+# at once on different ports overwrote each other's and failed.
+KC_CONFIG="/tmp/kcadm-e2e-$PORT.config"
+kc() {
+  local sub=("$1")
+  shift
+  if [ "${sub[0]}" = config ]; then sub+=("$1"); shift; fi
+  docker exec -i "$KC_CONTAINER" /opt/keycloak/bin/kcadm.sh "${sub[@]}" --config "$KC_CONFIG" "$@"
+}
+
 ensure_keycloak() {
   log "keycloak: checking realm and test users"
   curl -fsS "$KC_URL/realms/lura/.well-known/openid-configuration" >/dev/null
-  local kc=(docker exec "$KC_CONTAINER" /opt/keycloak/bin/kcadm.sh)
-  "${kc[@]}" config credentials --server http://localhost:8085 --realm master \
+  kc config credentials --server http://localhost:8085 --realm master \
     --user "${KEYCLOAK_ADMIN:-admin}" --password "${KEYCLOAK_ADMIN_PASSWORD:-admin}" >/dev/null 2>&1 \
-    || "${kc[@]}" config credentials --server http://localhost:8080 --realm master \
+    || kc config credentials --server http://localhost:8080 --realm master \
       --user "${KEYCLOAK_ADMIN:-admin}" --password "${KEYCLOAK_ADMIN_PASSWORD:-admin}" >/dev/null
   local spec user first last pass
   for spec in "harsh@lura.local Harsh Singh lura-harsh" "nishtha@lura.local Nishtha Dev lura-nishtha"; do
     read -r user first last pass <<<"$spec"
-    if [ "$("${kc[@]}" get users -r lura -q "username=$user" -q exact=true --fields id 2>/dev/null | grep -c '"id"')" = "0" ]; then
-      "${kc[@]}" create users -r lura -s "username=$user" -s "email=$user" -s "firstName=$first" \
+    if [ "$(kc get users -r lura -q "username=$user" -q exact=true --fields id 2>/dev/null | grep -c '"id"')" = "0" ]; then
+      kc create users -r lura -s "username=$user" -s "email=$user" -s "firstName=$first" \
         -s "lastName=$last" -s enabled=true -s emailVerified=true >/dev/null
       echo "keycloak: created $user"
     fi
-    "${kc[@]}" set-password -r lura --username "$user" --new-password "$pass" >/dev/null
-    "${kc[@]}" add-roles -r lura --uusername "$user" --rolename user >/dev/null 2>&1 || true
+    kc set-password -r lura --username "$user" --new-password "$pass" >/dev/null
+    kc add-roles -r lura --uusername "$user" --rolename user >/dev/null 2>&1 || true
   done
   ensure_redirects lura-app
   if [ "$SUITE" = "edge-sync" ] || [ "$SUITE" = "uc-session" ]; then ensure_edge_client; fi
@@ -111,15 +121,15 @@ ensure_keycloak() {
 # web origins and post-logout URIs. A realm imported for :8080 has no others, so
 # without this any other E2E_PORT fails at Keycloak's "Invalid redirect_uri".
 ensure_redirects() {
-  local client="$1" kc=(docker exec "$KC_CONTAINER" /opt/keycloak/bin/kcadm.sh) id current wanted
-  id="$("${kc[@]}" get clients -r lura -q "clientId=$client" --fields id 2>/dev/null |
+  local client="$1" id current wanted
+  id="$(kc get clients -r lura -q "clientId=$client" --fields id 2>/dev/null |
     node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const c=JSON.parse(s);process.stdout.write(c[0]?c[0].id:"")})')"
   if [ -z "$id" ]; then
     echo "e2e: the lura realm has no $client client" >&2
     exit 1
   fi
   # Whole client: kcadm's --fields drops attribute keys that contain dots.
-  current="$("${kc[@]}" get "clients/$id" -r lura)"
+  current="$(kc get "clients/$id" -r lura)"
   # Prints the merged client, or nothing when every URI is already there.
   wanted="$(PORT="$PORT" node -e '
     let s = "";
@@ -145,7 +155,7 @@ ensure_redirects() {
     });' <<<"$current")"
   if [ -n "$wanted" ]; then
     # stdin reaches kcadm only with docker exec -i.
-    docker exec -i "$KC_CONTAINER" /opt/keycloak/bin/kcadm.sh update "clients/$id" -r lura -f - <<<"$wanted" >/dev/null
+    kc update "clients/$id" -r lura -f - <<<"$wanted" >/dev/null
     echo "keycloak: $client now accepts :$PORT on localhost and lura.com"
   fi
 }
@@ -157,9 +167,8 @@ ensure_redirects() {
 # any time (the next edge run recreates it). Its redirects follow the run's port
 # like lura-app's do.
 ensure_edge_client() {
-  local kc=(docker exec "$KC_CONTAINER" /opt/keycloak/bin/kcadm.sh)
-  if [ "$("${kc[@]}" get clients -r lura -q clientId=lura-app-edge --fields id 2>/dev/null | grep -c '"id"')" = "0" ]; then
-    docker exec -i "$KC_CONTAINER" /opt/keycloak/bin/kcadm.sh create clients -r lura -f - \
+  if [ "$(kc get clients -r lura -q clientId=lura-app-edge --fields id 2>/dev/null | grep -c '"id"')" = "0" ]; then
+    kc create clients -r lura -f - \
       <"$ROOT/e2e/keycloak-edge-client.json" >/dev/null
     echo "keycloak: created client lura-app-edge"
   fi
