@@ -294,6 +294,7 @@ E2E_KEEP_RUNNING=1 e2e/run.sh               # leave Lura serving the build after
 E2E_STORE=postgres E2E_PORT=8091 e2e/run.sh # on a throwaway PostGIS, with a restart in step 5
 e2e/edge.sh sync                            # the sync edge cases, on :8096
 e2e/edge.sh fences-ui                       # fences, notifications and every screen, on :8097
+E2E_STORE=postgres caffeinate -ims e2e/edge.sh session   # long sessions and laptop sleeps, on :8097 (~50 min)
 ```
 
 | Switch | Meaning |
@@ -304,7 +305,7 @@ e2e/edge.sh fences-ui                       # fences, notifications and every sc
 | `E2E_SEED` | `1` creates step 4's fences and note through the API instead of drawing them |
 | `E2E_KEEP_RUNNING` | `1` leaves Lura running on `E2E_PORT` when the run ends |
 | `E2E_OUT` | where results go (default a fresh temp dir) |
-| `E2E_SUITE` | `scenario` (default), `edge-sync` or `edge-fences-ui` — what `e2e/edge.sh` sets |
+| `E2E_SUITE` | `scenario` (default), `edge-sync`, `edge-fences-ui` or `uc-session` — what `e2e/edge.sh` sets |
 | `E2E_STORE` | `memory` (default) or `postgres`: a PostGIS container of the run's own (below) |
 | `E2E_KEEP_DB` | `1` leaves the PostGIS container running after the run |
 | `E2E_WEB_DIR` | where the web build goes (default `$E2E_OUT/web`, so parallel runs never share one) |
@@ -333,6 +334,20 @@ if (canKeepData()) {                      // E2E_STORE=postgres and run through 
 }
 duringRestart(errorWallClockMs);          // was this console error the outage we caused?
 ```
+
+**Long sessions.** `uc-session` runs one phase per Keycloak client. Phase
+`app` uses `lura-app` (15 min tokens): 25 min of both people tracking each
+other, then a 3 min laptop sleep across the token's expiry. Phase `edge` uses
+`lura-app-edge` (60 s tokens): 6 min of the same, then two sleeps. A sleep
+pauses the page's timers with Playwright's clock and moves `Date.now()` on
+when it wakes, as macOS does. Either the network goes away during the sleep,
+or the live socket dies with no network event at all. Each phase writes
+`tokens.json` with every token Keycloak issued, every bearer and socket
+handshake the app sent with the `exp` each carried, and every 401. Set
+`E2E_PHASES`, `E2E_UC_LONG_MS`, `E2E_UC_SLEEP_MS` and `E2E_UC_ONLY` to
+shorten a run. Run it under `caffeinate -ims`, not just `-i`. With
+`-i` alone, the first attempt was cut short by a real sleep that macOS logged
+as maintenance sleep.
 
 On Postgres, step 5 restarts Lura with both browsers open and checks that the
 fences, note, connection and devices survive and that both apps reconnect on

@@ -8,7 +8,7 @@
 #   E2E_KEEP_RUNNING=1 e2e/run.sh   # leave Lura on :$E2E_PORT (default 8080) serving the build afterwards
 #   E2E_SUITE=edge-sync E2E_PORT=8096 e2e/run.sh        # the sync edge cases (or: e2e/edge.sh sync)
 #   E2E_SUITE=edge-fences-ui E2E_PORT=8097 e2e/run.sh   # fences, notifications, screens (e2e/edge.sh fences-ui)
-#   E2E_SUITE=uc-session E2E_STORE=postgres E2E_PORT=8097 caffeinate -i e2e/run.sh
+#   E2E_SUITE=uc-session E2E_STORE=postgres E2E_PORT=8097 caffeinate -ims e2e/run.sh
 #                                # long sessions: 25 min on lura-app's 15 min tokens, 6 min on
 #                                # lura-app-edge's 60 s tokens, a laptop sleep in each (phases
 #                                # "app" and "edge"; E2E_PHASES=edge runs one)
