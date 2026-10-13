@@ -294,6 +294,40 @@ func TestFeedShowsAPeersCrossingOnlyWhenIWasEntitledToIt(t *testing.T) {
 	}
 }
 
+// A link that expired with no revocation recorded (the server was down at its
+// expiry, or restarted and lost its timer) ends in the feed at its expiry; one
+// still running does not end.
+func TestFeedEndsAnExpiredShareAtItsExpiry(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	st, t0 := f.st, f.t0
+	expired := t0.Add(20 * time.Minute)
+	running := t0.Add(3 * time.Hour)
+	for _, sh := range []domain.Share{
+		{UserID: me, Token: "old", Label: "Cab", Mode: domain.ShareDuration, CreatedAt: t0, ExpiresAt: &expired},
+		{UserID: me, Token: "new", Label: "Mum", Mode: domain.ShareDuration, CreatedAt: t0.Add(time.Minute), ExpiresAt: &running},
+	} {
+		if _, err := st.CreateShare(ctx, sh); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := activity.New(st, nil).WithClock(func() time.Time { return t0.Add(time.Hour) })
+	res, err := svc.Feed(ctx, me, activity.Query{From: t0, To: t0.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, it := range res.Items {
+		if s, ok := it.(activity.ShareItem); ok {
+			got = append(got, s.Label+" "+s.Action+" "+s.Reason+" "+s.TS.Sub(t0).String())
+		}
+	}
+	want := "Cab revoked expired 20m0s,Mum created  1m0s,Cab created  0s"
+	if strings.Join(got, ",") != want {
+		t.Errorf("share items = %q, want %q", strings.Join(got, ","), want)
+	}
+}
+
 func TestFeedRejectsAnInvertedWindow(t *testing.T) {
 	f := newFixture(t)
 	if _, err := activity.New(f.st, nil).Feed(context.Background(), me, activity.Query{
