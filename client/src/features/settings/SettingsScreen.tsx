@@ -23,6 +23,8 @@ import { Mono, SectionLabel, Txt } from '@/theme/text';
 import { color, palette, radius, size, space } from '@/theme/tokens';
 import { useStore } from '@/state/store';
 
+import { formatCoolOff } from './format';
+
 /**
  * Settings is where the invariants become switches.
  *
@@ -361,7 +363,7 @@ export function SettingsScreen() {
             label="Fly-by filter"
             value={`arrive confirms after ${Math.round((data?.server.freshWindowSeconds ?? 0) / 60)} min freshness window`}
           />
-          <Row label="Cool-off" value={`${Math.round((data?.server.coolOffSeconds ?? 0) / 60)} min per place/trigger`} />
+          <Row label="Cool-off" value={formatCoolOff(data?.server.coolOffSeconds)} />
           <Txt variant="micro" color={color.textFaint} style={styles.licence}>
             Lura is open source and self-hosted: Go, PostgreSQL/PostGIS, MapLibre, OpenTelemetry, OpenSearch,
             ntfy, Expo. No component phones home.

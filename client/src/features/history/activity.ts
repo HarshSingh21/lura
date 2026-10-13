@@ -227,7 +227,21 @@ function join(...parts: (string | undefined | false)[]): string | undefined {
   return s || undefined;
 }
 
-export type DescribeContext = { tz: string; viewerId?: string; multipleDevices?: boolean };
+/**
+ * tripTitle names a trip by the places it joined. Most trips start or end
+ * somewhere that is not a place, and "Somewhere → somewhere" said nothing
+ * twice: an unknown end is left out instead.
+ */
+export function tripTitle(from?: string, to?: string): string {
+  const a = from?.trim();
+  const b = to?.trim();
+  if (a && b) return `${a} → ${b}`;
+  if (a) return `Trip from ${a}`;
+  if (b) return `Trip to ${b}`;
+  return 'Trip';
+}
+
+export type DescribeContext ={ tz: string; viewerId?: string; multipleDevices?: boolean };
 
 /** describe is one feed entry as a timeline row. */
 export function describe(item: ActivityItem, ctx: DescribeContext): ActivityRow {
@@ -237,7 +251,7 @@ export function describe(item: ActivityItem, ctx: DescribeContext): ActivityRow 
       return {
         ...base,
         icon: 'history',
-        title: `${item.fromPlace || 'Somewhere'} → ${item.toPlace || 'somewhere'}`,
+        title: tripTitle(item.fromPlace, item.toPlace),
         detail: join(
           item.mode,
           formatDuration(item.startTs, item.endTs),
