@@ -423,7 +423,6 @@ try {
     const wsRes = await fetch(`${API}/s/${tokenOf(facts.arrive.link)}/ws`);
     check(wsRes.status === 403, `GET /s/<ended>/ws → ${wsRes.status}`);
     // Reopening the link later: the same clean page, and no socket retry loop.
-    const socketsBefore = (await v.record()).sockets;
     await v.page.reload({ waitUntil: 'domcontentloaded' });
     await v.page.getByText('This share has ended').waitFor({ timeout: 20000 });
     await sleep(6000);
@@ -443,7 +442,8 @@ try {
       phoneEndedAfterArrivalMs: phoneEndedAt - arrivedAt,
       notice,
       positionsAfterEnd: late,
-      socketsAfterReopen: r2.sockets - socketsBefore,
+      // The instrument restarts its count on reload: this is the reopened page's own.
+      socketsAfterReopen: r2.sockets,
       shots: [...endedShot, reloadShot, await harsh.shot(OUT, 'uc10-4-sharing-after')],
     };
   });
@@ -705,6 +705,7 @@ try {
     const form = await bodyText(harsh.page);
     check(form.includes('Connect with someone under People'), 'the place form does not explain that nobody can be watched');
     check((await harsh.page.getByRole('checkbox', { name: 'Nishtha', exact: true }).count()) === 0, 'the place form offers Nishtha, who has not accepted');
+    await sleep(900); // the sheet slides in: let it land before the picture
     const shot = await harsh.shot(OUT, 'uc12-6-place-form-pending');
     await harsh.page.getByRole('button', { name: 'Cancel', exact: true }).last().click();
     await harsh.page.getByText('Edit Grocery').waitFor({ state: 'hidden', timeout: 5000 });
