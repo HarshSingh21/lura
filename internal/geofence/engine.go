@@ -911,9 +911,17 @@ func (e *Engine) fire(ctx context.Context, place domain.Place, pos domain.Positi
 		e.log.ErrorContext(ctx, "geofence: publish geo event failed", "error", err)
 		return false
 	}
-	// Also on the live path so the UI can react immediately.
-	if err := bus.PublishJSON(e.b, bus.GeoSubject(ev.UserID), ev); err != nil {
-		e.log.WarnContext(ctx, "geofence: live geo publish failed", "error", err)
+	// Also on the live path so the UI can react immediately — the owner's
+	// socket toasts and chimes every geo frame. Except for a connected person's
+	// crossing of a fence that does not watch them: that fires only because a
+	// note is about their movement, and the note says who is told ("only
+	// Nishtha"). The durable event above still reaches the notify worker, which
+	// reminds exactly those people (the owner too, when the note names them),
+	// and the owner's trigger history.
+	if ev.SubjectUserID == ev.UserID || place.Watches(ev.SubjectUserID) {
+		if err := bus.PublishJSON(e.b, bus.GeoSubject(ev.UserID), ev); err != nil {
+			e.log.WarnContext(ctx, "geofence: live geo publish failed", "error", err)
+		}
 	}
 
 	metrics.GeoEventsFired.Inc(metrics.AttrTrigger.String(string(trigger)))

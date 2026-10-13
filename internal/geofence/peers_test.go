@@ -467,6 +467,49 @@ func TestNoteWithWatchUserFires(t *testing.T) {
 	}
 }
 
+// A note for Nishtha about her own movement, at a fence of Harsh's that does
+// not watch her, tells only the people the note names. The crossing still goes
+// on the durable path (the notify worker reminds her, the trigger history keeps
+// it), but not on the live path to Harsh's socket, where every geo frame is a
+// toast and a chime: "notify only Nishtha" must not ring Harsh's browser.
+func TestNoteOnlyPeerCrossingStaysOffTheOwnersLivePath(t *testing.T) {
+	h := newHarness(t, baseConfig())
+	h.withPeer(true)
+	rec := h.recordSubjects()
+	h.place("p1", "Gym2", 120, domain.TriggerPassby)
+	if _, err := h.store.CreateNote(context.Background(), domain.Note{
+		UserID: testUser, Text: "pick up keys", PlaceID: "p1", Trigger: domain.TriggerPassby,
+		WatchUserID: peerUser, NotifyUserIDs: []string{peerUser},
+	}); err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+
+	h.peerFix(outside(), 10)
+	h.clock.Advance(time.Second)
+	h.peerFix(inside(), 10)
+	if evs := h.geoEvents(); len(evs) != 1 || evs[0].Trigger != domain.TriggerPassby || evs[0].UserID != testUser {
+		t.Fatalf("durable events = %+v, want one passby owned by u1", evs)
+	}
+	if seen := rec.list(); len(seen) != 0 {
+		t.Fatalf("live geo frames on %v, want none for a crossing the place does not watch", seen)
+	}
+
+	// The owner's own crossing, and a watched person's, still go live.
+	h.clock.Advance(time.Hour)
+	h.fix(outside(), 10)
+	h.clock.Advance(time.Second)
+	h.fix(inside(), 10)
+	// The live path is delivered asynchronously; the owner's frame arriving
+	// also settles whether the peer's (published first) ever would.
+	for deadline := time.Now().Add(2 * time.Second); len(rec.list()) == 0 && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if seen := rec.list(); len(seen) != 1 || seen[0] != bus.GeoSubject(testUser) {
+		t.Fatalf("live geo frames after the owner's own crossing = %v, want one on %s", seen, bus.GeoSubject(testUser))
+	}
+}
+
 // A geo event round-trips the new fields over the bus as the client expects.
 func TestGeoEventWireNames(t *testing.T) {
 	raw, err := json.Marshal(domain.GeoEvent{SubjectUserID: "u2", SubjectName: "Nishtha"})
