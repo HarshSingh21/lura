@@ -4,8 +4,8 @@
  * sits on a screen's own controls.
  *
  *   - Desktop: top right, as wide as the right rail it covers. On the Live map
- *     that rail is the people list, which the cards stand in for while they are
- *     up. On History the right column is the timeline, whose head holds the day
+ *     that rail is the people list, which moves down below the sticky cards
+ *     while they are up (railTopPadding). On History the right column is the timeline, whose head holds the day
  *     picker: there the stack moves onto the map, bottom right, clear of the
  *     rail and of the map's own basemap button at the top.
  *   - Wide (sidebar, no rail): top right, under the bell.
@@ -73,4 +73,23 @@ export function stackSlot(mode: 'phone' | 'wide' | 'desktop', pathname: string |
     return { top: 'auto', bottom: m.inset, right: m.historyRailWidth + m.inset, width };
   }
   return { top, right: m.inset, width };
+}
+
+/**
+ * coversRail says whether the stack sits over the right rail: the desktop
+ * layout everywhere but History, whose stack moves onto the map.
+ */
+export function coversRail(mode: 'phone' | 'wide' | 'desktop', pathname: string | undefined): boolean {
+  return mode === 'desktop' && !isHistory(pathname);
+}
+
+/**
+ * railTopPadding is the Live rail's top padding while sticky reminder cards
+ * `cover` px tall sit over it: their height, the gap above them and the rail's
+ * own padding, so the first row starts below the cards instead of peeking out
+ * from under them half hidden (and under the "+N more" pill). With no card up
+ * it is the rail's own padding.
+ */
+export function railTopPadding(cover: number, base: number, m: Pick<StackMetrics, 'gap'>): number {
+  return cover > 0 ? m.gap + Math.ceil(cover) + base : base;
 }

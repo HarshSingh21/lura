@@ -13,6 +13,8 @@ import { formatMetres } from '@/components/map/geometry';
 import { fitBounds } from '@/components/map/projection';
 import type { FenceEditState, FenceGeometry, MapFence, MapMarker } from '@/components/map/types';
 import { useBasemap } from '@/components/map/useBasemap';
+import { useRailCover } from '@/components/shell/railCover';
+import { railTopPadding } from '@/components/shell/stackSlot';
 import { Icon } from '@/components/ui/Icon';
 import { Button, Dot, IconButton, Sheet } from '@/components/ui/primitives';
 import { peerFixes, watchers } from '@/features/people/peer';
@@ -100,6 +102,8 @@ export function LiveScreen() {
   const positions = useStore((s) => s.positions);
   const reminderCards = useStore((s) => s.reminders.cards);
   const liveStatus = useStore((s) => s.status);
+  // Sticky reminder cards over the desktop rail: the rail starts below them.
+  const railCover = useRailCover((s) => s.height);
   const trails = useTrails((s) => s.trails);
   const lastEvent = useStore((s) => s.lastEvent);
   const pushToast = useStore((s) => s.pushToast);
@@ -931,7 +935,10 @@ export function LiveScreen() {
       </View>
 
       {isDesktop ? (
-        <ScrollView style={styles.rail} contentContainerStyle={styles.railInner}>
+        <ScrollView
+          style={styles.rail}
+          contentContainerStyle={[styles.railInner, { paddingTop: railTopPadding(railCover, space.xxl, { gap: space.md }) }]}
+        >
           {rail}
         </ScrollView>
       ) : (
