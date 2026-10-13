@@ -90,8 +90,13 @@ export function HistoryScreen() {
     [focused, overview?.places],
   );
 
-  const mapWidth = isDesktop ? width - layout.sidebarWidth - layout.historyRailWidth : width;
-  const mapHeight = isDesktop ? height - layout.topBarHeight : Math.round(height * 0.4);
+  // The camera fits the day into the map as laid out. An estimate from the
+  // window serves until the first layout: on a phone the band is 40 % of the
+  // space between the bars, not of the window, and fitting to the window's
+  // 40 % ran the day's track off the band's foot.
+  const [mapSize, setMapSize] = useState<{ width: number; height: number } | null>(null);
+  const mapWidth = mapSize?.width ?? (isDesktop ? width - layout.sidebarWidth - layout.historyRailWidth : width);
+  const mapHeight = mapSize?.height ?? (isDesktop ? height - layout.topBarHeight : Math.round(height * 0.4));
   // Open on the day; after a tap, on the entry.
   const view = useMemo(() => {
     const points = focusGeometry?.points.length ? focusGeometry.points : track;
@@ -228,7 +233,13 @@ export function HistoryScreen() {
 
   return (
     <View style={[styles.root, !isDesktop && styles.rootStacked]}>
-      <View style={[styles.mapWrap, !isDesktop && styles.mapWrapStacked]}>
+      <View
+        style={[styles.mapWrap, !isDesktop && styles.mapWrapStacked]}
+        onLayout={(e) => {
+          const { width: w, height: h } = e.nativeEvent.layout;
+          if (w > 0 && h > 0 && (w !== mapSize?.width || h !== mapSize?.height)) setMapSize({ width: w, height: h });
+        }}
+      >
         <MapView
           center={view?.center ?? { lat: 12.9716, lon: 77.5946 }}
           zoom={view?.zoom ?? 13}
@@ -351,6 +362,9 @@ function TimelineRow({
 }) {
   const tint = row.personId ? personColor(row.personId) : (ICON_TINT[row.icon] ?? palette.accent);
   const pending = row.status === 'pending';
+  // A one-line row ("10:14 Acknowledged Nishtha left Grocery") is 37 px tall:
+  // under a finger it gets a full target.
+  const touch = useTouchTargets();
 
   const body = (
     <>
@@ -398,6 +412,7 @@ function TimelineRow({
       onPress={onPress}
       style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
         styles.row,
+        touch && styles.rowTouch,
         (hovered || pressed) && styles.rowHover,
         selected && styles.rowSelected,
       ]}
@@ -550,6 +565,7 @@ const styles = StyleSheet.create({
   section: { gap: 0 },
   sectionTitle: { letterSpacing: 0.85, marginBottom: space.sm },
   row: { flexDirection: 'row', gap: 11, borderRadius: radius.lg, paddingHorizontal: 4 },
+  rowTouch: { minHeight: 44 },
   rowHover: { backgroundColor: color.surfaceHover },
   rowSelected: { backgroundColor: color.amberSofter },
   gutter: { width: 24, alignItems: 'center', paddingTop: 2 },
