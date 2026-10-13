@@ -74,6 +74,12 @@ type Client struct {
 	mu   sync.Mutex
 	subs map[string]bus.Subscription
 
+	// resubMu serialises whole re-authorizations (resolve, then apply). Two
+	// of them interleaving — the acl event and a direct Reauthorize — could
+	// otherwise apply an answer read before a revoke after the one read
+	// after it, restoring the access that was just taken away.
+	resubMu sync.Mutex
+
 	// Reconnect replay bookkeeping (see Replay). Frames are identified by
 	// subject and publish time, which the bus stamps uniquely.
 	replayMu   sync.Mutex
@@ -418,11 +424,45 @@ func (h *Hub) onACL(viewer string, payload []byte) {
 	}
 }
 
+// Reauthorize re-runs the resolver, now, for every connection on this replica
+// belonging to the given viewers.
+//
+// The acl.<viewer> event does the same, but it travels the asynchronous bus:
+// a caller that has just revoked access (a person pausing their sharing) and
+// answers "done" before the hub has processed that event would let the next
+// fix through. Calling this before responding closes that window; the event
+// still follows, and re-resolving an unchanged set is a no-op.
+func (h *Hub) Reauthorize(ctx context.Context, viewers ...string) {
+	want := make(map[string]struct{}, len(viewers))
+	for _, v := range viewers {
+		want[v] = struct{}{}
+	}
+	h.mu.RLock()
+	var affected []*Client
+	for _, c := range h.clients {
+		if _, ok := want[c.ViewerID]; ok {
+			affected = append(affected, c)
+		}
+	}
+	h.mu.RUnlock()
+	for _, c := range affected {
+		if err := c.resubscribe(ctx); err != nil {
+			// Fail closed, as onACL does: a connection whose authorization
+			// cannot be re-checked must not keep the old one.
+			h.log.Warn("hub: reauthorize failed, dropping connection",
+				"client", c.ID, "viewer", c.ViewerID, "error", err)
+			h.Disconnect(c)
+		}
+	}
+}
+
 // Resubscribe re-runs the resolver for one client. Exported so the API layer can
 // force a refresh (e.g. right after the owner revokes a share on this replica).
 func (c *Client) Resubscribe(ctx context.Context) error { return c.resubscribe(ctx) }
 
 func (c *Client) resubscribe(ctx context.Context) error {
+	c.resubMu.Lock()
+	defer c.resubMu.Unlock()
 	want, err := c.resolve(ctx)
 	if err != nil {
 		return err
