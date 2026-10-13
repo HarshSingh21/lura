@@ -295,6 +295,11 @@ E2E_STORE=postgres E2E_PORT=8091 e2e/run.sh # on a throwaway PostGIS, with a res
 e2e/edge.sh sync                            # the sync edge cases, on :8096
 e2e/edge.sh fences-ui                       # fences, notifications and every screen, on :8097
 E2E_STORE=postgres caffeinate -ims e2e/edge.sh session   # long sessions and laptop sleeps, on :8097 (~50 min)
+E2E_SUITE=uc-commute E2E_STORE=postgres E2E_PORT=8092 e2e/run.sh   # the commute reminder, Home → Office (~4 min)
+E2E_SUITE=uc-peers E2E_STORE=postgres E2E_PORT=8093 e2e/run.sh     # watches, mutual watches, notes for others
+E2E_STORE=postgres e2e/uc-triggers.sh                               # dwell, leave, quiet hours, mute, on :8094
+E2E_SUITE=uc-share-privacy E2E_STORE=postgres E2E_PORT=8095 e2e/run.sh  # share links, removing a connection
+E2E_SUITE=uc-mobile-ui E2E_STORE=postgres E2E_PORT=8098 e2e/run.sh # phone and tablet, by touch
 ```
 
 | Switch | Meaning |
@@ -305,7 +310,7 @@ E2E_STORE=postgres caffeinate -ims e2e/edge.sh session   # long sessions and lap
 | `E2E_SEED` | `1` creates step 4's fences and note through the API instead of drawing them |
 | `E2E_KEEP_RUNNING` | `1` leaves Lura running on `E2E_PORT` when the run ends |
 | `E2E_OUT` | where results go (default a fresh temp dir) |
-| `E2E_SUITE` | `scenario` (default), `edge-sync`, `edge-fences-ui` or `uc-session` — what `e2e/edge.sh` sets |
+| `E2E_SUITE` | `scenario` (default), `edge-sync`, `edge-fences-ui`, or a use-case suite `uc-<name>` (`e2e/uc-<name>.mjs`) |
 | `E2E_STORE` | `memory` (default) or `postgres`: a PostGIS container of the run's own (below) |
 | `E2E_KEEP_DB` | `1` leaves the PostGIS container running after the run |
 | `E2E_WEB_DIR` | where the web build goes (default `$E2E_OUT/web`, so parallel runs never share one) |
