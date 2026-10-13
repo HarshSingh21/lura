@@ -10,6 +10,7 @@ import {
   distanceM,
   fixTimeMs,
   formatAge,
+  isNewerFix,
   isStale,
   STALE_AFTER_MS,
   glideMsFor,
@@ -175,4 +176,22 @@ test('a phone reads the same to its owner and to the person it shares with', () 
   assert.match(deviceLine({ moving: true, speed: 8, lastSeenMs: old, now }), /^Last seen /);
   assert.match(pingLine({ speed: 8, lastSeenMs: old, now }), /^Last seen /);
   assert.equal(deviceLine({ moving: false, speed: 0, now }), 'No fix yet');
+});
+
+test("a person's row describes the device whose fix is newest, ordered by arrival within a second", () => {
+  const t = Date.parse('2026-10-13T08:00:10Z');
+  // The phone's fix, stamped in whole seconds and corrected by its smallest
+  // transit, reads 0.6 s older than the tablet heartbeat that arrived before it.
+  const tablet = { fixMs: t + 300, recvMs: t + 300 };
+  const phone = { fixMs: t - 300, recvMs: t + 700 };
+  assert.equal(isNewerFix(phone, tablet), true);
+  assert.equal(isNewerFix(tablet, phone), false);
+  // Clearly taken later wins whatever arrived last: a queued tunnel fix is history.
+  const queued = { fixMs: t - 60_000, recvMs: t + 900 };
+  assert.equal(isNewerFix(tablet, queued), true);
+  assert.equal(isNewerFix(queued, tablet), false);
+  // Exactly the same stamps: neither is newer, so the first one found stays.
+  assert.equal(isNewerFix(tablet, { ...tablet }), false);
+  // A fix with no times never beats one with them.
+  assert.equal(isNewerFix({ fixMs: Number.NaN, recvMs: Number.NaN }, tablet), false);
 });

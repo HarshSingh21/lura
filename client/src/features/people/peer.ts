@@ -1,5 +1,5 @@
 import type { Point, Position } from '@/api/types';
-import { fixTimeMs } from '@/features/live/motion';
+import { fixTimeMs, isNewerFix } from '@/features/live/motion';
 
 import type { Peer, PeerDevice } from './types';
 
@@ -24,6 +24,8 @@ export type PeerFix = {
   point: Point;
   speedMps: number;
   lastSeen?: string;
+  /** When the server received it, ms since epoch: breaks ties between devices' fix times. */
+  recvMs?: number;
   moving: boolean;
 };
 
@@ -60,15 +62,25 @@ export function peerFixes(peer: Peer, positions: Record<string, Position>): Peer
         point,
         speedMps,
         lastSeen: live ? new Date(fixTimeMs(live)).toISOString() : device.lastSeen,
+        recvMs: live ? stamp(live.recvTs) : stamp(device.lastSeen),
         moving: speedMps > 1,
       };
     })
     .filter((fix) => fix !== null);
 }
 
-/** latestFix is the freshest of a peer's devices — what a single row can show. */
+/**
+ * latestFix is the freshest of a peer's devices — what a single row can show.
+ * "Freshest" is isNewerFix's: fix times a second or less apart are ordered by
+ * arrival, so the row describes the same fix the device's owner sees as newest.
+ */
 export function latestFix(peer: Peer, positions: Record<string, Position>): PeerFix | undefined {
-  return peerFixes(peer, positions).sort((a, b) => stamp(b.lastSeen) - stamp(a.lastSeen))[0];
+  const at = (f: PeerFix) => ({ fixMs: stamp(f.lastSeen), recvMs: f.recvMs ?? stamp(f.lastSeen) });
+  let best: PeerFix | undefined;
+  for (const fix of peerFixes(peer, positions)) {
+    if (!best || isNewerFix(at(fix), at(best))) best = fix;
+  }
+  return best;
 }
 
 function stamp(iso?: string): number {
