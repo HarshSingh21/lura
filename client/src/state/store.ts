@@ -31,6 +31,7 @@ import {
 } from '@/features/notify/reminders';
 import { inQuietHours, type QuietHours } from '@/features/notify/quiet';
 import { loadMuted, saveMuted } from '@/features/notify/sound';
+import { toastsAfter } from '@/features/notify/toasts';
 
 /**
  * Client-local state (HLD §14: Zustand for local, TanStack Query for server).
@@ -306,40 +307,12 @@ export const useStore = create<Store>((set, get) => ({
 
   notify: (next) => {
     const res = ingest(get().notifications, next);
-    set((state) => {
-      if (res.item.status === 'pending') {
-        // A pending reminder is a sticky card (ReminderCards), not a toast that
-        // times out; a toast its crossing already raised gives way to it.
-        return {
-          notifications: res.items,
-          toasts: state.toasts.filter((t) => t.notificationId !== res.item.id),
-        };
-      }
-      if (!res.announce) {
-        // The second frame for a crossing re-words the toast already on screen
-        // (the reminder carries the note text) instead of stacking a new one.
-        return {
-          notifications: res.items,
-          toasts: state.toasts.map((t) =>
-            t.notificationId === res.item.id ? { ...t, title: res.item.title, body: res.item.body } : t,
-          ),
-        };
-      }
-      return {
-        notifications: res.items,
-        toasts: [
-          ...state.toasts.slice(-3),
-          {
-            id: `toast_${++toastSeq}`,
-            title: res.item.title,
-            body: res.item.body,
-            kind: res.item.kind === 'geo' ? ('event' as const) : ('reminder' as const),
-            at: Date.now(),
-            notificationId: res.item.id,
-          },
-        ],
-      };
-    });
+    // A pending reminder is a sticky card, a repeat frame re-words its toast,
+    // and only a first announcement adds one (features/notify/toasts.ts).
+    set((state) => ({
+      notifications: res.items,
+      toasts: toastsAfter(state.toasts, res, () => ({ id: `toast_${++toastSeq}`, at: Date.now() })),
+    }));
     if (res.announce) {
       announce(res.item, { muted: get().muted, quiet: inQuietHours(get().quietHours), onOpen: () => get().requestFocus(focusTarget(res.item)) });
     }
