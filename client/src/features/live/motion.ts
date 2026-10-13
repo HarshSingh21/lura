@@ -209,3 +209,55 @@ export function lerpPoint(a: Point, b: Point, t: number): Point {
   const k = Math.max(0, Math.min(1, t));
   return { lat: a.lat + (b.lat - a.lat) * k, lon: a.lon + (b.lon - a.lon) * k };
 }
+
+// ---------------------------------------------------------------- rail lines
+
+/*
+ * A phone appears twice when two people share: in its owner's "My devices" and
+ * in the other person's People block. Both rows describe the same fix, so they
+ * use the same words for the same state (a phone on a table once read "Idle" to
+ * its owner and "Still" to everyone else).
+ */
+
+/** stateWord is how a fix's motion reads: "Moving · 29 km/h" or "Still". */
+export function stateWord(speedMps: number): string {
+  return speedMps > MOVING_MPS ? `Moving · ${formatSpeed(speedMps)}` : 'Still';
+}
+
+/**
+ * pingLine is a person's row in People: motion, how long since the fix
+ * (ticking), and the battery when the phone reported one.
+ */
+export function pingLine({ speed, lastSeenMs, battery, now }: { speed: number; lastSeenMs?: number; battery?: number; now: number }): string {
+  // Gone quiet: a speed from minutes ago is not news, how long ago is.
+  if (lastSeenMs !== undefined && isStale(lastSeenMs, now)) return `Last seen ${formatAge(now - lastSeenMs)}`;
+  const parts = [stateWord(speed)];
+  if (lastSeenMs !== undefined && Number.isFinite(lastSeenMs)) parts.push(formatAge(now - lastSeenMs));
+  if (battery !== undefined && battery > 0) parts.push(`${Math.round(battery)}% battery`);
+  return parts.join(' · ');
+}
+
+/**
+ * deviceLine is one of my devices in "My devices": pingLine's motion words, the
+ * place it is in when it is still, and the age (the battery has its own column).
+ */
+export function deviceLine({
+  moving,
+  speed,
+  inside,
+  lastSeenMs,
+  now,
+}: {
+  moving: boolean;
+  speed: number;
+  inside?: string;
+  lastSeenMs?: number;
+  now: number;
+}): string {
+  if (lastSeenMs !== undefined && isStale(lastSeenMs, now)) return `Last seen ${formatAge(now - lastSeenMs)}${inside ? ` · ${inside}` : ''}`;
+  const age = lastSeenMs !== undefined && Number.isFinite(lastSeenMs) ? ` · ${formatAge(now - lastSeenMs)}` : '';
+  if (moving) return `Moving · ${formatSpeed(speed)}${age}`;
+  if (inside) return `Still · ${inside}${age}`;
+  if (age) return `Still${age}`;
+  return 'No fix yet';
+}

@@ -6,6 +6,7 @@ import type { Position } from '@/api/types';
 import {
   bearingDeg,
   colorForUser,
+  deviceLine,
   distanceM,
   fixTimeMs,
   formatAge,
@@ -15,6 +16,7 @@ import {
   headingFor,
   JUMP_M,
   lerpPoint,
+  pingLine,
   MAX_GLIDE_MS,
   PERSON_PALETTE,
   pushTrail,
@@ -155,4 +157,22 @@ test('a device goes stale two minutes after its last fix, not before', () => {
   assert.equal(isStale(t, t + STALE_AFTER_MS), true);
   assert.equal(isStale(undefined, t), false);
   assert.equal(isStale(Number.NaN, t), false);
+});
+
+test('a phone reads the same to its owner and to the person it shares with', () => {
+  const now = Date.parse('2026-10-12T12:00:00Z');
+  const fix = now - 4_000;
+  // Still on a table: the owner's "My devices" row and the peer's People row
+  // say the same word for the same fix.
+  assert.equal(deviceLine({ moving: false, speed: 0, lastSeenMs: fix, now }), 'Still · 4s ago');
+  assert.equal(pingLine({ speed: 0, lastSeenMs: fix, now }), 'Still · 4s ago');
+  assert.equal(deviceLine({ moving: false, speed: 0, inside: 'Home', lastSeenMs: fix, now }), 'Still · Home · 4s ago');
+  // Moving: the same speed wording; the People row adds the battery.
+  assert.equal(deviceLine({ moving: true, speed: 8, lastSeenMs: fix, now }), 'Moving · 29 km/h · 4s ago');
+  assert.equal(pingLine({ speed: 8, lastSeenMs: fix, battery: 80, now }), 'Moving · 29 km/h · 4s ago · 80% battery');
+  // Gone quiet: both say when it was last seen instead of a stale speed.
+  const old = now - STALE_AFTER_MS - 1_000;
+  assert.match(deviceLine({ moving: true, speed: 8, lastSeenMs: old, now }), /^Last seen /);
+  assert.match(pingLine({ speed: 8, lastSeenMs: old, now }), /^Last seen /);
+  assert.equal(deviceLine({ moving: false, speed: 0, now }), 'No fix yet');
 });
