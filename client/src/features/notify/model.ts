@@ -338,3 +338,40 @@ export function chimeFor(item: Pick<NotificationItem, 'kind' | 'trigger'>): Chim
     item.trigger === 'leave' || item.trigger === 'passby' || item.trigger === 'dwell' ? item.trigger : 'arrive';
   return { kind, watched: item.kind === 'watch' };
 }
+
+/** reminderTag is the system notification tag for a pending reminder. */
+export function reminderTag(reminderId: string): string {
+  return `reminder:${reminderId}`;
+}
+
+/** Announcement is what a new entry sets off besides its toast and panel entry. */
+export type Announcement = {
+  /** The chime to ring, or null when muted. */
+  chime: Chime | null;
+  /** The system notification (shown only while the tab is hidden), or null in quiet hours. */
+  desktop: { silent: boolean; requireInteraction: boolean; tag?: string } | null;
+};
+
+/**
+ * announcement is the rule announce() carries out. In the viewer's quiet
+ * hours nothing sounds and nothing pops up: the toast and the panel entry are
+ * the whole announcement, as the server holds back push. Mute silences sound
+ * only — the chime, and the system notification's own sound — never the
+ * notification. A pending reminder stays on the desktop until it is dealt
+ * with, tagged by reminder so its repeat replaces it in place.
+ */
+export function announcement(
+  item: Pick<NotificationItem, 'kind' | 'trigger' | 'status' | 'reminderId'>,
+  opts: { muted: boolean; quiet?: boolean },
+): Announcement {
+  if (opts.quiet) return { chime: null, desktop: null };
+  const pending = item.status === 'pending';
+  return {
+    chime: opts.muted ? null : chimeFor(item),
+    desktop: {
+      silent: opts.muted,
+      requireInteraction: pending,
+      tag: pending && item.reminderId ? reminderTag(item.reminderId) : undefined,
+    },
+  };
+}
