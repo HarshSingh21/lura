@@ -276,9 +276,10 @@ func (s *Service) Subjects(ctx context.Context, token string) ([]string, error) 
 
 // PublicView is what a recipient sees: the sharer's display name, the shared
 // devices' latest positions, and how the share ends. No notes, no history, no
-// places — a share is a live dot, not an account.
+// places — a share is a live dot, not an account. Not the label either: that is
+// the sharer's own name for the link ("Priya", "the plumber"), and the form
+// promises it is not sent to them.
 type PublicView struct {
-	Label       string           `json:"label"`
 	SharerName  string           `json:"sharerName"`
 	Mode        domain.ShareMode `json:"mode"`
 	ExpiresAt   *time.Time       `json:"expiresAt,omitempty"`
@@ -322,7 +323,6 @@ func (s *Service) View(ctx context.Context, token string) (PublicView, error) {
 	}
 
 	view := PublicView{
-		Label:      sh.Label,
 		SharerName: name,
 		Mode:       sh.Mode,
 		ExpiresAt:  sh.ExpiresAt,
@@ -428,19 +428,21 @@ func (s *Service) Track(userID string) {
 
 func (s *Service) publishACL(sh domain.Share, action, reason string) {
 	s.Track(sh.UserID)
-	payload := map[string]any{
+	// The viewer of the link: drops or gains their subscription, and is told
+	// how it ended — but not the owner's private label or share id.
+	viewer := map[string]any{"action": action, "mode": sh.Mode, "reason": reason}
+	if err := bus.PublishJSON(s.b, bus.ACLSubject(ViewerID(sh.Token)), viewer); err != nil {
+		s.log.Warn("share: publish viewer acl failed", "error", err)
+	}
+	// The owner: their UI updates the "you are sharing" banner.
+	owner := map[string]any{
 		"action":  action,
 		"shareId": sh.ID,
 		"mode":    sh.Mode,
 		"label":   sh.Label,
 		"reason":  reason,
 	}
-	// The viewer of the link: drops or gains their subscription.
-	if err := bus.PublishJSON(s.b, bus.ACLSubject(ViewerID(sh.Token)), payload); err != nil {
-		s.log.Warn("share: publish viewer acl failed", "error", err)
-	}
-	// The owner: their UI updates the "you are sharing" banner.
-	if err := bus.PublishJSON(s.b, bus.ACLSubject(sh.UserID), payload); err != nil {
+	if err := bus.PublishJSON(s.b, bus.ACLSubject(sh.UserID), owner); err != nil {
 		s.log.Warn("share: publish owner acl failed", "error", err)
 	}
 }

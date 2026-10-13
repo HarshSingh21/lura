@@ -417,7 +417,7 @@ export type HistorySummary = {
 };
 
 export type PublicShareView = {
-  label: string;
+  // No label: that is the sharer's own name for the link, never sent to the recipient.
   sharerName: string;
   mode: ShareMode;
   expiresAt?: string;
