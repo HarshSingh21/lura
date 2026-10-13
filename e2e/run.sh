@@ -11,6 +11,10 @@
 #   E2E_SUITE=uc-peers E2E_PORT=8093 e2e/run.sh         # peer watches and notes for others (UC5–UC7)
 #   E2E_SUITE=uc-triggers E2E_PORT=8094 e2e/run.sh      # dwell, leave, quiet hours (e2e/uc-triggers.sh)
 #   E2E_SUITE=uc-share-privacy E2E_PORT=8095 e2e/run.sh # share links and removing a connection (e2e/uc-share-privacy.mjs)
+#   E2E_SUITE=uc-session E2E_STORE=postgres E2E_PORT=8097 caffeinate -ims e2e/run.sh
+#                                # long sessions: 25 min on lura-app's 15 min tokens, 6 min on
+#                                # lura-app-edge's 60 s tokens, a laptop sleep in each (phases
+#                                # "app" and "edge"; E2E_PHASES=edge runs one)
 #   E2E_STORE=postgres E2E_PORT=8091 e2e/run.sh   # against a throwaway PostGIS instead of memory
 #   E2E_STORE=postgres E2E_KEEP_DB=1 e2e/run.sh   # ... and leave the database container afterwards
 #   E2E_SKIP_BUILD=1 E2E_WEB_DIR=/tmp/web e2e/run.sh   # serve a web build made earlier
@@ -49,6 +53,9 @@ SUITE="${E2E_SUITE:-scenario}"
 case "$SUITE" in
   scenario) ;;
   edge-sync | edge-fences-ui) PHASES="maplibre" ;; # edge cases, not basemaps
+  # One phase per Keycloak client, MapLibre in both: "app" signs in through
+  # lura-app (15 min tokens), "edge" through lura-app-edge (60 s tokens).
+  uc-session) PHASES="${E2E_PHASES:-app edge}" ;;
   uc-*) # a use-case suite, e2e/uc-<name>.mjs
     [ -f "$(dirname "$0")/$SUITE.mjs" ] || { echo "e2e: no suite e2e/$SUITE.mjs"; exit 2; }
     PHASES="maplibre" ;;
@@ -95,7 +102,7 @@ ensure_keycloak() {
     "${kc[@]}" add-roles -r lura --uusername "$user" --rolename user >/dev/null 2>&1 || true
   done
   ensure_redirects lura-app
-  if [ "$SUITE" = "edge-sync" ]; then ensure_edge_client; fi
+  if [ "$SUITE" = "edge-sync" ] || [ "$SUITE" = "uc-session" ]; then ensure_edge_client; fi
 }
 
 # ensure_redirects lets a client (lura-app, or the edge suite's lura-app-edge)
@@ -159,18 +166,36 @@ ensure_edge_client() {
 }
 
 # ---------------------------------------------------------------- build
-build() {
-  local client_id=""
-  [ "$SUITE" = "edge-sync" ] && client_id="lura-app-edge"
-  if [ "${E2E_SKIP_BUILD:-0}" != "1" ] || [ ! -f "$WEB_DIR/index.html" ]; then
-    log "build: web client${client_id:+ for $client_id} → $WEB_DIR"
+# build_web DIR [CLIENT_ID] exports the web client into DIR, signing in through
+# CLIENT_ID (lura-app when empty).
+build_web() {
+  local dir="$1" client_id="${2:-}"
+  if [ "${E2E_SKIP_BUILD:-0}" != "1" ] || [ ! -f "$dir/index.html" ]; then
+    log "build: web client${client_id:+ for $client_id} → $dir"
     (cd "$ROOT/client" && node scripts/copy-maplibre-worker.mjs >/dev/null &&
-      env ${client_id:+EXPO_PUBLIC_KEYCLOAK_CLIENT_ID=$client_id} npx expo export --platform web --output-dir "$WEB_DIR" \
-        >"$OUT/build-web.log" 2>&1) || { tail -40 "$OUT/build-web.log"; exit 1; }
+      env ${client_id:+EXPO_PUBLIC_KEYCLOAK_CLIENT_ID=$client_id} npx expo export --platform web --output-dir "$dir" \
+        >"$OUT/build-web${client_id:+-$client_id}.log" 2>&1) || { tail -40 "$OUT/build-web${client_id:+-$client_id}.log"; exit 1; }
     if [ -n "$client_id" ]; then
-      grep -rlq "$client_id" "$WEB_DIR/_expo" || { echo "e2e: the web build does not use $client_id"; exit 1; }
+      grep -rlq "$client_id" "$dir/_expo" || { echo "e2e: the web build in $dir does not use $client_id"; exit 1; }
     fi
   fi
+}
+
+# web_dir_for PHASE is the build a phase serves: uc-session's "edge" phase has
+# one of its own, signed in through lura-app-edge.
+web_dir_for() {
+  if [ "$SUITE" = "uc-session" ] && [ "$1" = "edge" ]; then echo "$OUT/web-edge"; else echo "$WEB_DIR"; fi
+}
+
+build() {
+  case "$SUITE" in
+    edge-sync) build_web "$WEB_DIR" lura-app-edge ;;
+    uc-session)
+      case " $PHASES " in *" app "*) build_web "$WEB_DIR" ;; esac
+      case " $PHASES " in *" edge "*) build_web "$(web_dir_for edge)" lura-app-edge ;; esac
+      ;;
+    *) build_web "$WEB_DIR" ;;
+  esac
   log "build: server and simulator"
   (cd "$ROOT" && go build -o "$OUT/lura" ./cmd/lura && go build -o "$OUT/lurasim" ./cmd/lurasim)
   if [ ! -d "$ROOT/e2e/node_modules/playwright-core" ]; then
@@ -238,7 +263,7 @@ server_env() {
   echo "LURA_HTTP_ADDR=:$PORT"
   echo "LURA_OIDC_ISSUER=$KC_URL/realms/lura"
   echo "LURA_OIDC_AUDIENCE=lura-api"
-  echo "LURA_WEB_DIR=$WEB_DIR"
+  echo "LURA_WEB_DIR=$(web_dir_for "$provider")"
   echo "LURA_ALLOWED_ORIGINS=http://localhost:$PORT,http://lura.com:$PORT"
   echo "LURA_COOLOFF=${E2E_COOLOFF:-15s}"
   echo "LURA_LOG_LEVEL=debug"
@@ -336,7 +361,7 @@ for phase in $PHASES; do
   mkdir -p "$OUT/$phase"
   start_server "$phase" "$OUT/$phase"
   if ! E2E_BASE="$base" E2E_API="http://localhost:$PORT" E2E_PORT="$PORT" E2E_PROVIDER="$phase" E2E_OUT="$OUT/$phase" E2E_LURASIM="$OUT/lurasim" \
-    E2E_STORE="$STORE" E2E_RESTART="$RESTART" node "$ROOT/e2e/$SUITE.mjs"; then
+    E2E_STORE="$STORE" E2E_RESTART="$RESTART" E2E_PHASE="$phase" node "$ROOT/e2e/$SUITE.mjs"; then
     status=1
   fi
   stop_server

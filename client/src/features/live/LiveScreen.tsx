@@ -17,6 +17,7 @@ import { Icon } from '@/components/ui/Icon';
 import { Button, Dot, IconButton, Sheet } from '@/components/ui/primitives';
 import { peerFixes, watchers } from '@/features/people/peer';
 import { peopleOf } from '@/features/people/types';
+import { useSession } from '@/features/auth';
 import { PlaceForm } from '@/features/places/PlaceForm';
 import { Mono, Txt } from '@/theme/text';
 import { color, layout, palette, radius, shadow, size, space } from '@/theme/tokens';
@@ -28,6 +29,7 @@ import { colorForUser, fixTimeMs, formatAge, formatSpeed, glideMsFor, headingFor
 import { DeviceList, DeviceTracking, PeopleList, SharingBanner, UpcomingReminders, useNow, type FollowKey } from './rail';
 import { useTrails } from './trails';
 import { bannerSlot, pushDown } from './bannerSlot';
+import { loadProblem } from './loadProblem';
 
 /** A ping older than this no longer pulses: the person may have gone offline. */
 const LIVE_PULSE_MS = 120_000;
@@ -90,6 +92,7 @@ export function LiveScreen() {
   const router = useRouter();
   const { isDesktop, isPhone } = useLayoutMode();
   const { data, isLoading, error } = useOverview();
+  const problem = loadProblem(error, !!data);
 
   const positions = useStore((s) => s.positions);
   const liveStatus = useStore((s) => s.status);
@@ -865,13 +868,17 @@ export function LiveScreen() {
               Loading your workspace…
             </Txt>
           </View>
-        ) : error ? (
-          <View style={styles.statusOverlay}>
-            <Txt variant="bodySemi">Cannot reach the Lura server</Txt>
+        ) : problem ? (
+          <View style={styles.statusOverlay} testID="lura-load-problem">
+            <Txt variant="bodySemi">{problem.title}</Txt>
             <Txt variant="tiny" color={color.textMuted} style={styles.statusBody}>
-              {error instanceof Error ? error.message : 'Unknown error'}
+              {problem.body}
             </Txt>
-            <Button label="Open settings" variant="secondary" small onPress={() => router.push('/settings')} />
+            {problem.action === 'sign-in' ? (
+              <Button label="Sign in again" variant="secondary" small onPress={() => useSession.getState().signOut()} />
+            ) : (
+              <Button label="Open settings" variant="secondary" small onPress={() => router.push('/settings')} />
+            )}
           </View>
         ) : null}
 

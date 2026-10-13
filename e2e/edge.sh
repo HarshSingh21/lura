@@ -7,6 +7,8 @@
 #              crossed invitations and two tabs.
 #   fences-ui  e2e/edge-fences-ui.mjs on :8097 — fences, notifications and every
 #              screen, scenarios A–I, plus a screenshot tour.
+#   session    e2e/uc-session.mjs on :8097 — 25 min on 15 min tokens, 6 min on
+#              60 s tokens, and laptop sleeps (about 50 min; not part of "all").
 #
 #   e2e/edge.sh                     # both, one after the other
 #   e2e/edge.sh sync                # one of them
@@ -36,6 +38,14 @@ run_sync() {
   )
 }
 
+run_session() {
+  (
+    export E2E_SUITE=uc-session
+    export E2E_PORT="${E2E_PORT:-8097}"
+    exec "$HERE/run.sh"
+  )
+}
+
 run_fences_ui() {
   (
     export E2E_SUITE=edge-fences-ui
@@ -52,6 +62,7 @@ run_fences_ui() {
 case "${1:-all}" in
   sync) run_sync ;;
   fences-ui) run_fences_ui ;;
+  session) run_session ;;
   all)
     if [ -n "${E2E_OUT:-}" ]; then
       echo "e2e: E2E_OUT names one run; pick a suite (sync | fences-ui) to use it" >&2
@@ -62,5 +73,5 @@ case "${1:-all}" in
     run_fences_ui || status=1
     exit $status
     ;;
-  *) echo "usage: e2e/edge.sh [sync | fences-ui | all]" >&2; exit 2 ;;
+  *) echo "usage: e2e/edge.sh [sync | fences-ui | session | all]" >&2; exit 2 ;;
 esac

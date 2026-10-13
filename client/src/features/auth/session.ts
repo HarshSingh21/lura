@@ -3,14 +3,16 @@ import { TokenError, refreshAsync, revokeAsync, TokenTypeHint, type TokenRespons
 import * as SecureStore from 'expo-secure-store';
 import { create } from 'zustand';
 
+import { onWake } from '@/api/wake';
+
 import { keycloak, loadDiscovery } from './config';
 import { decodeIdToken, tokenLifetimeMs, type Profile } from './jwt';
 import {
   isExpiring,
   REFRESH_DEADLINE_MS,
   refreshDelayMs,
+  renewAfterRejection,
   RETRY_DELAY_MS,
-  shouldForceRenewal,
   withDeadline,
 } from './refresh';
 
@@ -29,8 +31,9 @@ import {
  *     a quarter of its lifetime, if shorter) before it lapses. Timers stop while
  *     a machine sleeps and are throttled in a hidden tab, so the timer is only
  *     the first of three lines: every API call and socket handshake checks the
- *     token first (`ensureFreshAccessToken`), a tab coming back renews at once,
- *     and a 401 forces one renewal (`renewRejectedToken`). The policy — margins,
+ *     token first (`ensureFreshAccessToken`), a tab coming back or a machine
+ *     waking from sleep (api/wake.ts) renews at once, and a 401 forces one
+ *     renewal (`renewRejectedToken`). The policy — margins,
  *     deadlines, when a 401 may force a refresh — lives in refresh.ts.
  *
  * The interactive part of sign-in (opening Keycloak) lives in `useOidc.ts`. This
@@ -358,21 +361,25 @@ export async function ensureFreshAccessToken(): Promise<string | undefined> {
   return useSession.getState().accessToken;
 }
 
-let lastForcedRenewal: number | undefined;
+const forcedRenewal: { at?: number } = {};
 
 /**
  * renewRejectedToken is what to try after the server answered 401 to
  * `rejected`. The token may look fresh by its own clock and still be refused
  * (the session was cut short at Keycloak, or this machine's clock is off), so
  * this renews regardless of expiry — at most once per FORCED_RENEWAL_GAP_MS,
- * and not at all when the session already moved on to another token.
+ * not at all when the session already moved on to another token, and by
+ * joining a renewal already under way (refresh.ts renewAfterRejection).
  */
-export async function renewRejectedToken(rejected: string | undefined): Promise<string | undefined> {
-  const { accessToken, refreshToken } = useSession.getState();
-  if (!refreshToken || !shouldForceRenewal(rejected, accessToken, lastForcedRenewal, Date.now())) return accessToken;
-  lastForcedRenewal = Date.now();
-  await useSession.getState().refresh();
-  return useSession.getState().accessToken;
+export function renewRejectedToken(rejected: string | undefined): Promise<string | undefined> {
+  return renewAfterRejection(rejected, {
+    current: () => useSession.getState().accessToken,
+    hasRefreshToken: () => !!useSession.getState().refreshToken,
+    inFlight: () => inFlightRefresh,
+    refresh: () => useSession.getState().refresh(),
+    now: () => Date.now(),
+    forced: forcedRenewal,
+  });
 }
 
 // A tab that comes back into view, regains focus or comes back online renews at
@@ -389,6 +396,14 @@ if (Platform.OS === 'web' && typeof document !== 'undefined' && typeof window !=
   window.addEventListener('focus', wake);
   window.addEventListener('online', wake);
 }
+
+// A machine waking from sleep fires none of those unless the network changed,
+// and the renewal timer it left behind is late by the whole sleep (timers run
+// on a clock that stops while asleep). api/wake.ts notices the wall clock's
+// jump; renew then, before the first request or handshake needs the token.
+onWake(() => {
+  if (useSession.getState().status === 'signed-in') void ensureFreshAccessToken();
+});
 
 /** Selectors, so components subscribe to the narrowest slice they need. */
 export const selectStatus = (s: SessionState) => s.status;

@@ -81,6 +81,44 @@ export function shouldForceRenewal(
   return lastForcedAt === undefined || now - lastForcedAt >= FORCED_RENEWAL_GAP_MS;
 }
 
+/** What renewAfterRejection needs from the session. */
+export type RejectionDeps = {
+  /** The token the session holds now. */
+  current: () => string | undefined;
+  hasRefreshToken: () => boolean;
+  /** The renewal already under way, if any. */
+  inFlight: () => Promise<unknown> | undefined;
+  /** Start a renewal. */
+  refresh: () => Promise<unknown>;
+  now: () => number;
+  /** When a 401 last forced a renewal; updated here. */
+  forced: { at?: number };
+};
+
+/**
+ * renewAfterRejection is the token to retry with after the server refused
+ * `rejected`.
+ *
+ * A renewal already under way is waited for, whatever started it: requests
+ * that went out together come back together — after a sleep, every request
+ * that was in flight answers 401 at once — and the second of them must retry
+ * with the token the first one's renewal is fetching, rather than give up on
+ * the stale one because FORCED_RENEWAL_GAP_MS has not passed yet.
+ */
+export async function renewAfterRejection(rejected: string | undefined, deps: RejectionDeps): Promise<string | undefined> {
+  const pending = deps.inFlight();
+  if (pending) {
+    await pending.catch(() => undefined);
+    return deps.current();
+  }
+  if (!deps.hasRefreshToken() || !shouldForceRenewal(rejected, deps.current(), deps.forced.at, deps.now())) {
+    return deps.current();
+  }
+  deps.forced.at = deps.now();
+  await deps.refresh().catch(() => undefined);
+  return deps.current();
+}
+
 /** The session's side of an authorised call (installed by auth/bridge.ts). */
 export type TokenSource = {
   /** The token to send now, renewed first when it is inside its expiry margin. */
