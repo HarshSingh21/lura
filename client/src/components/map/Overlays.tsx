@@ -4,6 +4,7 @@ import Svg, { Defs, G, Line, Path, Polygon, RadialGradient, Stop } from 'react-n
 
 import { Mono, Txt } from '@/theme/text';
 import { color, palette, radius, shadow, size } from '@/theme/tokens';
+import { TOUCH_TARGET, useTouchTargets } from '@/theme/touch';
 
 import { Dot } from '@/components/ui/primitives';
 import { absoluteFill } from './fill';
@@ -32,6 +33,9 @@ export function toneColor(tone: MapTone | undefined, dark: boolean): string {
       return dark ? palette.accentBright : palette.accent;
   }
 }
+
+/** A fence label pill's height (11 px text, 4 px padding, a 1 px border). */
+const LABEL_HEIGHT = 24;
 
 /** hasPolygon is the one test every renderer uses to choose polygon over circle. */
 export function hasPolygon(fence: MapFence): fence is MapFence & { polygon: MapFence['center'][] } {
@@ -89,6 +93,10 @@ export function FenceOverlay({
   darkGround?: boolean;
 }) {
   const mpp = metresPerPixel(view.center.lat, view.zoom);
+  // Under a finger a label is tapped through a 44 px band (FenceLabel), so two
+  // labels must not share one: they are spaced by the band, not the pill.
+  const touch = useTouchTargets();
+  const band = touch ? (TOUCH_TARGET - LABEL_HEIGHT) / 2 : 0;
 
   // Where every visible fence sits on screen, and where its label would go.
   const laid = fences.map((fence) => {
@@ -109,7 +117,7 @@ export function FenceOverlay({
   const named = placeLabels(
     laid.flatMap((l) =>
       l && l.fence.name
-        ? [{ id: l.fence.id, cx: l.cx, top: l.top, width: estimateLabelWidth(l.fence.name, l.fence.badge), height: 24, selected: l.fence.selected, extent: l.extent }]
+        ? [{ id: l.fence.id, cx: l.cx, top: l.top - band, width: estimateLabelWidth(l.fence.name, l.fence.badge), height: LABEL_HEIGHT + band * 2, selected: l.fence.selected, extent: l.extent }]
         : [],
     ),
   );
@@ -136,6 +144,8 @@ export function FenceOverlay({
         }
         const { x, y, diameter } = l.circle!;
         const stroke = toneColor(fence.tone, !!dark);
+        // A small circle is still a finger's target: the tap area never shrinks under 44 px.
+        const hit = touch ? Math.max(diameter, TOUCH_TARGET) : diameter;
 
         return (
           <View key={fence.id} pointerEvents="box-none">
@@ -145,20 +155,26 @@ export function FenceOverlay({
               onPress={onPress ? () => onPress(fence.id) : undefined}
               style={[
                 styles.fence,
-                {
-                  left: x - diameter / 2,
-                  top: y - diameter / 2,
-                  width: diameter,
-                  height: diameter,
-                  borderRadius: diameter / 2,
-                  backgroundColor: withOpacity(stroke, darkGround ? 0.2 : fence.tone === 'amber' ? 0.12 : 0.1),
-                  borderColor: withOpacity(stroke, fence.selected || darkGround ? 1 : 0.8),
-                  borderWidth: fence.selected ? 3 : 2.5,
-                  borderStyle: fence.dashed ? 'dashed' : 'solid',
-                },
-                darkGround ? styles.fenceHaloDark : styles.fenceHaloLight,
+                styles.fenceHit,
+                { left: x - hit / 2, top: y - hit / 2, width: hit, height: hit, borderRadius: hit / 2 },
               ]}
-            />
+            >
+              <View
+                pointerEvents="none"
+                style={[
+                  {
+                    width: diameter,
+                    height: diameter,
+                    borderRadius: diameter / 2,
+                    backgroundColor: withOpacity(stroke, darkGround ? 0.2 : fence.tone === 'amber' ? 0.12 : 0.1),
+                    borderColor: withOpacity(stroke, fence.selected || darkGround ? 1 : 0.8),
+                    borderWidth: fence.selected ? 3 : 2.5,
+                    borderStyle: fence.dashed ? 'dashed' : 'solid',
+                  },
+                  darkGround ? styles.fenceHaloDark : styles.fenceHaloLight,
+                ]}
+              />
+            </Pressable>
             {showName ? <FenceLabel fence={fence} left={x} top={y - diameter / 2 - 30} /> : null}
           </View>
         );
@@ -263,6 +279,9 @@ function FenceLabel({
   top: number;
   onPress?: () => void;
 }) {
+  // Under a finger the pill is tapped through a 44 px band around it, pulled
+  // back by the same margin so the label stays exactly where it was placed.
+  const touch = useTouchTargets();
   const inner = (
     <View style={styles.fenceLabelInner}>
       <Txt variant="micro" style={styles.fenceLabelText}>
@@ -292,7 +311,12 @@ function FenceLabel({
   }
   return (
     <View pointerEvents="box-none" style={[styles.fenceLabel, { left, top }]} testID={`lura-fence-label-${fence.id}`}>
-      <Pressable accessibilityRole="button" accessibilityLabel={fence.name ? `Place ${fence.name}` : 'Place'} onPress={onPress}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={fence.name ? `Place ${fence.name}` : 'Place'}
+        onPress={onPress}
+        style={touch ? styles.fenceLabelTouch : undefined}
+      >
         {inner}
       </Pressable>
     </View>
@@ -665,6 +689,7 @@ function withOpacity(hex: string, alpha: number): string {
 
 const styles = StyleSheet.create({
   fence: { position: 'absolute' },
+  fenceHit: { alignItems: 'center', justifyContent: 'center' },
   // The circle's halo, matching the GL renderers' casing line: it keeps the
   // outline readable over rooftops and the dark style, and crisp over streets.
   fenceHaloDark: {
@@ -680,6 +705,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
   },
   polygonBox: { position: 'absolute' },
+  fenceLabelTouch: { minHeight: TOUCH_TARGET, justifyContent: 'center', marginVertical: -(TOUCH_TARGET - LABEL_HEIGHT) / 2 },
   fenceLabel: {
     position: 'absolute',
     // Centre the pill on the fence without measuring it.

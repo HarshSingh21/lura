@@ -8,6 +8,7 @@ import { ReminderCards } from '@/features/notify/ReminderCards';
 import { NotificationGlyph, NotificationMeta, tintFor, useOpenNotification } from '@/features/notify/ui';
 import { Txt } from '@/theme/text';
 import { color, layout, palette, radius, shadow, space } from '@/theme/tokens';
+import { useTouchTargets } from '@/theme/touch';
 import { useLayoutMode } from '@/theme/useLayout';
 import { useStore, type Toast } from '@/state/store';
 
@@ -175,8 +176,10 @@ function plainTint(toast: Toast): string {
 }
 
 function DismissButton({ onDismiss }: { onDismiss: () => void }) {
+  // Under a finger a 44 px target, pulled into the toast's padding so the card does not grow.
+  const touch = useTouchTargets();
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" onPress={onDismiss} hitSlop={8}>
+    <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" onPress={onDismiss} hitSlop={8} style={touch ? styles.dismissTouch : undefined}>
       <Icon name="close" size={14} color={color.textFaint} />
     </Pressable>
   );
@@ -220,6 +223,7 @@ const styles = StyleSheet.create({
   toastError: { borderColor: palette.danger },
   pressed: { opacity: 0.92 },
   dot: { marginTop: 5 },
+  dismissTouch: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', marginTop: -12, marginRight: -14, marginBottom: -12 },
   body: { flex: 1, minWidth: 0 },
   bodyText: { marginTop: 2 },
   progressTrack: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 3, backgroundColor: color.hairline },

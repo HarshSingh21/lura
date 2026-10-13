@@ -7,6 +7,7 @@ import { personColor } from '@/features/people/color';
 import { Mono, Txt } from '@/theme/text';
 import { color, font, palette, radius, shadow, size, space } from '@/theme/tokens';
 import { selectPendingReminders, useStore } from '@/state/store';
+import { useTouchTargets } from '@/theme/touch';
 
 import { inQuietHours } from './quiet';
 import { cardLabel, silence, stackView, type ReminderCard } from './reminders';
@@ -25,6 +26,7 @@ import { NotificationGlyph, formatWhen, tintFor, useOpenNotification } from './u
 export function ReminderCards() {
   const cards = useStore(selectPendingReminders);
   const [expanded, setExpanded] = useState(false);
+  const touch = useTouchTargets();
   if (cards.length === 0) return null;
   const { shown, hidden } = stackView(cards, expanded);
 
@@ -51,7 +53,7 @@ export function ReminderCards() {
           accessibilityState={{ expanded }}
           accessibilityLabel={expanded ? 'Fold pending reminders' : `Show ${hidden} more pending reminders`}
           onPress={() => setExpanded((v) => !v)}
-          style={({ pressed }) => [styles.more, pressed && styles.pressed]}
+          style={({ pressed }) => [styles.more, touch && styles.moreTouch, pressed && styles.pressed]}
         >
           <Mono size={size.monoXs} medium color={palette.amberInk}>
             {expanded ? 'SHOW LESS' : `+${hidden} MORE`}
@@ -67,6 +69,7 @@ function Card({ card }: { card: ReminderCard }) {
   const acknowledge = useStore((s) => s.acknowledgeReminder);
   const silent = useStore((s) => silence({ muted: s.muted, quiet: inQuietHours(s.quietHours) }));
   const open = useOpenNotification();
+  const touch = useTouchTargets();
   const tint = tintFor(card);
   const show = () =>
     open({
@@ -100,7 +103,7 @@ function Card({ card }: { card: ReminderCard }) {
         // The crossing it came from, as on the toast it replaces.
         testID={`lura-notice-${card.eventId ?? card.id}`}
         onPress={show}
-        style={({ pressed }) => [styles.main, pressed && styles.pressed]}
+        style={({ pressed }) => [styles.main, touch && styles.mainTouch, pressed && styles.pressed]}
       >
         <NotificationGlyph item={card} size={36} />
         <View style={styles.flex}>
@@ -152,6 +155,7 @@ function Card({ card }: { card: ReminderCard }) {
           onPress={() => void acknowledge(card.id)}
           style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
             styles.ack,
+            touch && styles.ackTouch,
             hovered && styles.ackHover,
             pressed && styles.pressed,
           ]}
@@ -161,7 +165,7 @@ function Card({ card }: { card: ReminderCard }) {
             Acknowledge
           </Txt>
         </Pressable>
-        <Pressable accessibilityRole="button" onPress={show} hitSlop={6} style={styles.showLink}>
+        <Pressable accessibilityRole="button" onPress={show} hitSlop={6} style={[styles.showLink, touch && styles.showLinkTouch]}>
           <Txt variant="small" color={palette.accentDark} style={styles.link}>
             Show on map
           </Txt>
@@ -193,6 +197,7 @@ const styles = StyleSheet.create({
   head: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   headLabel: { letterSpacing: 0.85 },
   main: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  mainTouch: { minHeight: 44 },
   body: { marginTop: 2 },
   meta: { flexDirection: 'row', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginTop: 6 },
   metaPart: { flexDirection: 'row', alignItems: 'center', gap: 4 },
@@ -212,6 +217,10 @@ const styles = StyleSheet.create({
   },
   ackHover: { backgroundColor: palette.accentDark },
   showLink: { paddingVertical: 6 },
+  // Under a finger (theme/touch) every action on the card is a full 44 px target.
+  ackTouch: { minHeight: 44, paddingHorizontal: 16 },
+  showLinkTouch: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 4 },
+  moreTouch: { minHeight: 44, paddingHorizontal: 14 },
   link: { fontFamily: font.sansMedium },
 
   peek: {

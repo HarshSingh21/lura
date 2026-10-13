@@ -5,6 +5,7 @@ import { Icon } from '@/components/ui/Icon';
 import { EmptyState } from '@/components/ui/primitives';
 import { Mono, Txt } from '@/theme/text';
 import { color, font, layout, palette, radius, shadow, size, space } from '@/theme/tokens';
+import { useTouchTargets } from '@/theme/touch';
 import { useLayoutMode } from '@/theme/useLayout';
 import { selectUnread, useStore } from '@/state/store';
 
@@ -32,6 +33,7 @@ export function NotificationBell() {
   const unread = useStore(selectUnread);
   const muted = useStore((s) => s.muted);
   const [open, setOpen] = useState(false);
+  const touch = useTouchTargets();
 
   // The browser will not play the first chime unless a gesture unlocked audio
   // first; arm that as soon as the chrome mounts.
@@ -45,16 +47,19 @@ export function NotificationBell() {
         accessibilityRole="button"
         accessibilityLabel={unread > 0 ? `Notifications, ${unread} unread` : 'Notifications'}
         onPress={() => setOpen(true)}
-        style={({ pressed }) => [styles.bell, pressed && styles.pressed]}
+        // Under a finger the target is 44 px around the same 36 px bell.
+        style={({ pressed }) => [touch && styles.target, pressed && styles.pressed]}
       >
-        <Icon name={muted ? 'bell-off' : 'bell'} size={18} color={color.textBody} />
-        {unread > 0 ? (
-          <View style={styles.badge}>
-            <Mono size={size.monoTiny} medium color="#ffffff">
-              {unread > 99 ? '99+' : unread}
-            </Mono>
-          </View>
-        ) : null}
+        <View style={styles.bell}>
+          <Icon name={muted ? 'bell-off' : 'bell'} size={18} color={color.textBody} />
+          {unread > 0 ? (
+            <View style={styles.badge}>
+              <Mono size={size.monoTiny} medium color="#ffffff">
+                {unread > 99 ? '99+' : unread}
+              </Mono>
+            </View>
+          ) : null}
+        </View>
       </Pressable>
       <NotificationPanel visible={open} onClose={() => setOpen(false)} />
     </>
@@ -62,7 +67,10 @@ export function NotificationBell() {
 }
 
 function NotificationPanel({ visible, onClose }: { visible: boolean; onClose: () => void }) {
-  const { isWide } = useLayoutMode();
+  const { isWide, width } = useLayoutMode();
+  // A tablet has room for the desktop's 400 px panel under the bell; a full-width
+  // sheet of short rows across 768 px read as a mostly empty page.
+  const roomy = isWide || width >= 600;
   const items = useStore((s) => s.notifications);
   const unread = useStore(selectUnread);
   const muted = useStore((s) => s.muted);
@@ -71,6 +79,7 @@ function NotificationPanel({ visible, onClose }: { visible: boolean; onClose: ()
   const clear = useStore((s) => s.clearNotifications);
   const openItem = useOpenNotification();
   const desktop = useDesktopPermission();
+  const touch = useTouchTargets();
   const [filter, setFilter] = useState<'all' | 'pending'>('all');
   const pendingCount = items.reduce((n, i) => (i.status === 'pending' ? n + 1 : n), 0);
   const shownItems = filterItems(items, filter);
@@ -86,7 +95,7 @@ function NotificationPanel({ visible, onClose }: { visible: boolean; onClose: ()
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose} accessibilityLabel="Close notifications" />
-      <View style={[styles.panel, isWide ? styles.panelWide : styles.panelPhone]} testID="lura-notification-panel">
+      <View style={[styles.panel, roomy ? styles.panelWide : styles.panelPhone]} testID="lura-notification-panel">
         <View style={styles.head}>
           <View style={styles.headTitle}>
             <Txt variant="h2">Notifications</Txt>
@@ -108,14 +117,14 @@ function NotificationPanel({ visible, onClose }: { visible: boolean; onClose: ()
               // Unmuting plays a sample, which also proves audio is unlocked.
               if (!next) playChime('arrive');
             }}
-            style={({ pressed }) => [styles.headButton, muted && styles.headButtonMuted, pressed && styles.pressed]}
+            style={({ pressed }) => [styles.headButton, muted && styles.headButtonMuted, touch && styles.target, pressed && styles.pressed]}
           >
             <Icon name={muted ? 'bell-off' : 'bell'} size={15} color={muted ? palette.dangerInk : color.textBody} />
             <Txt variant="small" color={muted ? palette.dangerInk : color.textBody} style={styles.headButtonText}>
               {muted ? 'Muted' : 'Sound on'}
             </Txt>
           </Pressable>
-          <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={onClose} hitSlop={8}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={onClose} hitSlop={8} style={touch ? styles.target : undefined}>
             <Icon name="close" size={16} color={color.textMuted} />
           </Pressable>
         </View>
@@ -129,7 +138,7 @@ function NotificationPanel({ visible, onClose }: { visible: boolean; onClose: ()
                 accessibilityRole="tab"
                 accessibilityState={{ selected: active }}
                 onPress={() => setFilter(key)}
-                style={[styles.filterChip, active && styles.filterChipActive]}
+                style={[styles.filterChip, active && styles.filterChipActive, touch && styles.target]}
               >
                 <Txt variant="small" color={active ? palette.accentInk : color.textMuted} style={styles.link}>
                   {key === 'all' ? 'All' : `Pending${pendingCount > 0 ? ` · ${pendingCount}` : ''}`}
@@ -144,6 +153,7 @@ function NotificationPanel({ visible, onClose }: { visible: boolean; onClose: ()
             accessibilityRole="button"
             aria-disabled={unread === 0}
             onPress={unread === 0 ? undefined : markAll}
+            style={touch ? styles.target : undefined}
             hitSlop={6}
           >
             <Txt variant="small" color={unread === 0 ? color.textFaint : palette.accentDark} style={styles.link}>
@@ -151,7 +161,7 @@ function NotificationPanel({ visible, onClose }: { visible: boolean; onClose: ()
             </Txt>
           </Pressable>
           {items.length > 0 ? (
-            <Pressable accessibilityRole="button" onPress={clear} hitSlop={6}>
+            <Pressable accessibilityRole="button" onPress={clear} hitSlop={6} style={touch ? styles.target : undefined}>
               <Txt variant="small" color={color.textSubtle} style={styles.link}>
                 Clear
               </Txt>
@@ -159,7 +169,7 @@ function NotificationPanel({ visible, onClose }: { visible: boolean; onClose: ()
           ) : null}
           <View style={styles.flex} />
           {desktop.permission === 'default' ? (
-            <Pressable accessibilityRole="button" onPress={() => void desktop.request()} hitSlop={6}>
+            <Pressable accessibilityRole="button" onPress={() => void desktop.request()} hitSlop={6} style={touch ? styles.target : undefined}>
               <Txt variant="small" color={palette.accentDark} style={styles.link}>
                 Enable desktop alerts
               </Txt>
@@ -252,12 +262,13 @@ function Group({
 
 function AckButton({ reminderId, title }: { reminderId: string; title: string }) {
   const acknowledge = useStore((s) => s.acknowledgeReminder);
+  const touch = useTouchTargets();
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`Acknowledge ${title}`}
       onPress={() => void acknowledge(reminderId)}
-      style={({ pressed }) => [styles.ack, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.ack, touch && styles.target, pressed && styles.pressed]}
     >
       <Icon name="check" size={13} color={palette.accentInk} strokeWidth={2.2} />
       <Txt variant="small" color={palette.accentInk} style={styles.link}>
@@ -271,6 +282,8 @@ const styles = StyleSheet.create({
   flex: { flex: 1, minWidth: 0 },
   pressed: { opacity: 0.85 },
 
+  /** A finger-sized target around a smaller visual (theme/touch). */
+  target: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   bell: {
     width: 36,
     height: 34,

@@ -15,6 +15,7 @@
 #                                # long sessions: 25 min on lura-app's 15 min tokens, 6 min on
 #                                # lura-app-edge's 60 s tokens, a laptop sleep in each (phases
 #                                # "app" and "edge"; E2E_PHASES=edge runs one)
+#   E2E_SUITE=uc-mobile-ui E2E_PORT=8098 e2e/run.sh     # the release flow by touch on a phone and a tablet
 #   E2E_STORE=postgres E2E_PORT=8091 e2e/run.sh   # against a throwaway PostGIS instead of memory
 #   E2E_STORE=postgres E2E_KEEP_DB=1 e2e/run.sh   # ... and leave the database container afterwards
 #   E2E_SKIP_BUILD=1 E2E_WEB_DIR=/tmp/web e2e/run.sh   # serve a web build made earlier

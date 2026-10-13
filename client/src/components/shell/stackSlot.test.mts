@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CONTROLS_LANE, PHONE_STACK_BOTTOM, WIDE_STACK_WIDTH, stackSlot } from './stackSlot.ts';
+import { CONTROLS_LANE, PHONE_STACK_BOTTOM, PHONE_STACK_MAX_WIDTH, WIDE_STACK_WIDTH, stackSlot } from './stackSlot.ts';
 
 // The shell's tokens (theme/tokens.ts layout and space).
 const M = { topBarHeight: 58, railWidth: 328, historyRailWidth: 360, inset: 11, wideInset: 18, gap: 8 };
@@ -48,6 +48,6 @@ test('on desktop History the stack leaves the timeline and its day picker alone'
 test('wide and phone layouts keep their places on every screen', () => {
   for (const path of ['/', '/history', '/places']) {
     assert.deepEqual(stackSlot('wide', path, M), { top: 66, right: 18, width: WIDE_STACK_WIDTH });
-    assert.deepEqual(stackSlot('phone', path, M), { top: 'auto', left: 11, right: CONTROLS_LANE, bottom: PHONE_STACK_BOTTOM });
+    assert.deepEqual(stackSlot('phone', path, M), { top: 'auto', left: 11, right: CONTROLS_LANE, bottom: PHONE_STACK_BOTTOM, maxWidth: PHONE_STACK_MAX_WIDTH });
   }
 });

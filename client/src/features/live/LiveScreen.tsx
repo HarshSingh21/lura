@@ -21,6 +21,7 @@ import { useSession } from '@/features/auth';
 import { PlaceForm } from '@/features/places/PlaceForm';
 import { Mono, Txt } from '@/theme/text';
 import { color, layout, palette, radius, shadow, size, space } from '@/theme/tokens';
+import { useTouchTargets } from '@/theme/touch';
 import { useLayoutMode } from '@/theme/useLayout';
 import { useStore } from '@/state/store';
 import { useGpsStatus } from '@/hooks/usePublishing';
@@ -30,6 +31,7 @@ import { DeviceList, DeviceTracking, PeopleList, SharingBanner, UpcomingReminder
 import { useTrails } from './trails';
 import { bannerSlot, pushDown } from './bannerSlot';
 import { loadProblem } from './loadProblem';
+import { EDIT_MAX_ZOOM, editPadding, fenceExtent } from './editFrame';
 
 /** A ping older than this no longer pulses: the person may have gone offline. */
 const LIVE_PULSE_MS = 120_000;
@@ -91,6 +93,7 @@ function zoomForRadius(radiusM: number): number {
 export function LiveScreen() {
   const router = useRouter();
   const { isDesktop, isPhone } = useLayoutMode();
+  const touch = useTouchTargets();
   const { data, isLoading, error } = useOverview();
   const problem = loadProblem(error, !!data);
 
@@ -475,7 +478,15 @@ export function LiveScreen() {
     setFollowKey(undefined);
     setFenceEdit(editState(place.id, geometry));
     setEditFocus(place.center);
-    requestZoom(zoomForRadius(place.radiusM));
+    // Never closer than the radius rule, and far enough out that the whole
+    // fence — and so every handle on it — fits the map with a margin
+    // (editFrame.ts: on a phone a big circle's resize handle fell under the
+    // control column).
+    const polygon = place.shape === 'polygon' && place.polygon.length >= 3 ? place.polygon : undefined;
+    const fit = box.width > 0 && box.height > 0
+      ? fitBounds(fenceExtent({ center: place.center, radiusM: place.radiusM, polygon }), box.width, box.height, editPadding(!isDesktop), EDIT_MAX_ZOOM)
+      : null;
+    requestZoom(Math.min(zoomForRadius(place.radiusM), fit ? Math.floor(fit.zoom * 4) / 4 : Infinity));
     setRecenterKey((k) => k + 1);
   };
 
@@ -696,7 +707,7 @@ export function LiveScreen() {
               accessibilityLabel={`Stop following ${followName}`}
               onPress={() => setFollowKey(undefined)}
               hitSlop={8}
-              style={styles.followStop}
+              style={[styles.followStop, touch && styles.followStopTouch]}
             >
               <Icon name="close" size={14} color={color.textMuted} />
             </Pressable>
@@ -718,7 +729,7 @@ export function LiveScreen() {
                     selectPlace(undefined);
                     setFenceEdit(mode === 'draw-polygon' ? { mode, vertices: [] } : { mode });
                   }}
-                  style={({ pressed }) => [styles.drawOption, pressed && styles.drawOptionPressed]}
+                  style={({ pressed }) => [styles.drawOption, touch && styles.drawOptionTouch, pressed && styles.drawOptionPressed]}
                 >
                   <ShapeGlyph mode={mode} />
                   <Txt variant="bodyMedium">{label}</Txt>
@@ -752,7 +763,10 @@ export function LiveScreen() {
 
         {/* Map controls sit above the phone's pull-up handle, which otherwise
             covers the recentre button. */}
-        <View style={[styles.controls, !isDesktop && styles.controlsPhone]} pointerEvents="box-none">
+        <View
+          style={[styles.controls, !isDesktop && styles.controlsPhone, !isDesktop && fenceEdit ? styles.controlsAboveToolbar : null]}
+          pointerEvents="box-none"
+        >
           {/* Airgap draws the local basemap only, so there is nothing to choose. */}
           {!offline ? <BasemapPicker value={basemap} onChange={setBasemap} /> : null}
           <View style={styles.zoomStack}>
@@ -760,7 +774,7 @@ export function LiveScreen() {
               accessibilityRole="button"
               accessibilityLabel="Zoom in"
               onPress={() => requestZoom(Math.min(20, viewZoom + 1))}
-              style={[styles.zoomButton, styles.zoomButtonTop]}
+              style={[styles.zoomButton, touch && styles.zoomButtonTouch, styles.zoomButtonTop]}
             >
               <Icon name="plus" size={16} color={color.textBody} strokeWidth={2} />
             </Pressable>
@@ -768,7 +782,7 @@ export function LiveScreen() {
               accessibilityRole="button"
               accessibilityLabel="Zoom out"
               onPress={() => requestZoom(Math.max(2, viewZoom - 1))}
-              style={styles.zoomButton}
+              style={[styles.zoomButton, touch && styles.zoomButtonTouch]}
             >
               <Icon name="minus" size={16} color={color.textBody} strokeWidth={2} />
             </Pressable>
@@ -1037,6 +1051,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
     backgroundColor: color.surfaceMuted,
   },
+  drawOptionTouch: { minHeight: 44 },
   drawOptionPressed: { backgroundColor: color.accentSoft },
   placeCard: {
     position: 'absolute',
@@ -1076,9 +1091,13 @@ const styles = StyleSheet.create({
   },
   followChipLow: { top: 124 },
   followStop: { padding: 4, borderRadius: radius.sm },
+  // Under a finger the close is a full target; the chip's own padding absorbs it.
+  followStopTouch: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center', marginVertical: -10, marginRight: -6 },
 
   controls: { position: 'absolute', right: 18, bottom: 18, gap: 8, alignItems: 'flex-end' },
   controlsPhone: { bottom: 90 },
+  // The editor's toolbar holds the bottom of a phone's map; the column stands above it.
+  controlsAboveToolbar: { bottom: 150 },
   zoomStack: {
     backgroundColor: color.surface,
     borderWidth: 1,
@@ -1088,6 +1107,7 @@ const styles = StyleSheet.create({
     ...shadow('button'),
   },
   zoomButton: { width: 38, height: 36, alignItems: 'center', justifyContent: 'center' },
+  zoomButtonTouch: { width: 44, height: 44 },
   zoomButtonTop: { borderBottomWidth: 1, borderBottomColor: color.hairlineSoft },
 
   liveBanner: {
@@ -1132,7 +1152,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
-  attributionPhone: { bottom: 84 },
+  // Never under the control column: on a phone the credit wraps rather than run beneath it.
+  attributionPhone: { bottom: 84, maxWidth: '78%' },
   attributionAboveToolbar: { bottom: 128 },
 
   statusOverlay: {
@@ -1166,6 +1187,7 @@ const styles = StyleSheet.create({
     borderColor: color.border,
     borderRadius: radius.card,
     paddingVertical: 12,
+    minHeight: 48,
     ...shadow('card'),
   },
   handleWatchers: {

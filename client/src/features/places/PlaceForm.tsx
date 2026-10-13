@@ -7,12 +7,14 @@ import type { Place, Point, Trigger } from '@/api/types';
 import { TRIGGERS } from '@/api/types';
 import { boundingRadiusM, formatMetres } from '@/components/map/geometry';
 import type { FenceGeometry } from '@/components/map/types';
+import { Icon } from '@/components/ui/Icon';
 import { Button, Field, styles as ui } from '@/components/ui/primitives';
 import { usePeople } from '@/features/people/api';
 import { partitionPeople } from '@/features/people/peer';
 import { PersonPicker, peerOption } from '@/features/people/PersonPicker';
 import { Mono, Txt } from '@/theme/text';
 import { color, font, palette, radius, size, space } from '@/theme/tokens';
+import { useTouchTargets } from '@/theme/touch';
 
 /**
  * The place editor, shared by "Draw a place" on the map and "New place" in the
@@ -70,7 +72,8 @@ const polygonPlaceSchema = placeSchema.omit({ lat: true, lon: true, radiusM: tru
 
 const TRIGGER_HELP: Record<Trigger, string> = {
   arrive: 'Fires once you have actually stopped here, not while driving through.',
-  leave: 'Fires when you leave the circle.',
+  // A polygon is not a circle: the help names the place, whatever its shape.
+  leave: 'Fires when you leave the place.',
   dwell: 'Fires after you have stayed for the dwell time below.',
   passby: 'Fires when you pass through while still moving.',
 };
@@ -95,6 +98,7 @@ export function PlaceForm({
   onCancel?: () => void;
   onDelete?: () => void;
 }) {
+  const touch = useTouchTargets();
   // The ring this form saves, when the place is (or was just drawn as) a polygon.
   const polygon: Point[] | null =
     geometry?.shape === 'polygon'
@@ -263,7 +267,7 @@ export function PlaceForm({
                     key={preset}
                     accessibilityRole="button"
                     onPress={() => field.onChange(String(preset))}
-                    style={[styles.preset, Number(field.value) === preset && styles.presetActive]}
+                    style={[styles.preset, touch && styles.presetTouch, Number(field.value) === preset && styles.presetActive]}
                   >
                     <Mono
                       size={size.monoXs}
@@ -302,7 +306,10 @@ export function PlaceForm({
                   }
                   style={[styles.triggerRow, selected && styles.triggerRowSelected]}
                 >
-                  <View style={[styles.triggerBox, selected && styles.triggerBoxOn]} />
+                  {/* A tick, not just a filled square: on and off must read apart at a glance. */}
+                  <View style={[styles.triggerBox, selected && styles.triggerBoxOn]}>
+                    {selected ? <Icon name="check" size={12} color="#ffffff" strokeWidth={2.4} /> : null}
+                  </View>
                   <View style={ui.flex}>
                     <Txt variant="bodyMedium" color={selected ? color.textStrong : color.textMuted}>
                       {trigger === 'passby' ? 'Pass by' : trigger.charAt(0).toUpperCase() + trigger.slice(1)}
@@ -442,6 +449,7 @@ const styles = StyleSheet.create({
     backgroundColor: color.surfaceMuted,
   },
   presetActive: { backgroundColor: color.accentSoft },
+  presetTouch: { minHeight: 44, minWidth: 52, justifyContent: 'center', alignItems: 'center' },
 
   triggerBlock: { gap: space.md },
   triggerRow: {
@@ -462,6 +470,8 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: color.checkbox,
     marginTop: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   triggerBoxOn: { backgroundColor: palette.accent, borderColor: palette.accent },
 

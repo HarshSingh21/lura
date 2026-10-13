@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { ActivityItem, ReminderRecord } from '../../api/types.ts';
-import { buildTimeline, dayLabel, dayRange, describe, formatClock, inDay, validZone } from './activity.ts';
+import { buildTimeline, dayLabel, dayRange, describe, formatClock, inDay, tripTitle, validZone } from './activity.ts';
 
 const IST = 'Asia/Kolkata';
 const NY = 'America/New_York';
@@ -162,6 +162,10 @@ test('each kind of entry reads as a sentence', () => {
     ctx,
   );
   assert.equal(trip.title, 'Home → Office');
+  // A trip between two spots that are not places says so once, not "Somewhere → somewhere".
+  assert.equal(tripTitle('', ''), 'Trip');
+  assert.equal(tripTitle(undefined, 'Office'), 'Trip to Office');
+  assert.equal(tripTitle('Home', ' '), 'Trip from Home');
   assert.equal(trip.detail, 'drive · 23 min · 7.4 km');
   assert.equal(trip.focus?.path?.length, 2);
 

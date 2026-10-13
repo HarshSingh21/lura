@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { Icon } from '@/components/ui/Icon';
 import { Txt } from '@/theme/text';
 import { color, font, radius, withAlpha } from '@/theme/tokens';
+import { useTouchTargets } from '@/theme/touch';
 
 import { personColor } from './color';
 import { firstName } from './peer';
@@ -40,6 +41,7 @@ export function PersonPicker({
   multiple?: boolean;
   accessibilityLabel: string;
 }) {
+  const touch = useTouchTargets();
   return (
     <View style={styles.row} accessibilityLabel={accessibilityLabel} accessibilityRole={multiple ? undefined : 'radiogroup'}>
       {options.map((option) => {
@@ -55,6 +57,7 @@ export function PersonPicker({
             onPress={option.disabled ? undefined : () => onToggle(option.id)}
             style={({ pressed }) => [
               styles.pill,
+              touch && styles.pillTouch,
               on && { borderColor: tint, backgroundColor: withAlpha(hex(tint), 0.1) },
               option.disabled && styles.disabled,
               pressed && !option.disabled && styles.pressed,
@@ -111,6 +114,8 @@ const styles = StyleSheet.create({
     paddingRight: 11,
     backgroundColor: color.surface,
   },
+  // A finger-sized pill (theme/touch).
+  pillTouch: { minHeight: 44, paddingLeft: 10, paddingRight: 15, gap: 8 },
   dot: { width: 14, height: 14, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
   label: { fontFamily: font.sansMedium },
   disabled: { opacity: 0.5 },

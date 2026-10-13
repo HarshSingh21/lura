@@ -14,6 +14,7 @@ import { Button, Card, EmptyState, styles as ui } from '@/components/ui/primitiv
 import { personColor } from '@/features/people/color';
 import { Mono, Txt } from '@/theme/text';
 import { color, font, layout, palette, radius, shadow, size, space, withAlpha } from '@/theme/tokens';
+import { touchTarget, useTouchTargets } from '@/theme/touch';
 import { useLayoutMode } from '@/theme/useLayout';
 import { fitBounds } from '@/components/map/projection';
 
@@ -48,6 +49,7 @@ const MAX_DAYS_BACK = 365;
 
 export function HistoryScreen() {
   const { isDesktop, width, height } = useLayoutMode();
+  const touch = useTouchTargets();
   const { data: overview } = useOverview();
   const [offset, setOffset] = useState(0);
   const [deviceId, setDeviceId] = useState<string | undefined>(undefined);
@@ -171,7 +173,7 @@ export function HistoryScreen() {
               aria-pressed={device.id === activeDevice}
               accessibilityLabel={`Show the track of ${device.name}`}
               onPress={() => setDeviceId(device.id)}
-              style={[styles.filterChip, device.id === activeDevice && styles.filterChipActive]}
+              style={[styles.filterChip, touch && styles.touchChip, device.id === activeDevice && styles.filterChipActive]}
             >
               <Txt variant="small" color={device.id === activeDevice ? palette.accentInk : color.textMuted}>
                 {device.name}
@@ -292,6 +294,7 @@ export function HistoryScreen() {
 function DayPicker({ offset, label, onChange }: { offset: number; label: string; onChange: (next: number) => void }) {
   const atToday = offset === 0;
   const atLimit = offset >= MAX_DAYS_BACK;
+  const touch = useTouchTargets();
   return (
     <View style={styles.dayPicker}>
       <Pressable
@@ -299,7 +302,7 @@ function DayPicker({ offset, label, onChange }: { offset: number; label: string;
         accessibilityLabel="Previous day"
         accessibilityState={{ disabled: atLimit }}
         onPress={atLimit ? undefined : () => onChange(offset + 1)}
-        style={({ pressed }) => [styles.dayArrow, pressed && styles.pressed, atLimit && styles.disabled]}
+        style={({ pressed }) => [styles.dayArrow, touch && styles.dayArrowTouch, pressed && styles.pressed, atLimit && styles.disabled]}
       >
         <View style={styles.rotateLeft}>
           <Icon name="chevron-up" size={15} color={color.textBody} />
@@ -313,14 +316,14 @@ function DayPicker({ offset, label, onChange }: { offset: number; label: string;
         accessibilityLabel="Next day"
         accessibilityState={{ disabled: atToday }}
         onPress={atToday ? undefined : () => onChange(offset - 1)}
-        style={({ pressed }) => [styles.dayArrow, pressed && styles.pressed, atToday && styles.disabled]}
+        style={({ pressed }) => [styles.dayArrow, touch && styles.dayArrowTouch, pressed && styles.pressed, atToday && styles.disabled]}
       >
         <View style={styles.rotateRight}>
           <Icon name="chevron-up" size={15} color={color.textBody} />
         </View>
       </Pressable>
       {!atToday ? (
-        <Pressable accessibilityRole="button" onPress={() => onChange(0)} hitSlop={6} style={styles.todayLink}>
+        <Pressable accessibilityRole="button" onPress={() => onChange(0)} hitSlop={6} style={[styles.todayLink, touch && styles.touchChip]}>
           <Txt variant="small" color={palette.accentDark} style={styles.link}>
             Today
           </Txt>
@@ -538,6 +541,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
   },
   todayLink: { paddingHorizontal: 4 },
+  // Under a finger (theme/touch): full targets around the same visuals.
+  touchChip: { ...touchTarget, justifyContent: 'center' },
+  dayArrowTouch: { width: 44, height: 44 },
   link: { fontFamily: font.sansMedium },
 
   loading: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.lg },

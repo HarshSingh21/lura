@@ -10,6 +10,7 @@ import { fitBounds } from '@/components/map/projection';
 import { Button, Card, Chip, EmptyState, Sheet, TriggerBadge, styles as ui } from '@/components/ui/primitives';
 import { Mono, Txt } from '@/theme/text';
 import { color, palette, radius, size, space } from '@/theme/tokens';
+import { useTouchTargets } from '@/theme/touch';
 import { useLayoutMode } from '@/theme/useLayout';
 
 import { PlaceForm } from './PlaceForm';
@@ -118,6 +119,7 @@ export function PlacesScreen({ search }: { search?: string }) {
 }
 
 function PlaceCard({ place, onPress, onEditOnMap }: { place: Place; onPress: () => void; onEditOnMap: () => void }) {
+  const touch = useTouchTargets();
   const passby = place.triggers.includes('passby');
   const polygon = place.shape === 'polygon' && place.polygon.length >= 3 ? place.polygon : null;
   const tone = passby ? 'amber' : 'accent';
@@ -185,7 +187,7 @@ function PlaceCard({ place, onPress, onEditOnMap }: { place: Place; onPress: () 
           accessibilityRole="button"
           accessibilityLabel={`Edit ${place.name} on the map`}
           onPress={onEditOnMap}
-          style={({ pressed }) => [styles.mapAction, pressed && styles.mapActionPressed]}
+          style={({ pressed }) => [styles.mapAction, touch && styles.mapActionTouch, pressed && styles.mapActionPressed]}
         >
           <Txt variant="small" color={palette.accentDark} style={styles.mapActionText}>
             Edit on map →
@@ -213,6 +215,7 @@ const styles = StyleSheet.create({
   cardHead: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   triggerRow: { flexDirection: 'row', gap: space.sm, flexWrap: 'wrap' },
   metaRow: { flexDirection: 'row', gap: 14, flexWrap: 'wrap' },
+  mapActionTouch: { minHeight: 44 },
   mapAction: {
     alignSelf: 'flex-start',
     minHeight: 28,

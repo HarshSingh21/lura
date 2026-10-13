@@ -16,8 +16,11 @@ import type { Point } from '@/api/types';
 import { Button } from '@/components/ui/primitives';
 import { Mono, Txt } from '@/theme/text';
 import { color, palette, radius, shadow, size } from '@/theme/tokens';
+import { TOUCH_TARGET, useTouchTargets } from '@/theme/touch';
 
 import { absoluteFill } from './fill';
+import { releaseDelta, type PagePoint } from './releaseDelta';
+import { rimDirection } from './rimHandle';
 import {
   MAX_POLYGON_VERTICES,
   boundingRadiusM,
@@ -57,7 +60,7 @@ import type { FenceEditState, FenceGeometry } from './types';
  *
  *   - the fence body, as a stack of thin strips that follows the outline exactly
  *     (geometry.ts scanlineSpans) — drag to move the whole fence;
- *   - handles, 32 px touch targets around a small visual dot — drag to resize a
+ *   - handles, 32 px targets (44 px under a finger, theme/touch) around a small visual dot — drag to resize a
  *     circle or reshape a polygon, tap a midpoint "+" to add a corner,
  *     long-press (or right-click) a corner to remove it — a long-press arms
  *     the removal and releasing in place does it, so a drag that starts slowly
@@ -80,8 +83,10 @@ export type FenceEditorProps = {
   dark?: boolean;
 };
 
-/** Touch-target size for every handle; the guideline minimum is 28 px. */
+/** Target size for every handle under a mouse. */
 const HANDLE = 32;
+/** ... and under a finger (theme/touch): the 44 px guideline. */
+const TOUCH_HANDLE = TOUCH_TARGET;
 /** Height of a body hit strip. Smaller hugs the outline better; larger is fewer views. */
 const ROW = 8;
 /** Movement under this many pixels is a tap, not a drag. */
@@ -121,9 +126,17 @@ function useDrag(handlers: DragHandlers): GestureResponderHandlers {
   useLayoutEffect(() => {
     ref.current = handlers;
   });
-  return useMemo(
-    () =>
-      // The ref is read inside gesture callbacks, which never run during render.
+  // Where the finger went down, so a release can say how far it really went
+  // (releaseDelta: a short touch drag reports no moves at all).
+  const startAt = useRef<PagePoint | null>(null);
+  return useMemo(() => {
+    const ended = (event: GestureResponderEvent, gesture: PanResponderGestureState): PanResponderGestureState => {
+      const { dx, dy } = releaseDelta(gesture, startAt.current, pageOf(event));
+      startAt.current = null;
+      return dx === gesture.dx && dy === gesture.dy ? gesture : { ...gesture, dx, dy };
+    };
+    return (
+      // The refs are read inside gesture callbacks, which never run during render.
       // eslint-disable-next-line react-hooks/refs
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
@@ -131,13 +144,24 @@ function useDrag(handlers: DragHandlers): GestureResponderHandlers {
         // Once a fence is grabbed the map must not steal the gesture back.
         onPanResponderTerminationRequest: () => false,
         onShouldBlockNativeResponder: () => true,
-        onPanResponderGrant: (event) => ref.current.onStart?.(event),
+        onPanResponderGrant: (event) => {
+          startAt.current = pageOf(event);
+          ref.current.onStart?.(event);
+        },
         onPanResponderMove: (_event, gesture) => ref.current.onMove?.(gesture),
-        onPanResponderRelease: (_event, gesture) => ref.current.onEnd?.(gesture, false),
-        onPanResponderTerminate: (_event, gesture) => ref.current.onEnd?.(gesture, true),
-      }).panHandlers,
-    [],
-  );
+        onPanResponderRelease: (event, gesture) => ref.current.onEnd?.(ended(event, gesture), false),
+        onPanResponderTerminate: (event, gesture) => ref.current.onEnd?.(ended(event, gesture), true),
+      }).panHandlers
+    );
+  }, []);
+}
+
+/** pageOf is where a responder event's touch (or pointer) is on the page. */
+function pageOf(event: GestureResponderEvent): PagePoint | null {
+  const n = event?.nativeEvent as (GestureResponderEvent['nativeEvent'] & { changedTouches?: PagePoint[] }) | undefined;
+  if (!n) return null;
+  const touch = n.changedTouches?.[0];
+  return typeof n.pageX === 'number' ? { pageX: n.pageX, pageY: n.pageY } : touch ? { pageX: touch.pageX, pageY: touch.pageY } : null;
 }
 
 function moved(gesture: PanResponderGestureState): boolean {
@@ -431,6 +455,8 @@ function EditLayer({
   dark?: boolean;
 }) {
   const { hint, show } = useHint();
+  const touch = useTouchTargets();
+  const handle = touch ? TOUCH_HANDLE : HANDLE;
   // While a gesture runs the editor draws its own copy of the geometry, so the
   // drag stays smooth even if the caller only re-renders on `done`.
   const [live, setLive] = useState<FenceGeometry | null>(null);
@@ -543,10 +569,12 @@ function EditLayer({
   if (shown.shape === 'circle') {
     const c = toScreen(shown.center);
     const rPx = shown.radiusM / metresPerPixel(shown.center.lat, view.zoom);
-    const e = { x: c.x + rPx, y: c.y };
     const t = targets.shape === 'circle' ? targets : shown;
     const tc = toScreen(t.center);
     const te = edgePoint(t.center, t.radiusM, view);
+    // The drawn handle keeps the side the gesture started on, so it cannot hop mid-drag.
+    const side = rimDirection(tc, t.radiusM / metresPerPixel(t.center.lat, view.zoom), view.width, view.height);
+    const e = { x: c.x + side.x * rPx, y: c.y + side.y * rPx };
     const spans = scanlineSpans(
       circleRingXY(tc, t.radiusM / metresPerPixel(t.center.lat, view.zoom)),
       ROW,
@@ -562,11 +590,11 @@ function EditLayer({
             <GripGlyph at={c} stroke={stroke} />
             <Circle cx={e.x} cy={e.y} r={9} fill="#ffffff" stroke={stroke} strokeWidth={2.5} />
           </Svg>
-          <MetreLabel at={{ x: (c.x + e.x) / 2, y: c.y }} text={formatMetres(shown.radiusM)} below />
+          <MetreLabel at={{ x: (c.x + e.x) / 2, y: (c.y + e.y) / 2 }} text={formatMetres(shown.radiusM)} below />
         </View>
         <BodySpans spans={spans} handlers={body} />
-        <Target at={tc} handlers={body} label="Move fence" />
-        {onScreen(te, view) ? <Target at={te} handlers={edge} label="Resize fence" /> : null}
+        <Target at={tc} handlers={body} label="Move fence" size={handle} />
+        {onScreen(te, view) ? <Target at={te} handlers={edge} label="Resize fence" size={handle} /> : null}
         <Toolbar>
           <Txt variant="small" color={color.textBody} style={styles.toolbarText}>
             Drag the circle to move it · drag the edge handle to resize
@@ -585,11 +613,13 @@ function EditLayer({
   const spans = scanlineSpans(targetPts, ROW, view.height, view.width);
   const targetCentroid = toScreen(polygonCentroid(targetRing));
   // Midpoint "+" handles go only on edges long enough on screen to hold one
-  // between two corners without the three targets overlapping.
+  // between two corners without the three targets overlapping (under a finger,
+  // not overlapping at all: half a target either side of the midpoint).
+  const roomFor = touch ? handle * 2 : HANDLE * 1.6;
   const mids = (ring: XY[]) =>
     ring.map((p, i) => {
       const q = ring[(i + 1) % ring.length]!;
-      return { at: { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 }, roomy: distanceXY(p, q) >= HANDLE * 1.6 };
+      return { at: { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 }, roomy: distanceXY(p, q) >= roomFor };
     });
   const shownMids = frozen ? [] : mids(pts);
   const targetMids = mids(targetPts);
@@ -615,12 +645,13 @@ function EditLayer({
         </Svg>
       </View>
       <BodySpans spans={spans} handlers={body} />
-      <Target at={targetCentroid} handlers={body} label="Move fence" />
+      <Target at={targetCentroid} handlers={body} label="Move fence" size={handle} />
       {targetMids.map((m, i) =>
         m.roomy && onScreen(m.at, view) ? (
           <DragTarget
             key={`m${i}`}
             at={m.at}
+            size={handle}
             label="Add a corner"
             onStart={() => begin(m.at)}
             onMove={(g) => {
@@ -649,6 +680,7 @@ function EditLayer({
           <DragTarget
             key={`v${i}`}
             at={p}
+            size={handle}
             label="Fence corner"
             onStart={() => {
               begin(p);
@@ -728,10 +760,12 @@ function EditLayer({
   }
 }
 
-/** edgePoint is where the resize handle sits: due east of the centre, on the rim. */
+/** edgePoint is where the resize handle sits on the rim: east, unless that is under the map's controls (rimHandle.ts). */
 function edgePoint(center: Point, radiusM: number, view: Viewport): XY {
   const c = project(center, view);
-  return { x: c.x + radiusM / metresPerPixel(center.lat, view.zoom), y: c.y };
+  const r = radiusM / metresPerPixel(center.lat, view.zoom);
+  const d = rimDirection(c, r, view.width, view.height);
+  return { x: c.x + d.x * r, y: c.y + d.y * r };
 }
 
 // ---------------------------------------------------------------- pieces
@@ -751,12 +785,12 @@ function BodySpans({ spans, handlers }: { spans: Span[]; handlers: GestureRespon
 }
 
 /** Target is an invisible handle-sized touch target; the visual is drawn in the SVG. */
-function Target({ at, handlers, label }: { at: XY; handlers: GestureResponderHandlers; label: string }) {
+function Target({ at, handlers, label, size: s = HANDLE }: { at: XY; handlers: GestureResponderHandlers; label: string; size?: number }) {
   return (
     <View
       {...handlers}
       accessibilityLabel={label}
-      style={[styles.handle, { left: at.x - HANDLE / 2, top: at.y - HANDLE / 2 }]}
+      style={[styles.handle, { left: at.x - s / 2, top: at.y - s / 2, width: s, height: s }]}
     />
   );
 }
@@ -766,8 +800,9 @@ function DragTarget({
   at,
   label,
   onSecondary,
+  size: s = HANDLE,
   ...drag
-}: DragHandlers & { at: XY; label: string; onSecondary?: () => void }) {
+}: DragHandlers & { at: XY; label: string; onSecondary?: () => void; size?: number }) {
   const handlers = useDrag(drag);
   // Right-click is the desktop spelling of long-press. React Native's types do
   // not know the DOM's contextmenu event, so it is attached only on web.
@@ -785,7 +820,7 @@ function DragTarget({
       {...handlers}
       {...(webProps as object)}
       accessibilityLabel={label}
-      style={[styles.handle, { left: at.x - HANDLE / 2, top: at.y - HANDLE / 2 }]}
+      style={[styles.handle, { left: at.x - s / 2, top: at.y - s / 2, width: s, height: s }]}
     />
   );
 }

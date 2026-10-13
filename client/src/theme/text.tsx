@@ -1,6 +1,7 @@
 import { StyleSheet, Text as RNText, type TextProps, type TextStyle } from 'react-native';
 
 import { color, font, size } from './tokens';
+import { legibleSize, useTouchTargets } from './touch';
 
 /**
  * Typed text primitives.
@@ -54,13 +55,16 @@ export type MonoProps = TextProps & {
 };
 
 export function Mono({ size: s = size.monoXs, color: c, medium, heading, style, ...rest }: MonoProps) {
+  // The mock's 9–10.5 px mono labels are a desktop density; on a phone they grow (theme/touch).
+  const touch = useTouchTargets();
+  const px = heading ? size.monoTiny : s;
   return (
     <RNText
       {...rest}
       style={[
         {
           fontFamily: medium ? font.monoMedium : font.mono,
-          fontSize: heading ? size.monoTiny : s,
+          fontSize: touch ? legibleSize(px) : px,
           color: c ?? (heading ? color.textFaint : color.textSubtle),
         },
         heading ? styles.heading : null,

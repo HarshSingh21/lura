@@ -34,14 +34,21 @@ export type StackSlot = {
   left?: number;
   right: number;
   width?: number;
+  maxWidth?: number;
 };
 
 /** The wide layout's stack width: a card's natural reading width. */
 export const WIDE_STACK_WIDTH = 380;
 /** Room on the right for the map's control column (18 px inset + 38 px buttons + a gap). */
 export const CONTROLS_LANE = 64;
-/** Tab bar (≈58 px) plus the live map's collapsed people sheet and a gap. */
-export const PHONE_STACK_BOTTOM = 128;
+/**
+ * Tab bar (56 px), the live map's collapsed people sheet and the map credit
+ * above it, and a gap: the "+N more" pill under a reminder card printed over
+ * the OpenStreetMap credit, which the tiles' licence says must stay readable.
+ */
+export const PHONE_STACK_BOTTOM = 162;
+/** On a tablet the phone layout's corner holds a card's width, not the screen's. */
+export const PHONE_STACK_MAX_WIDTH = 440;
 
 /** isHistory says whether a pathname is the History screen. */
 function isHistory(pathname: string | undefined): boolean {
@@ -55,7 +62,7 @@ function isHistory(pathname: string | undefined): boolean {
  */
 export function stackSlot(mode: 'phone' | 'wide' | 'desktop', pathname: string | undefined, m: StackMetrics): StackSlot {
   if (mode === 'phone') {
-    return { top: 'auto', left: m.inset, right: CONTROLS_LANE, bottom: PHONE_STACK_BOTTOM };
+    return { top: 'auto', left: m.inset, right: CONTROLS_LANE, bottom: PHONE_STACK_BOTTOM, maxWidth: PHONE_STACK_MAX_WIDTH };
   }
   const top = m.topBarHeight + m.gap;
   if (mode === 'wide') return { top, right: m.wideInset, width: WIDE_STACK_WIDTH };

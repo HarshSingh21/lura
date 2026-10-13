@@ -6,6 +6,7 @@ import type { Position } from '@/api/types';
 import { Card, Dot, Toggle, styles as ui } from '@/components/ui/primitives';
 import { Mono, Txt } from '@/theme/text';
 import { color, palette, radius, size, space, withAlpha } from '@/theme/tokens';
+import { useTouchTargets } from '@/theme/touch';
 
 import { formatRelative } from '@/features/live/rail';
 
@@ -54,6 +55,7 @@ export function ActionButton({
 }) {
   const t = actionTone(tone);
   const off = busy || disabled;
+  const touch = useTouchTargets();
   return (
     <Pressable
       accessibilityRole="button"
@@ -63,6 +65,7 @@ export function ActionButton({
       style={({ pressed }) => [
         ui.button,
         ui.buttonSmall,
+        touch ? ui.buttonTouch : null,
         { backgroundColor: t.bg, borderColor: t.border },
         pressed && !off ? ui.pressed : null,
         off ? ui.disabled : null,

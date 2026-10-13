@@ -4,6 +4,7 @@ import Svg, { Circle, Path, Rect } from 'react-native-svg';
 
 import { Txt } from '@/theme/text';
 import { color, palette, radius, shadow } from '@/theme/tokens';
+import { useTouchTargets } from '@/theme/touch';
 
 import { BASEMAP_IDS, BASEMAPS, type BasemapInfo } from './basemaps';
 import type { BasemapId } from './types';
@@ -31,6 +32,8 @@ export function BasemapPicker({
   align?: 'left' | 'right';
 }) {
   const [open, setOpen] = useState(false);
+  // Under a finger the tile is the zoom stack's 44 px width (theme/touch).
+  const touch = useTouchTargets();
   const current = BASEMAPS[value] ?? BASEMAPS.streets;
 
   return (
@@ -68,7 +71,7 @@ export function BasemapPicker({
         accessibilityRole="button"
         accessibilityLabel={open ? 'Close basemap picker' : `Change basemap, currently ${current.label}`}
         onPress={() => setOpen((o) => !o)}
-        style={({ pressed }) => [styles.toggle, pressed ? styles.pressed : null]}
+        style={({ pressed }) => [styles.toggle, touch ? styles.toggleTouch : null, pressed ? styles.pressed : null]}
       >
         <View style={styles.toggleThumb}>
           <Thumbnail info={current} size={30} />
@@ -138,6 +141,7 @@ const styles = StyleSheet.create({
     backgroundColor: color.surface,
     ...shadow('button'),
   },
+  toggleTouch: { width: 44, height: 44 },
   toggleThumb: {
     flex: 1,
     borderRadius: 7,

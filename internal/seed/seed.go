@@ -233,6 +233,24 @@ type waypoint struct {
 // seedDay writes a plausible day: home → office (long stop) → grocery (short
 // stop) → gym. It is the same shape as the mock's timeline, so the History view
 // has trips, stops and a track to draw the moment the server starts.
+// dayLength is how long the seeded day's legs take, from leaving home to
+// leaving the gym (about five hours), with a margin.
+const dayLength = 6 * time.Hour
+
+// dayStart is when the seeded day begins: 08:04 local, or, when that leaves too
+// little of the day before "now" for all of its legs to have happened, six
+// hours ago, so the day is always whole and ends before "now". Starting at
+// 08:04 for a server started at 08:12 used to seed eight minutes at home and no
+// trip at all, so History opened on a day with nothing in it (and
+// TestHistoryAndExports failed between 08:04 and about 13:00).
+func dayStart(localNow time.Time) time.Time {
+	start := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 8, 4, 0, 0, localNow.Location())
+	if localNow.Sub(start) < dayLength {
+		start = localNow.Add(-dayLength)
+	}
+	return start
+}
+
 func seedDay(ctx context.Context, st store.Store, deviceID, userID string, places []domain.Place, localNow time.Time) (int, error) {
 	byID := map[string]domain.Place{}
 	for _, p := range places {
@@ -246,15 +264,7 @@ func seedDay(ctx context.Context, st store.Store, deviceID, userID string, place
 		{place: "plc_gym", stopMins: 50, mode: "Drive"},
 	}
 
-	// Start at 08:04 local, or earlier if the process starts before the day's
-	// legs (about five hours) could have happened since then, so the generated
-	// day is always whole and ends before "now". A server started at 08:10 once
-	// seeded one fix and no trips.
-	const dayLength = 6 * time.Hour
-	start := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 8, 4, 0, 0, localNow.Location())
-	if localNow.Sub(start) < dayLength {
-		start = localNow.Add(-dayLength)
-	}
+	start := dayStart(localNow)
 
 	const (
 		fixEvery   = 30 * time.Second
