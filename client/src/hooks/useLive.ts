@@ -5,10 +5,14 @@ import { connectLive } from '@/api/live';
 import { keys } from '@/api/hooks';
 import type { Overview, Position } from '@/api/types';
 import { useTrails } from '@/features/live/trails';
-import { peopleOf } from '@/features/people/types';
+import { overviewNames } from '@/features/people/types';
 import { useStore } from '@/state/store';
 
+import { trailingThrottle } from './throttle';
 import { syncPendingReminders } from './useReminders';
+
+/** How often an unlisted device can make the overview be re-read. */
+const LEARN_THROTTLE_MS = 5_000;
 
 /**
  * Binds the live socket to the app's state.
@@ -37,25 +41,19 @@ export function useLive(enabled = true) {
     };
     // A fix from one of my own devices that the snapshot does not list (a phone
     // added on another screen, a browser that just registered itself) has no
-    // marker until the overview names it; re-read it rather than wait for the
-    // next poll. Throttled, so a burst of fixes costs one request.
-    let lastRefetch = 0;
-    // The same goes for a peer's device the snapshot predates (a tablet they
-    // just added): without a re-read its marker says "new device" until the
-    // next poll.
-    const learnDevice = (p: Position) => {
-      const overview = qc.getQueryData<Overview>(keys.overview);
-      if (!overview) return;
-      const known =
-        p.userId === overview.user.id
-          ? overview.devices.some((d) => d.id === p.deviceId)
-          : peopleOf(overview).some((peer) => peer.peerId === p.userId && (peer.devices ?? []).some((d) => d.id === p.deviceId));
-      if (known) return;
-      const now = Date.now();
-      if (now - lastRefetch < 5_000) return;
-      lastRefetch = now;
+    // marker until the overview names it, and a peer's device the overview
+    // predates (a tablet they just added) says "new device": re-read it rather
+    // than wait for the next poll. Throttled, so a burst of fixes costs one
+    // request — but not dropped, so a device that turns up seconds after
+    // another is still learnt.
+    const relearn = trailingThrottle(() => {
       void qc.invalidateQueries({ queryKey: keys.overview });
-      if (p.userId !== overview.user.id) void qc.invalidateQueries({ queryKey: ['people'] });
+      void qc.invalidateQueries({ queryKey: ['people'] });
+    }, LEARN_THROTTLE_MS);
+    const learnDevice = (p: Pick<Position, 'deviceId' | 'userId'>) => {
+      const overview = qc.getQueryData<Overview>(keys.overview);
+      if (!overview || overviewNames(overview, p)) return;
+      relearn.call();
     };
     // A different server or credential is a different stream: its trails start empty.
     clearTrails();
@@ -119,6 +117,13 @@ export function useLive(enabled = true) {
                   seq: 0,
                 });
               }
+            }
+            // A device the snapshot carries but the overview predates (a tablet
+            // added since the page loaded) is learnt as a live fix's would be;
+            // otherwise its marker says "new device" until the next poll.
+            for (const device of frame.data.devices ?? []) learnDevice({ deviceId: device.id, userId: device.userId });
+            for (const peer of frame.data.peers ?? []) {
+              for (const device of peer.devices ?? []) learnDevice({ deviceId: device.id, userId: peer.userId });
             }
             break;
 
@@ -187,7 +192,10 @@ export function useLive(enabled = true) {
       },
     });
 
-    return () => conn.close();
+    return () => {
+      relearn.cancel();
+      conn.close();
+    };
     // Reconnect when the server address or credential changes: it is a different
     // deployment, not the same stream.
   }, [enabled, baseUrl, token, qc]);

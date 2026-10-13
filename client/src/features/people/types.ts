@@ -1,4 +1,4 @@
-import type { Overview, Point } from '@/api/types';
+import type { Overview, Point, Position } from '@/api/types';
 
 /**
  * Wire types for People — mutual live sharing between accounts (HLD §2.1, §11).
@@ -69,4 +69,14 @@ export type OverviewWithPeople = Overview & { people?: Peer[] | null };
 /** peopleOf reads the people list off an overview snapshot. */
 export function peopleOf(overview: Overview | undefined): Peer[] {
   return (overview as OverviewWithPeople | undefined)?.people ?? [];
+}
+
+/**
+ * overviewNames says whether an overview already lists a device — one of mine,
+ * or one of a peer's. A fix or snapshot entry for a device it does not name is
+ * from a device added since it was read, and the overview is due a re-read.
+ */
+export function overviewNames(overview: Overview, p: Pick<Position, 'deviceId' | 'userId'>): boolean {
+  if (p.userId === overview.user.id) return overview.devices.some((d) => d.id === p.deviceId);
+  return peopleOf(overview).some((peer) => peer.peerId === p.userId && (peer.devices ?? []).some((d) => d.id === p.deviceId));
 }
