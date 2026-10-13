@@ -233,6 +233,13 @@ func (s *Store) DeletePlace(ctx context.Context, userID, id string) error {
 // geography a fix exactly on a fence's equator-side edge reads as outside, and
 // a wide fence at high latitude is off by metres (migration 0004).
 //
+// The circle test is on the sphere (use_spheroid = false), which is haversine
+// on the mean radius: exactly what the memory store and the engine's own
+// checks (leave hysteresis, crossings, a reloaded dwell) compute. The default
+// WGS84 spheroid stretches a 1000 m circle ~5 m north-south and shrinks it
+// ~1.3 m east-west at 13°N, so the engine would call a fix "4 m outside" a
+// fence PostgreSQL had just said it entered.
+//
 // The plan is driven by places_user_idx: the query is always one user's fences,
 // which is a short list, and a per-row radius_m means ST_DWithin cannot use
 // places_center_gix anyway.
@@ -243,7 +250,7 @@ func (s *Store) PlacesContaining(ctx context.Context, userID string, pt domain.P
 		FROM places
 		WHERE user_id = $1
 		  AND ((shape = 'circle'
-		        AND ST_DWithin(center, ST_SetSRID(ST_MakePoint($2,$3),4326)::geography, radius_m))
+		        AND ST_DWithin(center, ST_SetSRID(ST_MakePoint($2,$3),4326)::geography, radius_m, false))
 		    OR (shape = 'polygon'
 		        AND ST_Covers(boundary::geometry, ST_SetSRID(ST_MakePoint($2,$3),4326))))
 		ORDER BY id`, userID, pt.Lon, pt.Lat)
