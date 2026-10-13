@@ -96,6 +96,17 @@ func trackingPostgres(t *testing.T, dsn string) store.Store {
 	if err != nil {
 		t.Fatalf("open bootstrap connection: %v", err)
 	}
+	// PostGIS must live in public. Left to the migration, it would be created
+	// in the first schema on the search path — this test's — and dropped with
+	// it, taking the geography type away from every other test mid-run.
+	if _, err := bootstrap.Pool().Exec(ctx, "CREATE EXTENSION IF NOT EXISTS postgis SCHEMA public"); err != nil {
+		var present bool
+		if qerr := bootstrap.Pool().QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'postgis')`).Scan(&present); qerr != nil || !present {
+			_ = bootstrap.Close()
+			t.Fatalf("create postgis: %v", err)
+		}
+	}
 	if _, err := bootstrap.Pool().Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		_ = bootstrap.Close()
 		t.Fatalf("create schema: %v", err)
