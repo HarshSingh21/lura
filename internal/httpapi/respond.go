@@ -62,6 +62,12 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	status, code := statusFor(err)
 
 	body := errorBody{Error: err.Error(), Code: code}
+	if status == http.StatusUnauthorized {
+		// Why a credential was refused (wrong issuer, which audience was wanted,
+		// an unknown kid) is for the log below, not the caller: spelling out what
+		// would have been accepted is a recipe for the next attempt.
+		body.Error = "authentication required"
+	}
 	if sc := trace.SpanContextFromContext(r.Context()); sc.IsValid() {
 		body.TraceID = sc.TraceID().String()
 	}
