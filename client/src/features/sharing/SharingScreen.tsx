@@ -202,7 +202,7 @@ export function SharingScreen() {
             </View>
           </View>
           <Mono size={size.monoSm} color={color.inkPanelFaint} style={styles.previewUrl} numberOfLines={2}>
-            {lastLink ?? `${data?.server.publicBaseUrl ?? 'http://localhost:8080'}/s/…`}
+            {lastLink ?? `${data?.server.publicBaseUrl ?? 'http://localhost:8080'}/share/…`}
           </Mono>
         </View>
       </View>
@@ -223,7 +223,7 @@ export function SharingScreen() {
                 key={share.id}
                 share={share}
                 placeName={places.find((p) => p.id === share.arrivePlaceId)?.name}
-                revoking={revokeShare.isPending}
+                revoking={revokeShare.isPending && revokeShare.variables === share.id}
                 onRevoke={() => revokeShare.mutate(share.id)}
                 onCopy={() => void copyLink(share.link)}
               />
@@ -257,8 +257,22 @@ function ShareRow({
           {describeShare(share, placeName)}
         </Txt>
       </View>
-      <Button label="Copy" variant="ghost" small onPress={onCopy} />
-      <Button label="Revoke" variant="danger" small loading={revoking} onPress={onRevoke} />
+      {/* Every row has a Copy and a Revoke: the accessible name says which link. */}
+      <Button
+        label="Copy"
+        variant="ghost"
+        small
+        onPress={onCopy}
+        accessibilityLabel={`Copy the link for ${share.label}`}
+      />
+      <Button
+        label="Revoke"
+        variant="danger"
+        small
+        loading={revoking}
+        onPress={onRevoke}
+        accessibilityLabel={`Revoke the link for ${share.label}`}
+      />
     </Card>
   );
 }
@@ -266,7 +280,7 @@ function ShareRow({
 function describeShare(share: Share, placeName?: string): string {
   switch (share.mode) {
     case 'until_arrive':
-      return `Until I arrive ${placeName ?? 'a place'} · auto-revokes on arrive`;
+      return `Until I arrive at ${placeName ?? 'a place'} · ends itself when I get there`;
     case 'duration':
       return share.expiresAt ? `Timed · expires ${formatClock(share.expiresAt)}` : 'Timed';
     case 'until_revoke':
