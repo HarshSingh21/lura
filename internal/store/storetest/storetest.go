@@ -36,6 +36,7 @@ func Run(t *testing.T, newStore Factory) {
 	}{
 		{"Users", testUsers},
 		{"Devices", testDevices},
+		{"DeviceOwnership", testDeviceOwnership},
 		{"MonotonicLastPoint", testMonotonicLastPoint},
 		{"PositionIdempotency", testPositionIdempotency},
 		{"PositionQueries", testPositionQueries},

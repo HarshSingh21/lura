@@ -172,6 +172,11 @@ func (s *Store) UpsertDevice(_ context.Context, d domain.Device) error {
 		return fmt.Errorf("device id and user id required: %w", domain.ErrInvalid)
 	}
 	if prev, ok := s.devices[d.ID]; ok {
+		if prev.UserID != d.UserID {
+			// Device ids are global and clients may pick their own: an id another
+			// user's device already has must not move that device to the caller.
+			return fmt.Errorf("device %s belongs to another user: %w", d.ID, domain.ErrConflict)
+		}
 		// Keep fields the caller did not supply (a device rename must not wipe
 		// the ingest token or the last known fix).
 		if d.Token == "" {
