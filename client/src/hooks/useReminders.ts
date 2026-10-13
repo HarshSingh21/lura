@@ -3,9 +3,11 @@ import { AppState, Platform } from 'react-native';
 
 import { ApiError } from '@/api/client';
 import { fetchReminders } from '@/api/reminders';
+import { getSessionStatus } from '@/features/auth/session';
 import { focusTarget, reminderTag } from '@/features/notify/announce';
 import { showDesktop } from '@/features/notify/desktop';
 import { chimeFor } from '@/features/notify/model';
+import { createPendingSync } from '@/features/notify/pendingSync';
 import { repeatAction, resolveEveryMs, type ReminderCard } from '@/features/notify/reminders';
 import { inQuietHours } from '@/features/notify/quiet';
 import { playChime } from '@/features/notify/sound';
@@ -25,38 +27,22 @@ import { useStore } from '@/state/store';
  * the same tag, so it replaces rather than stacks) a desktop notification.
  */
 
-let syncing: Promise<void> | null = null;
-let again = false;
-
 /**
  * syncPendingReminders reads GET /api/v1/reminders?status=pending into the
- * store. Called on sign-in / app load and on every socket (re)connect. A call
- * made while one is in flight runs once more after it, so the last answer is
- * never older than the last request for one.
+ * store. Called on sign-in / app load and on every socket (re)connect. Calls
+ * are coalesced (features/notify/pendingSync.ts): one read at a time and one
+ * more after it when asked meanwhile, so the last answer is never older than
+ * the last request for one — and none once signed out, so a read the socket's
+ * last hello queued does not go out after Sign out with no session behind it.
  */
-export function syncPendingReminders(): Promise<void> {
-  if (syncing) {
-    again = true;
-    return syncing;
-  }
-  syncing = (async () => {
-    do {
-      again = false;
-      const requestedAt = Date.now();
-      try {
-        const { reminders } = await fetchReminders('pending');
-        useStore.getState().reconcileReminders(reminders ?? [], requestedAt);
-      } catch (err) {
-        // A server without §6 answers 404; offline is handled by the next
-        // reconnect's sync. Neither is worth a toast.
-        if (!(err instanceof ApiError)) break;
-      }
-    } while (again);
-  })().finally(() => {
-    syncing = null;
-  });
-  return syncing;
-}
+export const syncPendingReminders = createPendingSync({
+  allowed: () => getSessionStatus() === 'signed-in',
+  fetch: () => fetchReminders('pending'),
+  apply: ({ reminders }, requestedAt) => useStore.getState().reconcileReminders(reminders ?? [], requestedAt),
+  // A server without §6 answers 404; offline is handled by the next
+  // reconnect's sync. Neither is worth a toast.
+  retryable: (err) => err instanceof ApiError,
+});
 
 /** remindEveryMs reads the interval each time, so a test can change it on a live page. */
 export function remindEveryMs(): number {
