@@ -8,6 +8,7 @@ import type { Peer } from '@/features/people/types';
 import type { TrackingStatus } from '@/hooks/useTracking';
 import { Mono, SectionLabel, Txt } from '@/theme/text';
 import { color, palette, radius, size, space } from '@/theme/tokens';
+import { useTouchTargets } from '@/theme/touch';
 
 import { fixTimeMs, formatAge, formatSpeed, isStale, MOVING_MPS, speedOf, type TrailPoint } from './motion';
 import { firstName, reminderHold } from './reminders';
@@ -42,6 +43,8 @@ export type FollowKey = `user:${string}` | `device:${string}`;
 
 /** FollowButton is the per-row "keep the camera on them" toggle. */
 function FollowButton({ on, name, onPress }: { on: boolean; name: string; onPress: () => void }) {
+  // Under a finger the target is 44 px tall around the same small pill.
+  const touch = useTouchTargets();
   return (
     <Pressable
       accessibilityRole="switch"
@@ -49,11 +52,13 @@ function FollowButton({ on, name, onPress }: { on: boolean; name: string; onPres
       accessibilityLabel={on ? `Stop following ${name}` : `Follow ${name} on the map`}
       onPress={onPress}
       hitSlop={6}
-      style={({ pressed }) => [styles.follow, on ? styles.followOn : null, pressed ? ui.pressed : null]}
+      style={({ pressed }) => [touch ? styles.followTarget : null, pressed ? ui.pressed : null]}
     >
-      <Mono size={size.monoTiny} medium color={on ? '#ffffff' : color.textMuted}>
-        {on ? 'FOLLOWING' : 'FOLLOW'}
-      </Mono>
+      <View style={[styles.follow, on ? styles.followOn : null]}>
+        <Mono size={size.monoTiny} medium color={on ? '#ffffff' : color.textMuted}>
+          {on ? 'FOLLOWING' : 'FOLLOW'}
+        </Mono>
+      </View>
     </Pressable>
   );
 }
@@ -618,6 +623,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     paddingHorizontal: 7,
   },
+  followTarget: { minHeight: 44, minWidth: 44, justifyContent: 'center', marginVertical: -8 },
   followOn: { backgroundColor: palette.accentDark, borderColor: palette.accentDark },
   cardFollowing: { borderColor: palette.accent },
   trackingHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },

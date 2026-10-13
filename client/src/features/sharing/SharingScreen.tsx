@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/primitives';
 import { Mono, SectionLabel, Txt } from '@/theme/text';
 import { color, palette, radius, size, space } from '@/theme/tokens';
+import { useTouchTargets } from '@/theme/touch';
 import { useLayoutMode } from '@/theme/useLayout';
 
 import { formatClock } from '@/features/live/rail';
@@ -29,6 +30,7 @@ import { formatClock } from '@/features/live/rail';
  */
 export function SharingScreen() {
   const { isPhone } = useLayoutMode();
+  const touch = useTouchTargets();
   const { data } = useOverview();
   const createShare = useCreateShare();
   const revokeShare = useRevokeShare();
@@ -118,7 +120,7 @@ export function SharingScreen() {
                       accessibilityRole="radio"
                       aria-selected={place.id === arriveChoice}
                       onPress={() => setArrivePlaceId(place.id)}
-                      style={[styles.placeChip, place.id === arriveChoice && styles.placeChipActive]}
+                      style={[styles.placeChip, touch && styles.placeChipTouch, place.id === arriveChoice && styles.placeChipActive]}
                     >
                       <Txt
                         variant="small"
@@ -309,6 +311,7 @@ const styles = StyleSheet.create({
   modes: { gap: space.md },
   inlineField: { gap: 6 },
   placePicker: { flexDirection: 'row', gap: space.sm, flexWrap: 'wrap' },
+  placeChipTouch: { minHeight: 44, justifyContent: 'center' },
   placeChip: {
     paddingHorizontal: 11,
     paddingVertical: 7,

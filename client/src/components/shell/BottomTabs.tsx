@@ -22,7 +22,7 @@ export function BottomTabs({ pathname, sharing }: { pathname: string; sharing: b
   const items = [...NAV_ITEMS, SETTINGS_ITEM];
 
   return (
-    <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, space.md) }]}>
+    <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, space.xs) }]}>
       {items.map((item) => {
         const active = isActive(pathname, item.href);
         return (
@@ -56,10 +56,12 @@ const styles = StyleSheet.create({
     backgroundColor: color.surface,
     borderTopWidth: 1,
     borderTopColor: color.hairline,
-    paddingTop: space.md,
+    paddingTop: space.xs,
   },
-  tab: { flex: 1, alignItems: 'center', gap: 3 },
+  // The whole cell is the target, at least 48 px tall: a thumb finds it without aiming.
+  tab: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 3, minHeight: 48 },
   iconWrap: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
   sharingDot: { position: 'absolute', top: 0, right: 0 },
-  label: { fontFamily: font.sansMedium, fontSize: 10.5 },
+  // 11.5 px: the smallest a tab name reads at arm's length.
+  label: { fontFamily: font.sansMedium, fontSize: 11.5 },
 });

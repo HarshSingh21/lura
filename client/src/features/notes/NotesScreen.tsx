@@ -20,6 +20,7 @@ import { firstName, partitionPeople } from '@/features/people/peer';
 import { PersonPicker, peerOption, type PersonOption } from '@/features/people/PersonPicker';
 import { Mono, Txt } from '@/theme/text';
 import { color, font, palette, radius, size, space } from '@/theme/tokens';
+import { useTouchTargets } from '@/theme/touch';
 
 import { describeAudience, type NameOf } from './describe';
 
@@ -44,6 +45,7 @@ import { describeAudience, type NameOf } from './describe';
  * reminder, never as a note in their own list.
  */
 export function NotesScreen() {
+  const touch = useTouchTargets();
   const { data } = useOverview();
   const createNote = useCreateNote();
   const updateNote = useUpdateNote();
@@ -181,7 +183,9 @@ export function NotesScreen() {
           onSubmitEditing={submit}
           placeholder="e.g. buy oat milk when I pass the store…"
           placeholderTextColor={color.textFaint}
-          style={styles.composerInput}
+          // A placeholder is not a name: it vanishes as soon as you type.
+          accessibilityLabel="New note"
+          style={[styles.composerInput, touch && styles.composerInputTouch]}
           returnKeyType="done"
           multiline={false}
         />
@@ -370,6 +374,7 @@ function NoteRow({
   onToggle: () => void;
   onDelete: () => void;
 }) {
+  const touch = useTouchTargets();
   const place = places.find((p) => p.id === note.placeId);
   // An older server omits the people fields; read them defensively.
   const audience = describeAudience({
@@ -418,7 +423,7 @@ function NoteRow({
         accessibilityLabel={`Delete note: ${note.text}`}
         onPress={onDelete}
         hitSlop={8}
-        style={({ pressed }) => [styles.deleteButton, pressed && { opacity: 0.6 }]}
+        style={({ pressed }) => [styles.deleteButton, touch && styles.deleteTouch, pressed && { opacity: 0.6 }]}
       >
         <Icon name="close" size={14} color={color.textFaint} />
       </Pressable>
@@ -449,6 +454,7 @@ function ChoicePill({
   suggested?: boolean;
   onPress: () => void;
 }) {
+  const touch = useTouchTargets();
   return (
     <Pressable
       accessibilityRole="radio"
@@ -457,6 +463,7 @@ function ChoicePill({
       onPress={onPress}
       style={({ pressed }) => [
         styles.choice,
+        touch && styles.choiceTouch,
         selected && styles.choiceOn,
         selected && suggested && styles.choiceSuggested,
         pressed && styles.pressed,
@@ -483,6 +490,8 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     outlineStyle: 'none' as never,
   },
+  // 16 px keeps iOS Safari from zooming in on focus; 44 px is a finger's target.
+  composerInputTouch: { minHeight: 44, fontSize: 16 },
   suggestRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, flexWrap: 'wrap' },
   suggestLabel: { letterSpacing: 0.6 },
   composerError: { marginTop: 2 },
@@ -516,5 +525,8 @@ const styles = StyleSheet.create({
   noteDone: { textDecorationLine: 'line-through' },
   noteMeta: { flexDirection: 'row', alignItems: 'center', gap: space.md, marginTop: 4, flexWrap: 'wrap' },
   deleteButton: { padding: 6, borderRadius: radius.md },
+  // Under a finger (theme/touch): full targets around the same visuals.
+  deleteTouch: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', margin: -8 },
+  choiceTouch: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 14 },
   doneHeading: { marginTop: space.md },
 });

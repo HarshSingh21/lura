@@ -6,6 +6,7 @@ import { Dot } from '@/components/ui/primitives';
 import { NotificationBell } from '@/features/notify/NotificationCenter';
 import { Mono, Txt } from '@/theme/text';
 import { color, font, layout, palette, radius, size, space } from '@/theme/tokens';
+import { useTouchTargets } from '@/theme/touch';
 import { useLayoutMode } from '@/theme/useLayout';
 import type { LiveStatus } from '@/api/live';
 
@@ -37,6 +38,7 @@ export function TopBar({
 }) {
   const { isWide, isDesktop } = useLayoutMode();
   const [searchFocused, setSearchFocused] = useState(false);
+  const touch = useTouchTargets();
 
   return (
     <View style={styles.bar}>
@@ -90,14 +92,15 @@ export function TopBar({
           aria-checked={airgap}
           accessibilityLabel="Airgap mode"
           onPress={onToggleAirgap}
-          style={({ pressed }) => [styles.airgap, airgap && styles.airgapOn, pressed && styles.pressed]}
+          style={({ pressed }) => [touch && styles.target, pressed && styles.pressed]}
         >
-          <Dot size={8} color={airgap ? palette.accent : color.timelineNode} />
-          {isWide ? (
+          {/* A bare dot on a phone said nothing; the switch always names itself. */}
+          <View style={[styles.airgap, airgap && styles.airgapOn, !isWide && styles.airgapCompact]}>
+            <Dot size={8} color={airgap ? palette.accent : color.timelineNode} />
             <Txt variant="small" color={airgap ? palette.accentAirgap : color.textMuted} style={styles.airgapLabel}>
-              Airgap {airgap ? 'on' : 'off'}
+              {isWide ? `Airgap ${airgap ? 'on' : 'off'}` : 'Airgap'}
             </Txt>
-          ) : null}
+          </View>
         </Pressable>
 
         {isWide ? <View style={styles.divider} /> : null}
@@ -217,6 +220,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 7,
   },
+  /** A finger-sized target around the smaller visual (theme/touch). */
+  target: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  airgapCompact: { paddingHorizontal: 9, gap: 6 },
   airgapOn: { borderColor: 'rgba(32,160,123,0.4)', backgroundColor: color.accentSofter },
   airgapLabel: { fontFamily: font.sansMedium },
   pressed: { opacity: 0.9 },

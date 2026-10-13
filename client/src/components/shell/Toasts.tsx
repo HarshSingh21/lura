@@ -7,6 +7,7 @@ import { ReminderCards } from '@/features/notify/ReminderCards';
 import { NotificationGlyph, NotificationMeta, tintFor, useOpenNotification } from '@/features/notify/ui';
 import { Txt } from '@/theme/text';
 import { color, layout, palette, radius, shadow, space } from '@/theme/tokens';
+import { useTouchTargets } from '@/theme/touch';
 import { useLayoutMode } from '@/theme/useLayout';
 import { useStore, type Toast } from '@/state/store';
 
@@ -52,8 +53,12 @@ const native = Platform.OS !== 'web';
 
 /** Room on the right for the map's control column (18 px inset + 38 px buttons + a gap). */
 const CONTROLS_LANE = 64;
-/** Tab bar (≈58 px) plus the live map's collapsed people sheet and a gap. */
-const PHONE_STACK_BOTTOM = 128;
+/**
+ * Tab bar (56 px), the live map's collapsed people sheet and the map credit
+ * above it, and a gap: the "+N more" pill under a reminder card printed over
+ * the OpenStreetMap credit, which the tiles' licence says must stay readable.
+ */
+const PHONE_STACK_BOTTOM = 162;
 
 function ToastCard({ toast, fromTop }: { toast: Toast; fromTop: boolean }) {
   // A stable callback, so a new toast arriving does not restart this one's timer.
@@ -164,8 +169,10 @@ function plainTint(toast: Toast): string {
 }
 
 function DismissButton({ onDismiss }: { onDismiss: () => void }) {
+  // Under a finger a 44 px target, pulled into the toast's padding so the card does not grow.
+  const touch = useTouchTargets();
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" onPress={onDismiss} hitSlop={8}>
+    <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" onPress={onDismiss} hitSlop={8} style={touch ? styles.dismissTouch : undefined}>
       <Icon name="close" size={14} color={color.textFaint} />
     </Pressable>
   );
@@ -199,7 +206,8 @@ const styles = StyleSheet.create({
   // the stack then kept the wide layout's top and covered the map's Draw button.
   // Above the tab bar and the live map's people sheet, so neither the sheet's
   // handle nor the "+N more" pill under a reminder card is covered.
-  stackPhone: { top: 'auto', left: space.lg, right: CONTROLS_LANE, bottom: PHONE_STACK_BOTTOM },
+  // On a tablet the same corner, at a card's width rather than the screen's.
+  stackPhone: { top: 'auto', left: space.lg, right: CONTROLS_LANE, bottom: PHONE_STACK_BOTTOM, maxWidth: 440 },
   toast: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -217,6 +225,7 @@ const styles = StyleSheet.create({
   toastError: { borderColor: palette.danger },
   pressed: { opacity: 0.92 },
   dot: { marginTop: 5 },
+  dismissTouch: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', marginTop: -12, marginRight: -14, marginBottom: -12 },
   body: { flex: 1, minWidth: 0 },
   bodyText: { marginTop: 2 },
   progressTrack: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 3, backgroundColor: color.hairline },

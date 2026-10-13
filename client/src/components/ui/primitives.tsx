@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 
 import { Mono, Txt } from '@/theme/text';
+import { useTouchTargets } from '@/theme/touch';
 import { color, font, palette, radius, shadow, size, space, triggerStyle, type TriggerName } from '@/theme/tokens';
 
 import { Icon, type IconName } from './Icon';
@@ -65,6 +66,7 @@ export function Button({
 }: ButtonProps) {
   const isDisabled = disabled || loading;
   const tone = buttonTone(variant);
+  const touch = useTouchTargets();
 
   return (
     <Pressable
@@ -76,6 +78,7 @@ export function Button({
       style={({ pressed }) => [
         styles.button,
         small && styles.buttonSmall,
+        touch && styles.buttonTouch,
         { backgroundColor: tone.bg, borderColor: tone.border },
         variant === 'primary' && shadow('accent'),
         full && styles.buttonFull,
@@ -126,12 +129,13 @@ export function IconButton({
   style?: StyleProp<ViewStyle>;
   iconColor?: string;
 }) {
+  const touch = useTouchTargets();
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       onPress={onPress}
-      style={({ pressed }) => [styles.iconButton, pressed && styles.pressed, style]}
+      style={({ pressed }) => [styles.iconButton, pressed && styles.pressed, style, touch && styles.iconButtonTouch]}
     >
       <Icon name={name} size={18} color={iconColor} />
     </Pressable>
@@ -269,6 +273,7 @@ export function Field({
   style?: StyleProp<ViewStyle>;
   inputStyle?: TextInputProps['style'];
 }) {
+  const touch = useTouchTargets();
   return (
     <View style={[styles.field, style]}>
       {label ? (
@@ -282,7 +287,7 @@ export function Field({
         // this a field announced as just "edit text".
         accessibilityLabel={label}
         {...rest}
-        style={[styles.input, error ? styles.inputError : null, inputStyle]}
+        style={[styles.input, touch && styles.inputTouch, error ? styles.inputError : null, inputStyle]}
       />
       {error ? (
         <Txt variant="micro" color={palette.dangerInk} style={styles.fieldHint}>
@@ -309,6 +314,7 @@ export function RadioRow({
   selected: boolean;
   onPress: () => void;
 }) {
+  const touch = useTouchTargets();
   return (
     <Pressable
       accessibilityRole="radio"
@@ -316,6 +322,7 @@ export function RadioRow({
       onPress={onPress}
       style={({ pressed }) => [
         styles.radioRow,
+        touch && styles.touchRow,
         selected ? styles.radioRowSelected : null,
         pressed && !selected ? { backgroundColor: color.surfaceHover } : null,
       ]}
@@ -347,6 +354,7 @@ export function Toggle({
   label?: string;
   accessibilityLabel?: string;
 }) {
+  const touch = useTouchTargets();
   return (
     <Pressable
       accessibilityRole="switch"
@@ -356,7 +364,7 @@ export function Toggle({
       aria-checked={value}
       accessibilityLabel={accessibilityLabel ?? label}
       onPress={() => onChange(!value)}
-      style={styles.toggleRow}
+      style={[styles.toggleRow, touch && styles.touchRow]}
     >
       <View style={[styles.toggleTrack, value ? styles.toggleTrackOn : null]}>
         <View style={[styles.toggleKnob, value ? styles.toggleKnobOn : null]} />
@@ -372,14 +380,18 @@ export function Toggle({
 
 /** Checkbox is the note completion box. */
 export function Checkbox({ checked, onPress }: { checked: boolean; onPress: () => void }) {
+  const touch = useTouchTargets();
+  // Under a finger the box stays 22 px; the target around it is 44.
   return (
     <Pressable
       accessibilityRole="checkbox"
       aria-checked={checked}
       onPress={onPress}
-      style={[styles.checkbox, checked ? styles.checkboxChecked : null]}
+      style={touch ? styles.checkboxTarget : null}
     >
-      {checked ? <Icon name="check" size={12} color="#ffffff" /> : null}
+      <View style={[styles.checkbox, checked ? styles.checkboxChecked : null]}>
+        {checked ? <Icon name="check" size={12} color="#ffffff" /> : null}
+      </View>
     </Pressable>
   );
 }
@@ -457,6 +469,8 @@ export const styles = StyleSheet.create({
     paddingHorizontal: 15,
   },
   buttonSmall: { paddingVertical: 7, paddingHorizontal: 12, borderRadius: radius.md },
+  // Under a finger even a small button is a full target: the padding grows, not the type.
+  buttonTouch: { minHeight: 44, minWidth: 44, paddingVertical: 8 },
   buttonFull: { width: '100%' },
   buttonLabel: { letterSpacing: -0.1 },
 
@@ -471,6 +485,8 @@ export const styles = StyleSheet.create({
     justifyContent: 'center',
     ...shadow('button'),
   },
+
+  iconButtonTouch: { width: 44, height: 44, minWidth: 44, minHeight: 44 },
 
   chip: {
     borderRadius: radius.md,
@@ -502,6 +518,8 @@ export const styles = StyleSheet.create({
     backgroundColor: color.surface,
   },
   inputError: { borderColor: palette.danger },
+  // 16 px keeps iOS Safari from zooming the page in on focus; 44 px is a finger's target.
+  inputTouch: { minHeight: 44, fontSize: 16 },
 
   radioRow: {
     flexDirection: 'row',
@@ -556,6 +574,8 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  checkboxTarget: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', margin: -11 },
+  touchRow: { minHeight: 44, minWidth: 44 },
   checkboxChecked: { backgroundColor: palette.accent, borderColor: palette.accent },
 
   backdrop: {
