@@ -139,6 +139,29 @@ test('a reminder from someone else keeps the sender', () => {
   assert.equal(item.subjectUserId, undefined);
 });
 
+test('an acknowledgement names the note and the person once', () => {
+  // "pick up keys", for Nishtha only: she acknowledged it, Harsh is told.
+  const ack = {
+    id: 'rem_ack', userId: HARSH, ownerId: HARSH, kind: 'ack', status: 'acknowledged',
+    title: 'Nishtha acknowledged pick up keys', body: 'pick up keys', trigger: 'passby',
+    placeId: 'plc_gym2', placeName: 'Gym2', noteIds: ['nte_1'],
+    subjectUserId: NISHTHA, subjectName: 'Nishtha', fromUserId: NISHTHA, fromName: 'Nishtha',
+    createdAt: '2026-10-12T10:00:05Z', ackedAt: '2026-10-12T10:00:05Z', ackedBy: NISHTHA,
+  };
+  const item = fromReminder(ack, HARSH);
+  assert.equal(item.kind, 'ack');
+  assert.equal(item.title, 'Nishtha acknowledged pick up keys');
+  assert.equal(item.body, undefined, 'the note text is already in the title');
+  assert.equal(item.subjectName, 'Nishtha');
+  assert.equal(item.fromName, undefined, '"from Nishtha" would name her a third time');
+  // Someone acknowledging a note about another person's movement keeps "from".
+  const other = fromReminder({ ...ack, subjectUserId: 'usr_ravi', subjectName: 'Ravi' }, HARSH);
+  assert.equal(other.fromName, 'Nishtha');
+  // A note's own reminder keeps its text under the crossing.
+  const note = fromReminder(reminder({ title: 'Passed by Gym2', body: 'pick up keys' }), HARSH);
+  assert.equal(note.body, 'pick up keys');
+});
+
 test('a re-described entry keeps its read state', () => {
   let { items } = ingest([], fromGeo(geo(), HARSH));
   items = markAllRead(items);
