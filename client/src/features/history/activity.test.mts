@@ -121,7 +121,8 @@ test('each kind of entry reads as a sentence', () => {
     },
     ctx,
   );
-  assert.equal(pending.title, 'Reminder: buy milk — pending');
+  assert.equal(pending.title, 'Reminder: buy milk');
+  assert.equal(pending.status, 'pending');
   assert.equal(pending.detail, 'Grocery · from Harsh');
 
   const ack = (byMe: boolean): ActivityItem => ({
@@ -262,7 +263,7 @@ test('a reminder without its crossing in the feed stands on its own', () => {
     ctx,
   );
   assert.equal(sections[0]!.title, 'EARLY HOURS');
-  assert.equal(sections[0]!.rows[0]!.title, 'Reminder: buy milk — pending');
+  assert.equal(sections[0]!.rows[0]!.title, 'Reminder: buy milk');
   assert.deepEqual(buildTimeline([], ctx), []);
 });
 
@@ -376,5 +377,5 @@ test('a reminder for several notes reads them inline, in its crossing and its ac
     { type: 'reminder', id: 'r2', ts: ist(12, 4), reminder: reminder({ body, status: 'pending' }) },
     ctx,
   );
-  assert.equal(alone.title, 'Reminder: buy aspirin, pick up the prescription — pending');
+  assert.equal(alone.title, 'Reminder: buy aspirin, pick up the prescription');
 });

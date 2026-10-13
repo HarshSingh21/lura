@@ -202,13 +202,15 @@ function quoted(label: string | undefined): string {
   return label?.trim() ? ` “${label.trim()}”` : '';
 }
 
-/** reminderStatus is "acknowledged 08:52" / "pending". */
-function reminderStatus(r: Pick<ReminderRecord, 'status' | 'ackedAt'>, tz: string): string {
-  if (r.status === 'acknowledged') {
-    const at = formatClock(r.ackedAt, tz);
-    return at ? `acknowledged ${at}` : 'acknowledged';
-  }
-  return 'pending';
+/**
+ * reminderStatus is "acknowledged 08:52", or nothing while pending: a pending
+ * row carries a PENDING chip (and the screen reader hears "pending" from the
+ * row's label), so the words would only say it a second time.
+ */
+function reminderStatus(r: Pick<ReminderRecord, 'status' | 'ackedAt'>, tz: string): string | undefined {
+  if (r.status !== 'acknowledged') return undefined;
+  const at = formatClock(r.ackedAt, tz);
+  return at ? `acknowledged ${at}` : 'acknowledged';
 }
 
 /**
@@ -289,7 +291,9 @@ export function describe(item: ActivityItem, ctx: DescribeContext): ActivityRow 
       return {
         ...base,
         icon: 'bell',
-        title: `${watch ? r.title || 'Watched crossing' : `Reminder: ${noteLabel(r)}`} — ${reminderStatus(r, ctx.tz)}`,
+        title: [watch ? r.title || 'Watched crossing' : `Reminder: ${noteLabel(r)}`, reminderStatus(r, ctx.tz)]
+          .filter(Boolean)
+          .join(' — '),
         detail: join(r.placeName, r.fromName && `from ${r.fromName}`),
         personId: peer ? r.subjectUserId : undefined,
         status: r.status,

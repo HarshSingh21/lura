@@ -392,7 +392,7 @@ function TimelineRow({
     <Pressable
       accessibilityRole="button"
       accessibilityState={{ selected }}
-      accessibilityLabel={`${row.time} ${row.title}${row.detail ? `, ${row.detail}` : ''}. Show on the map.`}
+      accessibilityLabel={`${row.time} ${row.title}${pending ? ', pending' : ''}${row.detail ? `, ${row.detail}` : ''}. Show on the map.`}
       onPress={onPress}
       style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
         styles.row,
