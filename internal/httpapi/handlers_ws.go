@@ -82,10 +82,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// A reconnecting client says when it last heard from us; whatever fired on
 	// its subjects since (a crossing while the phone was in a lift) follows the
 	// snapshot, so it is not silently lost.
-	replayed := 0
-	if since, ok := parseSince(r.URL.Query().Get("since")); ok {
-		replayed = s.deps.Hub.Replay(client, since)
-	}
+	// Replay runs on every connection, even with nothing to resume: it is
+	// also what ends the hub's exactly-once bookkeeping for this client.
+	since, _ := parseSince(r.URL.Query().Get("since"))
+	replayed := s.deps.Hub.Replay(client, since)
 	s.log.InfoContext(ctx, "ws connected", "client", client.ID, "user", uid, "subjects", client.Subjects(), "replayed", replayed)
 
 	s.pump(ctx, cancel, conn, client)
