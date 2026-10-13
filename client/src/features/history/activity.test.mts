@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { ActivityItem, ReminderRecord } from '../../api/types.ts';
-import { buildTimeline, dayLabel, dayRange, describe, formatClock, inDay, tripTitle, validZone } from './activity.ts';
+import { buildTimeline, dayLabel, dayRange, daySummary, describe, formatClock, inDay, tripTitle, validZone } from './activity.ts';
 
 const IST = 'Asia/Kolkata';
 const NY = 'America/New_York';
@@ -439,4 +439,10 @@ test('a reminder for several notes reads them inline, in its crossing and its ac
     ctx,
   );
   assert.equal(alone.title, 'Reminder: buy aspirin, pick up the prescription');
+});
+
+test('the day summary counts trips and stops in words that agree with the number', () => {
+  assert.equal(daySummary({ distanceM: 1290, trips: 1, stops: 0 }), '1.3 km · 1 trip · 0 stops');
+  assert.equal(daySummary({ distanceM: 420, trips: 2, stops: 1 }), '420 m · 2 trips · 1 stop');
+  assert.equal(daySummary(undefined), '0 m · 0 trips · 0 stops');
 });

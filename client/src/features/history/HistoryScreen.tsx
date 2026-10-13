@@ -22,7 +22,7 @@ import {
   buildTimeline,
   dayLabel,
   dayRange,
-  formatKm,
+  daySummary,
   inDay,
   validZone,
   type ActivityFocus,
@@ -254,8 +254,7 @@ export function HistoryScreen() {
           <Txt variant="bodySemi" numberOfLines={1}>
             {label} ·{' '}
             <Mono size={size.monoSm} color={color.textSubtle}>
-              {formatKm(history.data?.distanceM ?? 0)} · {history.data?.trips ?? 0} trips · {history.data?.stops ?? 0}{' '}
-              stops
+              {daySummary(history.data)}
             </Mono>
           </Txt>
         </View>

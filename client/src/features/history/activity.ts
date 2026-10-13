@@ -159,6 +159,16 @@ export function formatKm(metres: number | undefined): string {
   return `${(m / 1000).toFixed(1)} km`;
 }
 
+/** count says how many of a thing, in its singular or plural: "1 trip", "0 stops". */
+function count(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** daySummary is the History map's one-line summary of a day: "1.3 km · 1 trip · 2 stops". */
+export function daySummary(day: { distanceM?: number; trips?: number; stops?: number } | undefined): string {
+  return [formatKm(day?.distanceM), count(day?.trips ?? 0, 'trip', 'trips'), count(day?.stops ?? 0, 'stop', 'stops')].join(' · ');
+}
+
 // ---------------------------------------------------------------- describing
 
 export type ActivityIcon =
