@@ -331,3 +331,50 @@ test('the note text names a reminder, and a crossing named by another id still f
     'Nishtha acknowledged buy milk',
   ]);
 });
+
+test('a reminder for several notes reads them inline, in its crossing and its acknowledgement', () => {
+  // One crossing with two notes is one reminder whose body lists them a line
+  // each (internal/notify render); a timeline row is one line.
+  const body = '• buy aspirin\n• pick up the prescription';
+  const items: ActivityItem[] = [
+    geo({ id: 'g', ts: ist(12, 4), eventId: 'geo_p', trigger: 'arrive', placeName: 'Pharmacy' }),
+    {
+      type: 'reminder',
+      id: 'r',
+      ts: ist(12, 4),
+      reminder: reminder({
+        eventId: 'geo_p',
+        trigger: 'arrive',
+        noteIds: ['nte_1', 'nte_2'],
+        title: 'Arrived at Pharmacy',
+        body,
+        placeName: 'Pharmacy',
+        createdAt: ist(12, 4),
+        ackedAt: ist(12, 6),
+      }),
+    },
+    {
+      type: 'ack',
+      id: 'a',
+      ts: ist(12, 6),
+      reminderId: 'r',
+      title: 'Arrived at Pharmacy',
+      body,
+      placeName: 'Pharmacy',
+      noteIds: ['nte_1', 'nte_2'],
+      ackedBy: HARSH,
+      byMe: true,
+    },
+  ];
+  const rows = buildTimeline(items, ctx).flatMap((s) => s.rows.map((r) => r.title));
+  assert.deepEqual(rows, [
+    'Arrived at Pharmacy — reminder buy aspirin, pick up the prescription',
+    'Acknowledged buy aspirin, pick up the prescription',
+  ]);
+  // A reminder with no crossing in the day's feed reads the same way.
+  const alone = describe(
+    { type: 'reminder', id: 'r2', ts: ist(12, 4), reminder: reminder({ body, status: 'pending' }) },
+    ctx,
+  );
+  assert.equal(alone.title, 'Reminder: buy aspirin, pick up the prescription — pending');
+});

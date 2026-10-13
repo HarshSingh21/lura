@@ -252,3 +252,28 @@ func TestNoteDoneWhenTheOnlyRecipientIsAPeer(t *testing.T) {
 		t.Error("note not done")
 	}
 }
+
+// One crossing with two notes is one reminder listing both; the owner's
+// acknowledgement notice names both notes inline, not the crossing's title.
+func TestAckNoticeForTwoNotesNamesBoth(t *testing.T) {
+	f := newPeerFixture(t, true)
+	f.note(t, "buy aspirin", domain.TriggerPassby, nishtha, nishtha)
+	f.note(t, "pick up the prescription", domain.TriggerPassby, nishtha, nishtha)
+	f.handle(t, nishtha, domain.TriggerPassby)
+	hers := pendingFor(t, f, nishtha)
+	if len(hers) != 1 || len(hers[0].NoteIDs) != 2 {
+		t.Fatalf("Nishtha's pending = %+v, want one reminder for both notes", hers)
+	}
+	before := len(f.inapp.all())
+	res, err := f.w.Acknowledge(context.Background(), nishtha, hers[0].ID)
+	if err != nil {
+		t.Fatalf("Acknowledge: %v", err)
+	}
+	if len(res.NotesDone) != 2 {
+		t.Errorf("notesDone = %v, want both notes", res.NotesDone)
+	}
+	notices := f.inapp.all()[before:]
+	if len(notices) != 1 || notices[0].Title != "Nishtha acknowledged buy aspirin, pick up the prescription" {
+		t.Errorf("ack notice = %+v", notices)
+	}
+}
