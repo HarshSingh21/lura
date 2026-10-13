@@ -3,14 +3,15 @@ import { Pressable, StyleSheet, View } from 'react-native';
 
 import type { Device, Note, Place, Position, Share } from '@/api/types';
 import { Button, Card, Dot, EmptyState, TriggerBadge, styles as ui } from '@/components/ui/primitives';
-import { joinNames, latestFix, watchers } from '@/features/people/peer';
+import { joinNames, watchers } from '@/features/people/peer';
 import type { Peer } from '@/features/people/types';
 import type { TrackingStatus } from '@/hooks/useTracking';
 import { Mono, SectionLabel, Txt } from '@/theme/text';
 import { color, palette, radius, size, space } from '@/theme/tokens';
 import { useTouchTargets } from '@/theme/touch';
 
-import { deviceLine, fixTimeMs, formatAge, MOVING_MPS, pingLine, speedOf, type TrailPoint } from './motion';
+import { formatAge, type TrailPoint } from './motion';
+import { deviceRow, peerRow } from './rowLines';
 import { firstName, upcomingNotes, WAITING_LINE } from './reminders';
 import type { ReminderCard } from '@/features/notify/reminders';
 
@@ -200,9 +201,8 @@ export function PeopleList({
           />
         ) : (
           accepted.map((peer) => {
-            const fix = peer.sharingWithMe ? latestFix(peer, positions) : undefined;
-            const trail = fix ? trails[fix.deviceId] : undefined;
-            const live = fix ? positions[fix.deviceId] : undefined;
+            const row = peerRow(peer, positions, trails, now);
+            const fix = row.fix;
             const tint = colors[peer.peerId] ?? palette.amber;
             const key: FollowKey = `user:${peer.peerId}`;
             const following = followKey === key;
@@ -213,7 +213,7 @@ export function PeopleList({
                   <View
                     style={[styles.deviceIcon, peer.sharingWithMe ? { backgroundColor: withAlpha(tint, 0.16) } : null]}
                   >
-                    <Dot size={9} color={peer.sharingWithMe ? tint : color.neutralDot} pulse={!!fix && isFresh(fix.lastSeen, now)} />
+                    <Dot size={9} color={peer.sharingWithMe ? tint : color.neutralDot} pulse={row.fresh} />
                   </View>
 
                   <View style={ui.flex}>
@@ -221,14 +221,7 @@ export function PeopleList({
                       {name}
                     </Txt>
                     <Txt variant="micro" color={color.textSubtle} numberOfLines={2} testID={`lura-rail-peer-${peer.peerId}`}>
-                      {fix
-                        ? pingLine({
-                            speed: trail && trail.length > 0 ? speedOf(trail) : fix.speedMps,
-                            lastSeenMs: fix.lastSeen ? new Date(fix.lastSeen).getTime() : undefined,
-                            battery: live?.battery,
-                            now,
-                          })
-                        : describePeer(peer)}
+                      {row.line}
                     </Txt>
                   </View>
 
@@ -269,21 +262,6 @@ export function PeopleList({
   );
 }
 
-/** describePeer writes the inbound half of a peer row when there is no fix to describe. */
-function describePeer(peer: Peer): string {
-  // Accepted but their switch is off: they paused. Say it in those words, so a
-  // missing marker is never mistaken for a lost signal.
-  if (!peer.sharingWithMe) return 'Paused sharing with you';
-  return 'Sharing · no fix yet';
-}
-
-/** A ping within the last two minutes counts as live for the pulsing dot. */
-function isFresh(iso: string | undefined, now: number): boolean {
-  if (!iso) return false;
-  const t = new Date(iso).getTime();
-  return Number.isFinite(t) && now - t < 120_000;
-}
-
 function withAlpha(hex: string, alpha: number): string {
   const clean = hex.replace('#', '');
   const r = parseInt(clean.slice(0, 2), 16);
@@ -319,17 +297,11 @@ export function DeviceList({
         ) : (
           devices.map((device) => {
             const live = positions[device.id];
-            const trail = trails[device.id];
-            const speed = trail && trail.length > 0 ? speedOf(trail) : (live?.speedMps ?? device.speedMps ?? 0);
-            const moving = speed > MOVING_MPS;
-            const lastSeenMs = live ? fixTimeMs(live) : device.lastSeen ? new Date(device.lastSeen).getTime() : undefined;
+            const { line, moving } = deviceRow(device, positions, trails, places, now);
             const key: FollowKey = `device:${device.id}`;
             const following = followKey === key;
             const hasFix = !!(live?.point ?? device.lastPoint);
             const battery = live?.battery || device.battery || 0;
-            const inside = (device.insidePlaces ?? [])
-              .map((id) => places.find((p) => p.id === id)?.name)
-              .filter(Boolean)[0];
 
             return (
               <Card
@@ -348,7 +320,7 @@ export function DeviceList({
                       {device.name}
                     </Txt>
                     <Txt variant="micro" color={color.textSubtle} numberOfLines={2} testID={`lura-rail-device-${device.id}`}>
-                      {deviceLine({ moving, speed, inside, lastSeenMs, now })}
+                      {line}
                     </Txt>
                   </View>
 
