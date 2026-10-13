@@ -181,6 +181,37 @@ export function fixTimeMs(p: Pick<Position, 'recvTs' | 'fixTs'>): number {
   return Number.isFinite(fix) && (!Number.isFinite(recv) || fix <= recv) ? fix : recv;
 }
 
+/**
+ * How finely two devices' fix times can be told apart. OwnTracks stamps a fix
+ * in whole seconds and the server's clock correction (the smallest transit seen
+ * in a window) can land a live fix up to a second before it arrived, so two
+ * fixes from different devices less than this apart were taken "at the same
+ * time" as far as anyone can know.
+ */
+export const FIX_TIME_RESOLUTION_MS = 1_000;
+
+/** FixStamp is when a fix was taken (fixTimeMs) and when it reached the server. */
+export type FixStamp = { fixMs: number; recvMs: number };
+
+/**
+ * isNewerFix says whether fix `a` is newer news than fix `b`, from different
+ * devices of one person — which of them a single row should describe.
+ *
+ * Taken clearly later wins (a phone's queued tunnel fix stays history behind a
+ * live one). Within the fix clocks' resolution the order taken is unknowable
+ * and the arrival order decides: otherwise a tablet heartbeating half a second
+ * before a phone's next fix could outrank it, and a viewer's row would say
+ * "Still" while the phone's owner sees it moving.
+ */
+export function isNewerFix(a: FixStamp, b: FixStamp): boolean {
+  const fa = Number.isFinite(a.fixMs) ? a.fixMs : 0;
+  const fb = Number.isFinite(b.fixMs) ? b.fixMs : 0;
+  if (Math.abs(fa - fb) >= FIX_TIME_RESOLUTION_MS) return fa > fb;
+  const ra = Number.isFinite(a.recvMs) ? a.recvMs : fa;
+  const rb = Number.isFinite(b.recvMs) ? b.recvMs : fb;
+  return ra !== rb ? ra > rb : fa > fb;
+}
+
 /** isStale says whether a fix taken at `fixMs` is too old to be drawn as live at `now`. */
 export function isStale(fixMs: number | undefined, now: number): boolean {
   return fixMs !== undefined && Number.isFinite(fixMs) && now - fixMs >= STALE_AFTER_MS;
