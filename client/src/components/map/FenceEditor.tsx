@@ -22,22 +22,31 @@ import { absoluteFill } from './fill';
 import { releaseDelta, type PagePoint } from './releaseDelta';
 import { rimDirection } from './rimHandle';
 import {
-  MAX_POLYGON_VERTICES,
+  CLOSE_PX,
+  addCorner,
+  circlePreview,
+  closePolygon as closeRing,
+  drawCircle,
+  drawFreehand,
+  moveCorner,
+  moved,
+  plus,
+  removeCorner as dropCorner,
+  resizeCircle,
+  settleEdit,
+  tapPolygon,
+  translateFence,
+  undoPolygon,
+} from './fenceOps';
+import {
   boundingRadiusM,
   circleRingXY,
   clampRadius,
   distanceXY,
   formatMetres,
-  haversineM,
-  insertVertex,
-  midpoint,
-  pathSelfIntersects,
   polygonCentroid,
   polygonSelfIntersects,
-  removeVertex,
   scanlineSpans,
-  simplifyRing,
-  validatePolygon,
   type Span,
   type XY,
 } from './geometry';
@@ -89,13 +98,7 @@ const HANDLE = 32;
 const TOUCH_HANDLE = TOUCH_TARGET;
 /** Height of a body hit strip. Smaller hugs the outline better; larger is fewer views. */
 const ROW = 8;
-/** Movement under this many pixels is a tap, not a drag. */
-const TAP_SLOP = 6;
-/** A tap this close to the first corner closes the polygon. */
-const CLOSE_PX = 20;
 const LONG_PRESS_MS = 550;
-/** Radius a circle gets when the user taps instead of dragging one out. */
-const DEFAULT_RADIUS_M = 100;
 
 export function FenceEditor({ state, view, onGeometry, dark }: FenceEditorProps) {
   const ready = view.width > 0 && view.height > 0;
@@ -164,14 +167,6 @@ function pageOf(event: GestureResponderEvent): PagePoint | null {
   return typeof n.pageX === 'number' ? { pageX: n.pageX, pageY: n.pageY } : touch ? { pageX: touch.pageX, pageY: touch.pageY } : null;
 }
 
-function moved(gesture: PanResponderGestureState): boolean {
-  return Math.hypot(gesture.dx, gesture.dy) > TAP_SLOP;
-}
-
-function plus(a: XY, gesture: PanResponderGestureState): XY {
-  return { x: a.x + gesture.dx, y: a.y + gesture.dy };
-}
-
 /** useHint shows one short message at a time and clears it after a moment. */
 function useHint() {
   const [hint, setHint] = useState<{ text: string; seq: number } | null>(null);
@@ -228,29 +223,15 @@ function DrawLayer({
   const toGround = (p: XY) => unproject(p.x, p.y, view);
 
   const closePolygon = () => {
-    const problem = validatePolygon(vertices);
-    if (problem) {
-      show(problem);
-      return;
-    }
-    onGeometry({ shape: 'polygon', polygon: vertices }, true);
+    const closed = closeRing(vertices);
+    if ('problem' in closed) show(closed.problem);
+    else onGeometry({ shape: 'polygon', polygon: closed.polygon }, true);
   };
 
   const addVertex = (xy: XY) => {
-    if (vertices.length >= 3 && distanceXY(xy, toScreen(vertices[0]!)) <= CLOSE_PX) {
-      closePolygon();
-      return;
-    }
-    if (vertices.length >= MAX_POLYGON_VERTICES) {
-      show(`A shape can have at most ${MAX_POLYGON_VERTICES} corners`);
-      return;
-    }
-    const next = [...vertices, toGround(xy)];
-    if (pathSelfIntersects(next)) {
-      show('That edge would cross another one');
-      return;
-    }
-    onGeometry({ shape: 'polygon', polygon: next }, false);
+    const tap = tapPolygon(vertices, xy, view);
+    if (tap.kind === 'refuse') show(tap.problem);
+    else onGeometry({ shape: 'polygon', polygon: tap.polygon }, tap.kind === 'close');
   };
 
   const handlers = useDrag({
@@ -269,8 +250,7 @@ function DrawLayer({
       if (!origin) return;
       const pointer = plus(origin, gesture);
       if (state.mode === 'draw-circle') {
-        const center = toGround(origin);
-        const radiusM = haversineM(center, toGround(pointer));
+        const { center, radiusM } = circlePreview(origin, gesture, view);
         setCircle({ center, radiusM, edge: pointer });
         onGeometry({ shape: 'circle', center, radiusM: clampRadius(radiusM) }, false);
       } else if (state.mode === 'draw-freehand') {
@@ -290,27 +270,16 @@ function DrawLayer({
       if (state.mode === 'draw-circle') {
         setCircle(null);
         if (cancelled) return;
-        const center = toGround(origin);
         // A tap drops a sensible default; a drag sets the radius it drew.
-        const radiusM = moved(gesture) ? haversineM(center, toGround(plus(origin, gesture))) : DEFAULT_RADIUS_M;
-        onGeometry({ shape: 'circle', center, radiusM: clampRadius(radiusM) }, true);
+        onGeometry(drawCircle(origin, gesture, view), true);
       } else if (state.mode === 'draw-freehand') {
         const pts = sketchRef.current;
         sketchRef.current = [];
         setSketch(null);
         if (cancelled) return;
-        const ring = simplifyRing(pts);
-        if (ring.length < 3) {
-          show('Drag out an outline — press, draw around the place, release');
-          return;
-        }
-        const polygon = ring.map(toGround);
-        const problem = validatePolygon(polygon);
-        if (problem) {
-          show(problem === 'Edges cannot cross each other' ? 'The outline crosses itself — try again' : problem);
-          return;
-        }
-        onGeometry({ shape: 'polygon', polygon }, true);
+        const drawn = drawFreehand(pts, view);
+        if ('problem' in drawn) show(drawn.problem);
+        else onGeometry({ shape: 'polygon', polygon: drawn.polygon }, true);
       } else if (!cancelled) {
         if (moved(gesture)) {
           show('Tap to add corners; use the zoom buttons to change the view');
@@ -422,7 +391,7 @@ function DrawLayer({
               variant="secondary"
               small
               disabled={vertices.length === 0}
-              onPress={() => onGeometry({ shape: 'polygon', polygon: vertices.slice(0, -1) }, false)}
+              onPress={() => onGeometry({ shape: 'polygon', polygon: undoPolygon(vertices) }, false)}
             />
             <Button label="Done" small disabled={vertices.length < 3} onPress={closePolygon} />
           </View>
@@ -464,7 +433,6 @@ function EditLayer({
   // The geometry at the start of the running gesture, if any (see `targets`).
   const [frozen, setFrozen] = useState<FenceGeometry | null>(null);
   const toScreen = (p: Point) => project(p, view);
-  const toGround = (p: XY) => unproject(p.x, p.y, view);
 
   // ---- gesture bookkeeping shared by every handle
   // `armed`: a corner held still for LONG_PRESS_MS is marked for removal, which
@@ -503,29 +471,14 @@ function EditLayer({
     setLive(null);
     setFrozen(null);
     if (!from) return;
-    if (cancelled || !next) {
-      onGeometry(from, false);
-      return;
-    }
-    if (next.shape === 'polygon') {
-      const problem = validatePolygon(next.polygon);
-      if (problem) {
-        show(problem);
-        onGeometry(from, false);
-        return;
-      }
-    }
-    onGeometry(next, true);
+    const outcome = settleEdit(from, next, cancelled);
+    if (outcome.problem) show(outcome.problem);
+    onGeometry(outcome.geometry, outcome.done);
   }
 
   // ---- body: move the whole fence, in screen space so the shape stays the
   // shape you see (a degree of longitude is not the same width at every latitude)
-  const translate = (from: FenceGeometry, g: PanResponderGestureState): FenceGeometry => {
-    if (from.shape === 'circle') {
-      return { ...from, center: toGround(plus(toScreen(from.center), g)) };
-    }
-    return { shape: 'polygon', polygon: from.polygon.map((p) => toGround(plus(toScreen(p), g))) };
-  };
+  const translate = (from: FenceGeometry, g: PanResponderGestureState): FenceGeometry => translateFence(from, g, view);
   const body = useDrag({
     onStart: () => begin({ x: 0, y: 0 }),
     onMove: (g) => {
@@ -541,8 +494,7 @@ function EditLayer({
   // ---- circle edge: resize
   const radiusFrom = (from: FenceGeometry, g: PanResponderGestureState): FenceGeometry | null => {
     if (from.shape !== 'circle' || !gesture.current) return null;
-    const pointer = plus(gesture.current.anchor, g);
-    return { ...from, radiusM: clampRadius(haversineM(from.center, toGround(pointer))) };
+    return resizeCircle(from, gesture.current.anchor, g, view);
   };
   const edge = useDrag({
     onStart: () => {
@@ -657,20 +609,19 @@ function EditLayer({
             onMove={(g) => {
               const from = gesture.current?.from;
               if (from?.shape !== 'polygon' || !moved(g)) return;
-              update({ shape: 'polygon', polygon: insertVertex(from.polygon, i, toGround(plus(m.at, g))) });
+              const added = addCorner(from.polygon, i, m.at, g, view);
+              if ('polygon' in added) update({ shape: 'polygon', polygon: added.polygon });
             }}
             onEnd={(g, cancelled) => {
               const from = gesture.current?.from;
               if (from?.shape !== 'polygon') return finish(null, true);
-              if (from.polygon.length >= MAX_POLYGON_VERTICES) {
-                show(`A shape can have at most ${MAX_POLYGON_VERTICES} corners`);
+              // A tap inserts at the midpoint; a drag inserts where it was dragged.
+              const added = addCorner(from.polygon, i, m.at, g, view);
+              if ('problem' in added) {
+                show(added.problem);
                 return finish(null, true);
               }
-              // A tap inserts at the midpoint; a drag inserts where it was dragged.
-              const point = moved(g)
-                ? toGround(plus(m.at, g))
-                : midpoint(from.polygon[i]!, from.polygon[(i + 1) % from.polygon.length]!);
-              finish({ shape: 'polygon', polygon: insertVertex(from.polygon, i, point) }, cancelled);
+              finish({ shape: 'polygon', polygon: added.polygon }, cancelled);
             }}
           />
         ) : null,
@@ -705,9 +656,7 @@ function EditLayer({
                 current.armed = false;
                 setArmedCorner(null);
               }
-              const next = current.from.polygon.slice();
-              next[i] = toGround(plus(current.anchor, g));
-              update({ shape: 'polygon', polygon: next });
+              update({ shape: 'polygon', polygon: moveCorner(current.from.polygon, i, current.anchor, g, view) });
             }}
             onEnd={(g, cancelled) => {
               const current = gesture.current;
@@ -722,9 +671,7 @@ function EditLayer({
                 if (current.armed && !cancelled) return removeCorner(current.from.polygon, i);
                 return finish(null, true);
               }
-              const next = current.from.polygon.slice();
-              next[i] = toGround(plus(current.anchor, g));
-              finish({ shape: 'polygon', polygon: next }, cancelled);
+              finish({ shape: 'polygon', polygon: moveCorner(current.from.polygon, i, current.anchor, g, view) }, cancelled);
             }}
             onSecondary={() => {
               begin(p);
@@ -751,12 +698,13 @@ function EditLayer({
   );
 
   function removeCorner(ring: Point[], index: number) {
-    if (ring.length <= 3) {
-      show('A shape needs at least three corners');
+    const removed = dropCorner(ring, index);
+    if ('problem' in removed) {
+      show(removed.problem);
       finish(null, true);
       return;
     }
-    finish({ shape: 'polygon', polygon: removeVertex(ring, index) }, false);
+    finish({ shape: 'polygon', polygon: removed.polygon }, false);
   }
 }
 
