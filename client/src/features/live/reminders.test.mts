@@ -58,3 +58,16 @@ test('a note that has gone off and waits on a card is listed first, as waiting, 
   assert.ok(upcomingNotes(notes, [peer()]).every((u) => !u.waiting));
   assert.equal(upcomingNotes(notes, [peer()], [], 1).length, 1);
 });
+
+test('a note that went off just before its person was removed is waiting and on hold', () => {
+  const milk = {
+    id: 'milk', userId: 'harsh', placeId: 'plc_1', text: 'buy milk', trigger: 'passby', tags: [], done: false,
+    watchUserId: 'nishtha', notifyUserIds: [], createdAt: '', updatedAt: '',
+  } as unknown as Note;
+  const [u] = upcomingNotes([milk], [], [{ noteIds: ['milk'] }]);
+  assert.equal(u.waiting, true);
+  assert.equal(u.hold, 'On hold · the person it watches is no longer connected');
+  // While she still shares, it only waits.
+  const [still] = upcomingNotes([milk], [peer()], [{ noteIds: ['milk'] }]);
+  assert.deepEqual([still.waiting, still.hold], [true, undefined]);
+});

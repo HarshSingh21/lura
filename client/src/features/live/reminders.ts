@@ -38,8 +38,9 @@ export const WAITING_LINE = 'Went off · waiting for you to acknowledge it';
 /**
  * upcomingNotes is the rail's "Upcoming reminders": open notes bound to a place.
  * One whose reminder has gone off and waits on a card is no longer armed: it is
- * listed first and says so, rather than reading as a reminder still to come.
- * Armed ones follow, then those on hold. At most `limit`.
+ * listed first and says so, rather than reading as a reminder still to come,
+ * and still says if it is on hold. Armed ones follow, then those on hold. At
+ * most `limit`.
  */
 export function upcomingNotes(
   notes: Note[],
@@ -53,7 +54,10 @@ export function upcomingNotes(
     .filter((note) => !note.done && note.placeId)
     .map((note) => {
       const waiting = waitingIds.has(note.id);
-      return { note, hold: waiting ? undefined : reminderHold(note, people), waiting };
+      // Waiting and on hold are both true of a note that went off just before
+      // its person was removed: the card is still up, and once acknowledged it
+      // will not fire again. The rail says both.
+      return { note, hold: reminderHold(note, people), waiting };
     })
     .sort((a, b) => rank(a) - rank(b))
     .slice(0, limit);
