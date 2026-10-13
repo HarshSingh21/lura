@@ -182,6 +182,23 @@ func TestAuthScenarioTokenExpiresUnderALiveSocket(t *testing.T) {
 	})
 }
 
+// Scenario: with an origin allowlist configured, a page on another origin
+// cannot open Harsh's socket even with his token (a stolen token pasted into a
+// hostile page), while the app's own origin can.
+func TestAuthScenarioSocketHonoursTheOriginAllowlist(t *testing.T) {
+	s := newAuthStack(t, authBackends()[0], func(c *config.Config) {
+		c.AllowedOrigins = []string{"http://lura.com:8080"}
+	})
+	harsh := s.signIn(harshID)
+
+	if _, status, err := s.tryDial(harsh.token, "", http.Header{"Origin": {"https://evil.example"}}); err == nil || status != http.StatusForbidden {
+		t.Errorf("handshake from a foreign origin = %d (err %v), want 403", status, err)
+	}
+	if _, status, err := s.tryDial(harsh.token, "", http.Header{"Origin": {"http://lura.com:8080"}}); err != nil {
+		t.Errorf("handshake from the app's origin = %d: %v", status, err)
+	}
+}
+
 // Scenario: a phone that floods /pub is throttled per device with a useful
 // Retry-After, and nobody else's phone is.
 func TestAuthScenarioPubIsRateLimitedPerDevice(t *testing.T) {
