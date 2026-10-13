@@ -42,11 +42,13 @@ export const WIDE_STACK_WIDTH = 380;
 /** Room on the right for the map's control column (18 px inset + 38 px buttons + a gap). */
 export const CONTROLS_LANE = 64;
 /**
- * Tab bar (56 px), the live map's collapsed people sheet and the map credit
- * above it, and a gap: the "+N more" pill under a reminder card printed over
- * the OpenStreetMap credit, which the tiles' licence says must stay readable.
+ * Tab bar (56 px), the live map's collapsed people sheet (84 px) and the map
+ * credit above it, and a gap: the credit is two lines on any phone (its mono
+ * text is wider than the 78 % it may use beside the map's control column), and
+ * a card's foot printed over the OpenStreetMap credit, which the tiles'
+ * licence says must stay readable.
  */
-export const PHONE_STACK_BOTTOM = 162;
+export const PHONE_STACK_BOTTOM = 184;
 /** On a tablet the phone layout's corner holds a card's width, not the screen's. */
 export const PHONE_STACK_MAX_WIDTH = 440;
 
