@@ -60,7 +60,9 @@ export default function ShareViewer() {
 
   // One socket while the link works, none once it has ended: a link that is
   // gone refuses the handshake, and retrying it forever only burns battery.
-  const listening = !refused && ended === null;
+  // Not before the snapshot has answered either, or reopening an ended link
+  // races a refused handshake (and its retry) against the 403.
+  const listening = !!data && !refused && ended === null;
   useEffect(() => {
     if (!shareToken || !listening) return;
     const conn = connectLive({
