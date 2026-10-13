@@ -5,6 +5,7 @@ import { create } from 'zustand';
 
 import { keys, useOverview } from '@/api/hooks';
 import { useStore } from '@/state/store';
+import { localStorageOrNull } from '@/state/webStorage';
 
 import { useTracking, type TrackingStatus } from './useTracking';
 
@@ -56,7 +57,7 @@ function useRememberTracking(userId: string | undefined) {
   const enabled = useStore((s) => s.trackingEnabled);
   const restoredFor = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (!userId || Platform.OS !== 'web' || typeof localStorage === 'undefined') return;
+    if (!userId || Platform.OS !== 'web' || !localStorageOrNull()) return;
     const key = `lura.tracking.${userId}`;
     try {
       if (restoredFor.current !== userId) {
