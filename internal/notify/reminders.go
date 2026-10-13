@@ -100,8 +100,11 @@ func (w *Worker) Acknowledge(ctx context.Context, userID, id string) (AckResult,
 	}
 
 	owner := rec.OwnerID
+	// The owner is told last: their app re-reads the notes when the notice
+	// arrives, and a note this acknowledgement finishes must already be done
+	// then, or it lingers under "Upcoming reminders" until the next reload.
 	if owner != "" && owner != userID {
-		w.tellOwner(ctx, rec)
+		defer w.tellOwner(ctx, rec)
 	}
 
 	for _, noteID := range rec.NoteIDs {

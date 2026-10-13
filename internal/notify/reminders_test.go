@@ -233,6 +233,45 @@ func TestPeerAckNotifiesOwnerAndNoteDoneWhenEveryoneAcked(t *testing.T) {
 	}
 }
 
+// doneAtNotice is an in-app notifier that, when the owner's ack notice is
+// published, reads whether the acknowledged note is already done — what the
+// owner's app sees when it re-reads its notes on that frame.
+type doneAtNotice struct {
+	st   store.Store
+	note string
+	done []bool
+}
+
+func (d *doneAtNotice) Type() string { return "inapp" }
+func (d *doneAtNotice) Egress() bool { return false }
+func (d *doneAtNotice) Send(ctx context.Context, m notify.Message) error {
+	if m.Kind == notify.KindAck {
+		n, err := d.st.GetNote(ctx, harsh, d.note)
+		d.done = append(d.done, err == nil && n.Done)
+	}
+	return nil
+}
+
+// "pick up keys", for Nishtha only: when Harsh hears she acknowledged it, the
+// note is already done, so his rail never shows it as still upcoming.
+func TestOwnerIsToldOfTheAckAfterTheNoteIsDone(t *testing.T) {
+	f := newPeerFixture(t, true)
+	n := f.note(t, "pick up keys", domain.TriggerPassby, nishtha, nishtha)
+	probe := &doneAtNotice{st: f.store, note: n.ID}
+	f.w = notify.NewWorker(f.store, nil, nil, notify.Config{Tries: 1}, probe)
+	f.handle(t, nishtha, domain.TriggerPassby)
+	hers := pendingFor(t, f, nishtha)
+	if len(hers) != 1 {
+		t.Fatalf("Nishtha has %d pending, want 1", len(hers))
+	}
+	if _, err := f.w.Acknowledge(context.Background(), nishtha, hers[0].ID); err != nil {
+		t.Fatalf("Acknowledge: %v", err)
+	}
+	if len(probe.done) != 1 || !probe.done[0] {
+		t.Errorf("note done when the owner was told = %v, want [true]", probe.done)
+	}
+}
+
 func TestNoteDoneWhenTheOnlyRecipientIsAPeer(t *testing.T) {
 	f := newPeerFixture(t, true)
 	n := f.note(t, "pick up parcel", domain.TriggerPassby, nishtha, nishtha)

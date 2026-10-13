@@ -130,6 +130,9 @@ export function useLive(enabled = true) {
           case 'notify':
             applyReminder(frame.data);
             void qc.invalidateQueries({ queryKey: ['notes'] });
+            // The overview carries the rail's "Upcoming reminders": a note that
+            // fired, or that someone just acknowledged (kind "ack"), is done.
+            void qc.invalidateQueries({ queryKey: keys.overview });
             void qc.invalidateQueries({ queryKey: ['activity'] });
             break;
 
