@@ -207,16 +207,21 @@ function leaks(value) {
 /**
  * historyHolds checks one person's History (API) against the other's raw
  * track: no point of the other's device in /history, its export, or a trip or
- * stop of the activity feed.
+ * stop of the activity feed. Naming their phone in ?deviceId= is a 404
+ * not_found, the same answer as a phone that does not exist (every store).
  */
 async function historyHolds(me, them, theirDev) {
-  const [all, theirs, exp, feed] = await Promise.all([
+  const [all, theirRes, exp, feed] = await Promise.all([
     me.api('GET', '/api/v1/history?limit=20000'),
-    me.api('GET', `/api/v1/history?deviceId=${theirDev.id}`),
+    fetch(`${API}/api/v1/history?deviceId=${theirDev.id}`, { headers: { Authorization: `Bearer ${await me.token()}` } })
+      .then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) })),
     fetch(`${API}/api/v1/history/export?format=geojson`, { headers: { Authorization: `Bearer ${await me.token()}` } }).then((r) => r.text()),
     me.api('GET', '/api/v1/activity?limit=1000'),
   ]);
+  const theirs = theirRes.body ?? {};
   const theirPoints = (theirs.points ?? 0) + (theirs.track?.length ?? 0) + (theirs.segments?.length ?? 0);
+  check(theirRes.status === 404 && theirs.code === 'not_found',
+    `${me.name}'s /history?deviceId=<${them.name}'s phone> → ${theirRes.status} ${JSON.stringify(theirs).slice(0, 200)}; want 404 not_found`);
   const allLeak = pathsWith(all, theirDev.id);
   const expLeak = exp.includes(theirDev.id);
   const trips = feed.items.filter((i) => i.type === 'trip' || i.type === 'stop');
@@ -748,16 +753,22 @@ try {
   });
 
   await step('Z', 'No page errors, console errors or 5xx in any browser; only the expected refusals', async () => {
+    // The laptop's own uplink or DNS dropping while MapLibre fetches the
+    // third-party basemap (tiles.openfreemap.org) is not Lura's fault: Chrome
+    // logs it as a net:: transport error with no HTTP status. Anything from
+    // Lura's own origin, and any HTTP 4xx/5xx, still counts.
+    const offline = (e) => e.kind === 'console' && /Failed to load resource: net::ERR_(NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|NETWORK_CHANGED|ADDRESS_UNREACHABLE)\b/.test(e.text)
+      && !!e.url && !e.url.startsWith(new URL(BASE).origin) && !e.url.startsWith(new URL(API).origin);
     const report = {};
     for (const p of people) {
       const bad = p.badResponses.filter((r) => !/favicon/.test(r.url) && !/:8085\//.test(r.url));
-      report[p.name] = { errors: p.errors, bad };
+      report[p.name] = { errors: p.errors.filter((e) => !offline(e)), bad };
     }
     for (const v of viewers) {
       // A viewer of an ended, expired or unknown link is refused on purpose
       // (403/404 on /s/…), and Chrome logs each refusal as a console error.
       const bad = v.bad.filter((r) => !(/\/s\/[^/]+(\/ws)?(\?|$)/.test(r.url) && [403, 404].includes(r.status)) && !/favicon/.test(r.url));
-      const errors = v.errors.filter((e) => !/status of 40[34]|WebSocket connection to .*\/s\/.* failed/.test(e.text));
+      const errors = v.errors.filter((e) => !offline(e) && !/status of 40[34]|WebSocket connection to .*\/s\/.* failed/.test(e.text));
       report[`viewer-${v.name}`] = { errors, bad };
     }
     const problems = Object.values(report).flatMap((r) => [...r.errors, ...r.bad]);

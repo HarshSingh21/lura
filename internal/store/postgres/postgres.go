@@ -578,6 +578,21 @@ func (s *Store) ListPositions(ctx context.Context, userID string, q store.Positi
 	sql := `SELECT ` + positionCols + ` FROM positions WHERE user_id = $1`
 	args := []any{userID}
 	if q.DeviceID != "" {
+		// A device that is not this user's is not found, as GetDevice and the
+		// memory store say, rather than an empty track: the caller named it.
+		var mine bool
+		if err := s.pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM devices WHERE id = $1 AND user_id = $2)`,
+			q.DeviceID, userID).Scan(&mine); err != nil {
+			err = mapError("list positions", err)
+			observe("ListPositions", start, err)
+			return nil, err
+		}
+		if !mine {
+			err := fmt.Errorf("device %s: %w", q.DeviceID, domain.ErrNotFound)
+			observe("ListPositions", start, err)
+			return nil, err
+		}
 		args = append(args, q.DeviceID)
 		sql += fmt.Sprintf(" AND device_id = $%d", len(args))
 	}

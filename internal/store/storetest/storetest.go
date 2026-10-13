@@ -1160,6 +1160,25 @@ func testUserScoping(t *testing.T, st store.Store) {
 	if err := st.DeletePlace(ctx, "bob", place.ID); !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("bob deleted alice's place: %v", err)
 	}
+	// Naming another person's device is the same not-found as naming one that
+	// does not exist, on every store: History's ?deviceId= answers 404 under
+	// PostgreSQL exactly as it does in memory, never an empty track.
+	now := time.Now().UTC()
+	if _, err := st.InsertPositions(ctx, []domain.Position{{
+		DeviceID: "d_alice", UserID: "alice", RecvTS: now, DeviceTS: now,
+		Point: domain.Point{Lat: 12.9611, Lon: 77.6387},
+	}}); err != nil {
+		t.Fatalf("InsertPositions: %v", err)
+	}
+	if rows, err := st.ListPositions(ctx, "bob", store.PositionQuery{DeviceID: "d_alice"}); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("bob listed alice's device: %d rows, %v; want ErrNotFound", len(rows), err)
+	}
+	if rows, err := st.ListPositions(ctx, "alice", store.PositionQuery{DeviceID: "d_nobody"}); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("listing an unknown device: %d rows, %v; want ErrNotFound", len(rows), err)
+	}
+	if rows, err := st.ListPositions(ctx, "alice", store.PositionQuery{DeviceID: "d_alice"}); err != nil || len(rows) != 1 {
+		t.Errorf("alice's own device = %d rows, %v; want 1", len(rows), err)
+	}
 	if _, err := st.UpdateNote(ctx, domain.Note{
 		ID: note.ID, UserID: "bob", Text: "hijacked", Trigger: domain.TriggerArrive,
 	}); !errors.Is(err, domain.ErrNotFound) {
