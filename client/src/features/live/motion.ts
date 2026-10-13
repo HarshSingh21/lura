@@ -75,6 +75,8 @@ export type TrailPoint = {
 };
 
 export function trailPointOf(p: Position): TrailPoint | null {
+  // A late fix is history, not where the device went next (acceptsPosition).
+  if (p.late) return null;
   const t = new Date(p.recvTs).getTime();
   if (!Number.isFinite(t) || !Number.isFinite(p.point?.lat) || !Number.isFinite(p.point?.lon)) return null;
   return {
@@ -291,4 +293,43 @@ export function deviceLine({
   if (inside) return `Still · ${inside}${age}`;
   if (age) return `Still${age}`;
   return 'No fix yet';
+}
+
+// ---------------------------------------------------------------- ordering and the wake
+
+/**
+ * acceptsPosition is drop-to-latest on the client: a frame that reached the
+ * server before the one already held (the server's recv_ts is the authority)
+ * must not replace it, or a late or replayed frame would drag the marker back.
+ * Nor may a frame the server marks `late` (a queued fix older than one it
+ * already accepted): it arrived just now, but it is history — the share viewer
+ * (sharing/viewer.ts acceptFix) holds the same rule.
+ */
+export function acceptsPosition(current: Pick<Position, 'recvTs'> | undefined, next: Pick<Position, 'recvTs' | 'late'>): boolean {
+  if (next.late) return false;
+  if (!current) return true;
+  return !(new Date(current.recvTs).getTime() > new Date(next.recvTs).getTime());
+}
+
+/** TrailSegment is one stroke of a marker's wake, from fix `i - 1` to fix `i`. */
+export type TrailSegment = { i: number; opacity: number; width: number; casingOpacity: number; casingWidth: number };
+
+/**
+ * trailSegments styles a wake of `n` fixes (oldest first): one segment per pair,
+ * fading and thinning towards the oldest end so the newest stretch reads as
+ * "just now" and the tail as history.
+ */
+export function trailSegments(n: number): TrailSegment[] {
+  const out: TrailSegment[] = [];
+  for (let i = 1; i < n; i += 1) {
+    const recency = i / (n - 1);
+    out.push({
+      i,
+      opacity: 0.08 + 0.72 * recency * recency,
+      width: 2 + 2.5 * recency,
+      casingOpacity: 0.55 * recency * recency,
+      casingWidth: 5 + 2.5 * recency,
+    });
+  }
+  return out;
 }

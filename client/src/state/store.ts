@@ -31,6 +31,7 @@ import {
 } from '@/features/notify/reminders';
 import { inQuietHours, type QuietHours } from '@/features/notify/quiet';
 import { loadMuted, saveMuted } from '@/features/notify/sound';
+import { acceptsPosition } from '@/features/live/motion';
 import { localStorageOrNull } from './webStorage';
 
 /**
@@ -246,12 +247,9 @@ export const useStore = create<Store>((set, get) => ({
 
   applyPosition: (p) =>
     set((state) => {
-      const current = state.positions[p.deviceId];
       // Drop-to-latest also applies on the client: an out-of-order frame must not
       // move a marker backwards, and the server's recv_ts is the authority.
-      if (current && new Date(current.recvTs).getTime() > new Date(p.recvTs).getTime()) {
-        return state;
-      }
+      if (!acceptsPosition(state.positions[p.deviceId], p)) return state;
       return { positions: { ...state.positions, [p.deviceId]: p } };
     }),
 
