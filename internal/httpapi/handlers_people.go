@@ -51,6 +51,8 @@ func (s *Server) handleInvitePerson(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	// A crossed invitation is an accept: both maps gain the other now.
+	s.reauthorize(r, conn.PeerID)
 	writeJSON(w, http.StatusCreated, map[string]any{"connection": conn})
 }
 
@@ -60,6 +62,7 @@ func (s *Server) handleAcceptPerson(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	s.reauthorize(r, conn.PeerID)
 	writeJSON(w, http.StatusOK, map[string]any{"connection": conn})
 }
 
@@ -76,14 +79,28 @@ func (s *Server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	s.reauthorize(r, conn.PeerID)
 	writeJSON(w, http.StatusOK, map[string]any{"connection": conn})
 }
 
 // handleRemovePerson deletes the relationship from both sides.
 func (s *Server) handleRemovePerson(w http.ResponseWriter, r *http.Request) {
-	if err := s.deps.Connect.Remove(r.Context(), userID(r), chi.URLParam(r, "peerId")); err != nil {
+	peerID := chi.URLParam(r, "peerId")
+	if err := s.deps.Connect.Remove(r.Context(), userID(r), peerID); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
+	s.reauthorize(r, peerID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// reauthorize applies a connection change to both people's open sockets on
+// this replica before the response is written. "Paused" must mean the very
+// next fix stays with its owner, not the one after the hub gets round to the
+// asynchronous acl event (which still follows, and tells the clients).
+func (s *Server) reauthorize(r *http.Request, peerID string) {
+	if s.deps.Hub == nil {
+		return
+	}
+	s.deps.Hub.Reauthorize(r.Context(), userID(r), peerID)
 }

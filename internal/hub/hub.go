@@ -73,7 +73,25 @@ type Client struct {
 
 	mu   sync.Mutex
 	subs map[string]bus.Subscription
+
+	// resubMu serialises whole re-authorizations (resolve, then apply). Two
+	// of them interleaving — the acl event and a direct Reauthorize — could
+	// otherwise apply an answer read before a revoke after the one read
+	// after it, restoring the access that was just taken away.
+	resubMu sync.Mutex
+
+	// Reconnect replay bookkeeping (see Replay). Frames are identified by
+	// subject and publish time, which the bus stamps uniquely.
+	replayMu   sync.Mutex
+	replayDone bool
+	// liveSeen holds the replayable frames delivered live before Replay ran.
+	liveSeen map[string]map[int64]struct{}
+	// replayed holds frames Replay sent that may still be on their way live.
+	replayed map[string]map[int64]struct{}
 }
+
+// maxLiveSeen bounds liveSeen for a client whose transport never calls Replay.
+const maxLiveSeen = 1024
 
 // Out is the outbox the transport writes to the socket from.
 func (c *Client) Out() <-chan []byte { return c.out }
@@ -180,7 +198,10 @@ func New(b bus.Bus, log *slog.Logger, opts ...Option) (*Hub, error) {
 // remember files a geo event or reminder for Replay.
 func (h *Hub) remember(m bus.Msg) {
 	now := time.Now().UTC()
-	f := recentFrame{ts: now, kind: frameTypeFor(m.Subject), subject: m.Subject, data: append([]byte(nil), m.Data...)}
+	// Filed under the time the bus stamped, which is also the time on the
+	// live frame: a client resuming from that frame's ts must get exactly
+	// what came after it.
+	f := recentFrame{ts: publishedAt(m), kind: frameTypeFor(m.Subject), subject: m.Subject, data: append([]byte(nil), m.Data...)}
 	h.recentMu.Lock()
 	defer h.recentMu.Unlock()
 	list := append(h.recent[m.Subject], f)
@@ -194,29 +215,108 @@ func (h *Hub) remember(m bus.Msg) {
 
 // Replay sends a reconnecting client the geo events and reminders published
 // on its subjects after `since` (the time of the last frame it saw), in the
-// order they happened, stamped with their original time. The client dedupes
-// by event id, so overlap with frames it already has is harmless; what
-// matters is that a crossing that fired while it was offline is not lost.
+// order they happened, stamped with their original time.
+//
+// Exactly once: a frame the client already received live on this connection
+// (it fired between the subscribe and this call) is not sent again, and one
+// sent here is not sent again when its live copy arrives. The transport calls
+// Replay once per connection, with a zero since when there is nothing to
+// resume, which also ends the bookkeeping for frames delivered live.
 func (h *Hub) Replay(c *Client, since time.Time) int {
-	if since.IsZero() {
-		return 0
-	}
-	subjects := c.Subjects()
 	var out []recentFrame
-	h.recentMu.Lock()
-	for _, subject := range subjects {
-		for _, f := range h.recent[subject] {
-			if f.ts.After(since) && time.Since(f.ts) <= ReplayWindow {
-				out = append(out, f)
+	if !since.IsZero() {
+		subjects := c.Subjects()
+		h.recentMu.Lock()
+		for _, subject := range subjects {
+			for _, f := range h.recent[subject] {
+				if f.ts.After(since) && time.Since(f.ts) <= ReplayWindow {
+					out = append(out, f)
+				}
 			}
 		}
+		h.recentMu.Unlock()
+		sort.SliceStable(out, func(i, j int) bool { return out[i].ts.Before(out[j].ts) })
 	}
-	h.recentMu.Unlock()
-	sort.SliceStable(out, func(i, j int) bool { return out[i].ts.Before(out[j].ts) })
+
+	// Decide what to send under the same lock live delivery checks, so a
+	// frame arriving live meanwhile is counted by exactly one of the two.
+	send := out[:0]
+	c.replayMu.Lock()
 	for _, f := range out {
+		key := f.ts.UnixNano()
+		if _, had := c.liveSeen[f.subject][key]; had {
+			continue
+		}
+		if c.replayed == nil {
+			c.replayed = map[string]map[int64]struct{}{}
+		}
+		if c.replayed[f.subject] == nil {
+			c.replayed[f.subject] = map[int64]struct{}{}
+		}
+		c.replayed[f.subject][key] = struct{}{}
+		send = append(send, f)
+	}
+	c.replayDone = true
+	c.liveSeen = nil
+	c.replayMu.Unlock()
+
+	for _, f := range send {
 		c.enqueueAt(f.kind, f.subject, f.data, false, f.ts)
 	}
-	return len(out)
+	return len(send)
+}
+
+// deliver puts one bus message on the client's outbox, stamped with its
+// publish time, unless Replay already sent it.
+func (c *Client) deliver(m bus.Msg) {
+	kind := frameTypeFor(m.Subject)
+	ts := publishedAt(m)
+	if kind == FrameGeo || kind == FrameNotify {
+		if !c.firstDelivery(m.Subject, ts.UnixNano()) {
+			return
+		}
+	}
+	c.enqueueAt(kind, m.Subject, m.Data, kind == FramePosition, ts)
+}
+
+// firstDelivery records a replayable frame arriving live and reports whether
+// it still has to be sent.
+func (c *Client) firstDelivery(subject string, key int64) bool {
+	c.replayMu.Lock()
+	defer c.replayMu.Unlock()
+	if sent := c.replayed[subject]; sent != nil {
+		_, dup := sent[key]
+		// One subject is delivered in publish order: whatever Replay sent
+		// from before this frame can no longer arrive live.
+		for k := range sent {
+			if k <= key {
+				delete(sent, k)
+			}
+		}
+		if dup {
+			return false
+		}
+	}
+	if !c.replayDone {
+		if c.liveSeen == nil {
+			c.liveSeen = map[string]map[int64]struct{}{}
+		}
+		if c.liveSeen[subject] == nil {
+			c.liveSeen[subject] = map[int64]struct{}{}
+		}
+		if len(c.liveSeen[subject]) < maxLiveSeen {
+			c.liveSeen[subject][key] = struct{}{}
+		}
+	}
+	return true
+}
+
+// publishedAt is the bus's stamp for a message, or now for one without.
+func publishedAt(m bus.Msg) time.Time {
+	if m.TS.IsZero() {
+		return time.Now().UTC()
+	}
+	return m.TS.UTC()
 }
 
 // Connect registers a new connection and performs its first subscribe.
@@ -324,11 +424,45 @@ func (h *Hub) onACL(viewer string, payload []byte) {
 	}
 }
 
+// Reauthorize re-runs the resolver, now, for every connection on this replica
+// belonging to the given viewers.
+//
+// The acl.<viewer> event does the same, but it travels the asynchronous bus:
+// a caller that has just revoked access (a person pausing their sharing) and
+// answers "done" before the hub has processed that event would let the next
+// fix through. Calling this before responding closes that window; the event
+// still follows, and re-resolving an unchanged set is a no-op.
+func (h *Hub) Reauthorize(ctx context.Context, viewers ...string) {
+	want := make(map[string]struct{}, len(viewers))
+	for _, v := range viewers {
+		want[v] = struct{}{}
+	}
+	h.mu.RLock()
+	var affected []*Client
+	for _, c := range h.clients {
+		if _, ok := want[c.ViewerID]; ok {
+			affected = append(affected, c)
+		}
+	}
+	h.mu.RUnlock()
+	for _, c := range affected {
+		if err := c.resubscribe(ctx); err != nil {
+			// Fail closed, as onACL does: a connection whose authorization
+			// cannot be re-checked must not keep the old one.
+			h.log.Warn("hub: reauthorize failed, dropping connection",
+				"client", c.ID, "viewer", c.ViewerID, "error", err)
+			h.Disconnect(c)
+		}
+	}
+}
+
 // Resubscribe re-runs the resolver for one client. Exported so the API layer can
 // force a refresh (e.g. right after the owner revokes a share on this replica).
 func (c *Client) Resubscribe(ctx context.Context) error { return c.resubscribe(ctx) }
 
 func (c *Client) resubscribe(ctx context.Context) error {
+	c.resubMu.Lock()
+	defer c.resubMu.Unlock()
 	want, err := c.resolve(ctx)
 	if err != nil {
 		return err
@@ -355,10 +489,7 @@ func (c *Client) resubscribe(ctx context.Context) error {
 		if _, exists := c.subs[subject]; exists {
 			continue
 		}
-		s := subject // captured per subscription
-		sub, err := c.hub.b.Subscribe(s, func(m bus.Msg) {
-			c.enqueue(frameTypeFor(m.Subject), m.Subject, m.Data, frameTypeFor(m.Subject) == FramePosition)
-		})
+		sub, err := c.hub.b.Subscribe(subject, c.deliver)
 		if err != nil {
 			return err
 		}

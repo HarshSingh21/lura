@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/HarshSingh21/locnot/internal/metrics"
 )
@@ -38,6 +39,11 @@ var ErrClosed = errors.New("bus: closed")
 type Msg struct {
 	Subject string
 	Data    []byte
+	// TS is when the message was published, stamped once by the bus so every
+	// subscriber sees the same time for it. It strictly increases across a
+	// bus's publishes, so (subject, TS) identifies one message — what lets a
+	// reconnecting socket resume "after the last frame I saw" exactly.
+	TS time.Time
 }
 
 // Handler consumes a message. Core handlers must not block for long; durable
@@ -121,6 +127,24 @@ type InProcess struct {
 	// durBuffer bounds each durable partition's queue. Full means the publisher
 	// waits: losing a fix here would lose a reminder or a history row.
 	durBuffer int
+
+	// lastTS is the newest publish stamp, in Unix nanoseconds.
+	lastTS atomic.Int64
+}
+
+// stamp returns a publish time later than every earlier one: two messages
+// published in the same clock tick still get distinct, ordered times.
+func (b *InProcess) stamp() time.Time {
+	for {
+		now := time.Now().UnixNano()
+		last := b.lastTS.Load()
+		if now <= last {
+			now = last + 1
+		}
+		if b.lastTS.CompareAndSwap(last, now) {
+			return time.Unix(0, now).UTC()
+		}
+	}
 }
 
 // Option configures an InProcess bus.
@@ -204,7 +228,7 @@ func (b *InProcess) Publish(subject string, data []byte) error {
 	b.mu.RUnlock()
 
 	metrics.BusPublished.Inc()
-	msg := Msg{Subject: subject, Data: data}
+	msg := Msg{Subject: subject, Data: data, TS: b.stamp()}
 	for _, s := range subs {
 		select {
 		case s.ch <- msg:
@@ -236,7 +260,7 @@ func (b *InProcess) PublishDurable(subject string, data []byte) error {
 	b.mu.RUnlock()
 
 	metrics.BusPublished.Inc()
-	msg := Msg{Subject: subject, Data: data}
+	msg := Msg{Subject: subject, Data: data, TS: b.stamp()}
 	for _, s := range subs {
 		idx := 0
 		if n := len(s.partition); n > 1 {
