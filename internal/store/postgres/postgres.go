@@ -463,7 +463,7 @@ func (s *Store) UpsertDevice(ctx context.Context, d domain.Device) error {
 	}
 	// The update deliberately leaves last_seen/last_point alone: a rename must
 	// not touch position state, which only the writer's monotonic guard may move.
-	_, err := s.pool.Exec(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO devices (id, user_id, name, kind, token, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6)
 		ON CONFLICT (id) DO UPDATE SET
@@ -473,6 +473,11 @@ func (s *Store) UpsertDevice(ctx context.Context, d domain.Device) error {
 		WHERE devices.user_id = EXCLUDED.user_id`,
 		d.ID, d.UserID, d.Name, d.Kind, d.Token, d.CreatedAt)
 	err = mapError("upsert device", err)
+	if err == nil && tag.RowsAffected() == 0 {
+		// The id belongs to another user's device: the WHERE refused the update,
+		// and reporting success would hand the caller a token that was never stored.
+		err = fmt.Errorf("device %s belongs to another user: %w", d.ID, domain.ErrConflict)
+	}
 	observe("UpsertDevice", start, err)
 	return err
 }

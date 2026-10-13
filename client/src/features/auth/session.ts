@@ -8,11 +8,14 @@ import { onWake } from '@/api/wake';
 import { keycloak, loadDiscovery } from './config';
 import { decodeIdToken, tokenLifetimeMs, type Profile } from './jwt';
 import {
+  freshToken,
+  installRenewTriggers,
   isExpiring,
   REFRESH_DEADLINE_MS,
   refreshDelayMs,
   renewAfterRejection,
   RETRY_DELAY_MS,
+  singleFlight,
   withDeadline,
 } from './refresh';
 
@@ -141,7 +144,6 @@ function persist(tokens: SessionTokens | null): void {
 /* ------------------------------------------------------------- refresh timer */
 
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
-let inFlightRefresh: Promise<boolean> | undefined;
 
 function clearRefreshTimer() {
   if (refreshTimer !== undefined) {
@@ -176,6 +178,52 @@ function messageOf(err: unknown): string {
   if (err instanceof Error && err.message) return err.message;
   return 'Sign-in failed for an unknown reason.';
 }
+
+/**
+ * runRefresh is one renewal against Keycloak. Only ever run through
+ * refreshFlight, so concurrent callers share one request (refresh.ts
+ * singleFlight): Keycloak rotates the refresh token, and a second concurrent
+ * renewal would present the token the first one just spent.
+ */
+async function runRefresh(): Promise<boolean> {
+  const { refreshToken } = useSession.getState();
+  if (!refreshToken) return false;
+  const set = useSession.setState;
+  const get = useSession.getState;
+  try {
+    // Bounded: a token request that never answers would otherwise hold the
+    // flight forever, and every later refresh would wait on it.
+    const response = await withDeadline(
+      loadDiscovery().then((discovery) => refreshAsync({ clientId: keycloak.clientId, refreshToken }, discovery)),
+      REFRESH_DEADLINE_MS,
+    );
+    get().signIn(toTokens(response, get()));
+    return true;
+  } catch (err) {
+    // A token Keycloak refuses is terminal — the session is over and the only
+    // honest move is to send the user back to sign-in. A network failure is
+    // not: the container may be restarting, so hold the session and retry.
+    if (err instanceof TokenError) {
+      clearRefreshTimer();
+      set({
+        status: 'signed-out',
+        accessToken: undefined,
+        refreshToken: undefined,
+        idToken: undefined,
+        expiresAt: undefined,
+        profile: undefined,
+        error: 'Your session expired. Sign in again to continue.',
+      });
+      persist(null);
+    } else {
+      set({ error: messageOf(err) });
+      scheduleRefresh(RETRY_DELAY_MS);
+    }
+    return false;
+  }
+}
+
+const refreshFlight = singleFlight(runRefresh);
 
 /* -------------------------------------------------------------------- store */
 
@@ -232,48 +280,10 @@ export const useSession = create<SessionState>((set, get) => ({
   },
 
   refresh: () => {
-    if (inFlightRefresh) return inFlightRefresh;
-
-    const { refreshToken } = get();
-    if (!refreshToken) return Promise.resolve(false);
-
-    inFlightRefresh = (async () => {
-      try {
-        // Bounded: a token request that never answers would otherwise hold
-        // inFlightRefresh forever, and every later refresh would wait on it.
-        const response = await withDeadline(
-          loadDiscovery().then((discovery) => refreshAsync({ clientId: keycloak.clientId, refreshToken }, discovery)),
-          REFRESH_DEADLINE_MS,
-        );
-        get().signIn(toTokens(response, get()));
-        return true;
-      } catch (err) {
-        // A token Keycloak refuses is terminal — the session is over and the only
-        // honest move is to send the user back to sign-in. A network failure is
-        // not: the container may be restarting, so hold the session and retry.
-        if (err instanceof TokenError) {
-          clearRefreshTimer();
-          set({
-            status: 'signed-out',
-            accessToken: undefined,
-            refreshToken: undefined,
-            idToken: undefined,
-            expiresAt: undefined,
-            profile: undefined,
-            error: 'Your session expired. Sign in again to continue.',
-          });
-          persist(null);
-        } else {
-          set({ error: messageOf(err) });
-          scheduleRefresh(RETRY_DELAY_MS);
-        }
-        return false;
-      } finally {
-        inFlightRefresh = undefined;
-      }
-    })();
-
-    return inFlightRefresh;
+    const running = refreshFlight.current();
+    if (running) return running;
+    if (!get().refreshToken) return Promise.resolve(false);
+    return refreshFlight.run();
   },
 
   restore: async () => {
@@ -352,13 +362,13 @@ export function getSessionStatus(): AuthStatus {
  * inside its expiry margin. Use it where a stale token would cost a visible
  * failure — a download URL, or a WebSocket handshake that cannot retry a 401.
  */
-export async function ensureFreshAccessToken(): Promise<string | undefined> {
-  const { accessToken, expiresAt, refreshToken } = useSession.getState();
-  const expiring = isExpiring(expiresAt, tokenLifetimeMs(accessToken), Date.now());
-  if (accessToken && !expiring) return accessToken;
-  if (!refreshToken) return accessToken;
-  await useSession.getState().refresh();
-  return useSession.getState().accessToken;
+export function ensureFreshAccessToken(): Promise<string | undefined> {
+  return freshToken({
+    state: () => useSession.getState(),
+    lifetimeMs: tokenLifetimeMs,
+    refresh: () => useSession.getState().refresh(),
+    now: () => Date.now(),
+  });
 }
 
 const forcedRenewal: { at?: number } = {};
@@ -375,34 +385,25 @@ export function renewRejectedToken(rejected: string | undefined): Promise<string
   return renewAfterRejection(rejected, {
     current: () => useSession.getState().accessToken,
     hasRefreshToken: () => !!useSession.getState().refreshToken,
-    inFlight: () => inFlightRefresh,
+    inFlight: () => refreshFlight.current(),
     refresh: () => useSession.getState().refresh(),
     now: () => Date.now(),
     forced: forcedRenewal,
   });
 }
 
-// A tab that comes back into view, regains focus or comes back online renews at
-// once if its token went stale meanwhile: browsers throttle a hidden tab's
-// timers and a sleeping machine runs none, so the renewal timer may not have
-// run on time. Cheap when the token is fresh — nothing is fetched.
-if (Platform.OS === 'web' && typeof document !== 'undefined' && typeof window !== 'undefined') {
-  const wake = () => {
-    if (document.visibilityState === 'visible' && useSession.getState().status === 'signed-in') {
-      void ensureFreshAccessToken();
-    }
-  };
-  document.addEventListener('visibilitychange', wake);
-  window.addEventListener('focus', wake);
-  window.addEventListener('online', wake);
-}
-
-// A machine waking from sleep fires none of those unless the network changed,
-// and the renewal timer it left behind is late by the whole sleep (timers run
-// on a clock that stops while asleep). api/wake.ts notices the wall clock's
-// jump; renew then, before the first request or handshake needs the token.
-onWake(() => {
-  if (useSession.getState().status === 'signed-in') void ensureFreshAccessToken();
+// The renewal timer is only the first line: a hidden tab's timers are
+// throttled and a sleeping machine runs none, so the token is also renewed the
+// moment the tab is back in view, regains focus or comes back online, and when
+// api/wake.ts notices the machine woke — before the first request or handshake
+// needs it. Cheap when the token is fresh: nothing is fetched.
+const web = Platform.OS === 'web' && typeof document !== 'undefined' && typeof window !== 'undefined';
+installRenewTriggers({
+  document: web ? document : undefined,
+  window: web ? window : undefined,
+  onWake,
+  signedIn: () => useSession.getState().status === 'signed-in',
+  renew: () => void ensureFreshAccessToken(),
 });
 
 /** Selectors, so components subscribe to the narrowest slice they need. */

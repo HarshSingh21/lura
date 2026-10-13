@@ -317,6 +317,13 @@ func (v *OIDCVerifier) validate(c tokenClaims) (Claims, error) {
 	if strings.EqualFold(c.Typ, "refresh") {
 		return Claims{}, fmt.Errorf("oidc: refresh token presented as an access token: %w", domain.ErrUnauthorized)
 	}
+	// Keycloak types its access tokens "Bearer" and its ID tokens "ID"; both are
+	// signed by the same realm keys. A provider that omits typ is not penalised,
+	// but a token that says it is something other than an access token is
+	// believed (docs/auth.md §3, check 6).
+	if c.Typ != "" && !strings.EqualFold(c.Typ, "bearer") {
+		return Claims{}, fmt.Errorf("oidc: %q token presented as an access token: %w", c.Typ, domain.ErrUnauthorized)
+	}
 
 	now := v.now()
 	// exp is required. A token that never expires is a password with worse
