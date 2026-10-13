@@ -149,7 +149,9 @@ export function fromReminder(r: Reminder | ReminderRecord, viewerId?: string, no
   const title = r.title?.trim() || (e ? fromGeo(e, viewerId, now).title : 'Reminder');
   // A watch reminder repeats its title as the body, which push channels need (a
   // phone banner may show only one of them); on screen it would say it twice.
-  const body = r.body?.trim();
+  // So does an acknowledgement: "Nishtha acknowledged buy milk" already names
+  // the note its body carries.
+  const body = ack ? undefined : r.body?.trim();
   return {
     id,
     ...status,

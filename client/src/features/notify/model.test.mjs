@@ -201,3 +201,22 @@ test('what the page already holds wins over what was stored, and junk is dropped
   assert.equal(merged[0].title, live[0].title);
   assert.equal(mergeStored(live, []), live);
 });
+
+test('an acknowledgement notice says the note once, in its title', () => {
+  const item = fromReminder(
+    reminder({
+      id: 'rem_ack',
+      status: 'acknowledged',
+      kind: 'ack',
+      title: 'Nishtha acknowledged buy milk',
+      body: 'buy milk',
+      fromName: 'Nishtha',
+    }),
+    HARSH,
+  );
+  assert.equal(item.kind, 'ack');
+  assert.equal(item.title, 'Nishtha acknowledged buy milk');
+  assert.equal(item.body, undefined);
+  // A note reminder keeps its note as the body.
+  assert.equal(fromReminder(reminder({ title: 'Arrived at Grocery', body: 'buy milk' }), HARSH).body, 'buy milk');
+});
