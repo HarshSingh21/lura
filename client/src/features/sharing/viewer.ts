@@ -6,7 +6,8 @@ import type { Position } from '@/api/types';
  * fixes may move the dot.
  */
 
-export type ShareNotice = { title: string; body: string };
+/** `ended` is false for a link that never existed: nothing was ever shared through it. */
+export type ShareNotice = { title: string; body: string; ended: boolean };
 
 /**
  * shareEnded is what the recipient reads once a link stops working, from the
@@ -28,6 +29,7 @@ export function shareEnded({
     return {
       title: 'This link does not work',
       body: 'There is no share at this address. Check that the whole link was copied, or ask for a new one.',
+      ended: false,
     };
   }
   const r = (reason ?? '').trim();
@@ -36,21 +38,24 @@ export function shareEnded({
     return {
       title: 'This share has ended',
       body: `${who ?? 'They'} arrived at ${arrived[1]}, so the link switched itself off.`,
+      ended: true,
     };
   }
   if (/^expired$/i.test(r)) {
-    return { title: 'This share has ended', body: 'Its time ran out. Ask for a new link if you still need it.' };
+    return { title: 'This share has ended', body: 'Its time ran out. Ask for a new link if you still need it.', ended: true };
   }
   if (/^revoked by owner$/i.test(r)) {
     return {
       title: 'This share has ended',
       body: `${who ?? 'The sharer'} stopped sharing. Ask for a new link if you still need it.`,
+      ended: true,
     };
   }
-  if (r) return { title: 'This share has ended', body: `${capitalise(r)}.` };
+  if (r) return { title: 'This share has ended', body: `${capitalise(r)}.`, ended: true };
   return {
     title: 'This share has ended',
     body: 'The link was revoked or has expired. Ask for a new one if you still need it.',
+    ended: true,
   };
 }
 

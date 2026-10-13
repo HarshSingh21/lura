@@ -35,6 +35,7 @@ test('expiry and revocation read as sentences, not reason codes', () => {
 test('an unknown link is not called an ended share', () => {
   const n = shareEnded({ status: 404 });
   assert.equal(n.title, 'This link does not work');
+  assert.equal(n.ended, false);
   assert.equal(shareEnded({ status: 403 }).title, 'This share has ended');
 });
 

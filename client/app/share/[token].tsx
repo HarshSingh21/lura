@@ -230,9 +230,11 @@ export default function ShareViewer() {
               <Txt variant="small" color={color.textMuted} style={styles.noticeBody}>
                 {notice.body}
               </Txt>
-              <Mono size={size.monoTiny} color={color.textFaint} style={styles.noticeFoot}>
-                Nothing more is being shared through this link.
-              </Mono>
+              {notice.ended ? (
+                <Mono size={size.monoTiny} color={color.textFaint} style={styles.noticeFoot}>
+                  Nothing more is being shared through this link.
+                </Mono>
+              ) : null}
             </Card>
           </View>
         ) : isLoading ? (
