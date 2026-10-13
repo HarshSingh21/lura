@@ -262,6 +262,13 @@ func openAuthPostgres(t *testing.T, dsn string) store.Store {
 	if err != nil {
 		t.Fatalf("open bootstrap connection: %v", err)
 	}
+	// PostGIS must live in public: 0001_init.sql creates it in the first schema
+	// on the search path when it is missing, and dropping that test schema
+	// would then drop the extension from under every other test.
+	if _, err := bootstrap.Pool().Exec(ctx, "CREATE EXTENSION IF NOT EXISTS postgis WITH SCHEMA public"); err != nil {
+		_ = bootstrap.Close()
+		t.Fatalf("create postgis: %v", err)
+	}
 	if _, err := bootstrap.Pool().Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		_ = bootstrap.Close()
 		t.Fatalf("create schema: %v", err)
@@ -522,9 +529,41 @@ func (s *authStack) wsURL(path string) string {
 	return "ws" + strings.TrimPrefix(s.server.URL, "http") + path
 }
 
+// liveConn is an open socket with a reader running behind it. coder/websocket
+// closes a connection whose Read context ends, so "read for half a second and
+// see what arrived" has to be done from a channel rather than with a deadline.
+type liveConn struct {
+	conn   *websocket.Conn
+	frames chan hub.Frame
+}
+
+func newLiveConn(t *testing.T, conn *websocket.Conn) *liveConn {
+	lc := &liveConn{conn: conn, frames: make(chan hub.Frame, 512)}
+	go func() {
+		defer close(lc.frames)
+		for {
+			_, data, err := conn.Read(context.Background())
+			if err != nil {
+				return
+			}
+			var f hub.Frame
+			if err := json.Unmarshal(data, &f); err == nil {
+				lc.frames <- f
+			}
+		}
+	}()
+	t.Cleanup(func() { _ = conn.CloseNow() })
+	return lc
+}
+
+// Close closes the socket from the client side.
+func (c *liveConn) Close(code websocket.StatusCode, reason string) error {
+	return c.conn.Close(code, reason)
+}
+
 // dialAs opens the live socket with the token in the query string, as a
 // browser must. It fails the test when the handshake is refused.
-func (s *authStack) dialAs(token, extraQuery string) *websocket.Conn {
+func (s *authStack) dialAs(token, extraQuery string) *liveConn {
 	s.t.Helper()
 	conn, status, err := s.tryDial(token, extraQuery, nil)
 	if err != nil {
@@ -534,7 +573,7 @@ func (s *authStack) dialAs(token, extraQuery string) *websocket.Conn {
 }
 
 // tryDial attempts the handshake and reports the HTTP status it got.
-func (s *authStack) tryDial(token, extraQuery string, header http.Header) (*websocket.Conn, int, error) {
+func (s *authStack) tryDial(token, extraQuery string, header http.Header) (*liveConn, int, error) {
 	s.t.Helper()
 	q := url.Values{}
 	if token != "" {
@@ -563,24 +602,23 @@ func (s *authStack) tryDial(token, extraQuery string, header http.Header) (*webs
 	if err != nil {
 		return nil, status, err
 	}
-	s.t.Cleanup(func() { _ = conn.CloseNow() })
-	return conn, status, nil
+	return newLiveConn(s.t, conn), status, nil
 }
 
-// authFrames reads frames for up to d and returns them all.
-func authFrames(t *testing.T, conn *websocket.Conn, d time.Duration) []hub.Frame {
+// authFrames collects the frames that arrive within d.
+func authFrames(t *testing.T, conn *liveConn, d time.Duration) []hub.Frame {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), d)
-	defer cancel()
+	timeout := time.After(d)
 	var out []hub.Frame
 	for {
-		_, data, err := conn.Read(ctx)
-		if err != nil {
-			return out
-		}
-		var f hub.Frame
-		if err := json.Unmarshal(data, &f); err == nil {
+		select {
+		case f, ok := <-conn.frames:
+			if !ok {
+				return out
+			}
 			out = append(out, f)
+		case <-timeout:
+			return out
 		}
 	}
 }
@@ -588,23 +626,22 @@ func authFrames(t *testing.T, conn *websocket.Conn, d time.Duration) []hub.Frame
 // awaitFrame reads until match accepts a frame, failing after timeout. Frames
 // read on the way are returned too, so a test can assert what must NOT have
 // arrived among them.
-func awaitFrame(t *testing.T, conn *websocket.Conn, timeout time.Duration, what string, match func(hub.Frame) bool) (hub.Frame, []hub.Frame) {
+func awaitFrame(t *testing.T, conn *liveConn, timeout time.Duration, what string, match func(hub.Frame) bool) (hub.Frame, []hub.Frame) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	deadline := time.After(timeout)
 	var seen []hub.Frame
 	for {
-		_, data, err := conn.Read(ctx)
-		if err != nil {
-			t.Fatalf("waiting for %s: %v (saw %s)", what, err, frameTypes(seen))
-		}
-		var f hub.Frame
-		if err := json.Unmarshal(data, &f); err != nil {
-			t.Fatalf("undecodable frame: %v", err)
-		}
-		seen = append(seen, f)
-		if match(f) {
-			return f, seen
+		select {
+		case f, ok := <-conn.frames:
+			if !ok {
+				t.Fatalf("waiting for %s: socket closed (saw %s)", what, frameTypes(seen))
+			}
+			seen = append(seen, f)
+			if match(f) {
+				return f, seen
+			}
+		case <-deadline:
+			t.Fatalf("waiting for %s: timed out (saw %s)", what, frameTypes(seen))
 		}
 	}
 }
